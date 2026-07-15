@@ -1,0 +1,132 @@
+================================================================================
+          LUỒNG XỬ LÝ DỮ LIỆU HỆ THỐNG AIREAD V2 (CÀO -> DỊCH -> XUẤT BẢN)
+================================================================================
+
+Tài liệu này giải thích chi tiết quy trình xử lý dữ liệu của hệ thống AiRead v2, 
+chia làm 4 giai đoạn chính: Cào dữ liệu (Crawler) -> Tiền xử lý (Cleaner) -> 
+Dịch thuật (Translator Pipeline) -> Hậu xử lý & Đóng gói xuất dữ liệu (Exporter).
+
+---
+
+1. GIAI ĐOẠN 1: CÀO DỮ LIỆU (CRAWLER ENGINE)
+================================================================================
+Mục tiêu: Lấy nội dung chương truyện (tiếng Trung) và thông tin sách từ nguồn.
+
+* Bước 1.1: Tiếp nhận yêu cầu
+  - Người dùng gửi URL truyện hoặc URL chương (ví dụ từ trang 69shuba.com).
+  - API backend (`backend/app/api/novels.py`) nhận yêu cầu và điều hướng qua 
+    Crawler Engine (`backend/app/services/crawler/engine.py`).
+
+* Bước 1.2: Sử dụng Playwright bypass Cloudflare
+  - Hệ thống sử dụng lớp `PlaywrightManager` (singleton quản lý Chromium chạy ẩn).
+  - Khởi chạy một trình duyệt Chromium để giả lập người dùng thật (User-Agent, 
+    Locale, Cookie, Window size) nhằm vượt qua màng lọc Cloudflare/Anti-bot.
+  - Tải về mã nguồn HTML của trang mục lục hoặc trang nội dung chương truyện.
+
+* Bước 1.3: Phân tích HTML bằng BeautifulSoup
+  - Các plugin cào tương ứng (ví dụ: `backend/app/services/crawler/plugins/shuba69.py`)
+    sẽ phân tích cú pháp HTML của trang.
+  - Trích xuất: Tên truyện, Tác giả, Ảnh bìa, Danh sách chương, và đặc biệt là 
+    tiêu đề + nội dung chữ tiếng Trung thô của từng chương.
+
+---
+
+2. GIAI ĐOẠN 2: TIỀN XỬ LÝ & LÀM SẠCH BẢN THÔ (CLEANER PIPELINE - TIỀN XỬ LÝ)
+================================================================================
+Mục tiêu: Chuẩn hóa nội dung tiếng Trung trước khi dịch để giảm thiểu rác dữ liệu.
+
+* Lọc text rác (`clean_raw_chinese_text` trong `backend/app/services/cleaner/pipeline.py`):
+  - Xóa bỏ các đoạn quảng cáo chèn giữa truyện (ví dụ: "Nhấn vào để đọc thêm...", 
+    "Hãy bình chọn...", các link website quảng cáo).
+  - Chuẩn hóa các dấu khoảng cách thụt lề, chuyển đổi các định dạng xuống dòng 
+    dư thừa thành ký tự xuống dòng tiêu chuẩn `\n`.
+  - Lưu thông tin chương truyện thô vào cơ sở dữ liệu SQLite (`database.db`) 
+    với trạng thái chờ dịch.
+
+---
+
+3. GIAI ĐOẠN 3: LUỒNG DỊCH AI TỐI ƯU HÓA (TRANSLATION PIPELINE)
+================================================================================
+Mục tiêu: Dịch tiếng Trung sang tiếng Việt mượt mà nhất bằng cách kết hợp 
+Glossary, Dịch thô (Google Translate), và Tinh chỉnh nâng cao (LLM - Gemini).
+Quy trình thực hiện trong `TranslationPipeline.translate_chapter` 
+(tại `backend/app/services/translator/pipeline.py`):
+
+* Bước 3.1: Chia nhỏ văn bản (Chunking)
+  - Đoạn text tiếng Trung của chương được chia nhỏ thành các phần dưới 2000 ký tự 
+    (theo ranh giới kết thúc đoạn văn `\n`) để không bị tràn cửa sổ ngữ cảnh (context window) 
+    và giới hạn output tokens của mô hình AI.
+
+* Bước 3.2: Kiểm tra bộ nhớ đệm (Translation Cache)
+  - Hệ thống kiểm tra trong bảng `translation_caches` xem đoạn văn bản tiếng Trung này 
+    đã từng được dịch trước đó chưa. 
+  - Nếu đã có, hệ thống lấy luôn kết quả dịch cũ để tiết kiệm chi phí API và tăng tốc độ.
+
+* Bước 3.3: Tra cứu thuật ngữ (Glossary) & Ngữ cảnh chương trước (Context)
+  - Tìm kiếm và khớp các từ khóa có trong bộ từ điển Glossary (Tên nhân vật, địa danh, 
+    bí kíp...) để chuẩn bị chèn vào prompt chỉ dẫn cho AI.
+  - Lấy ngữ cảnh tóm tắt/nội dung của các chương trước để đảm bảo tính nhất quán 
+    về ngôi xưng (tôi - ta, hắn - nàng, huynh - đệ...).
+
+* Bước 3.4: Dịch nháp bằng Google Translate (Bảo hiểm & Tiết kiệm chi phí)
+  - Sử dụng thư viện `deep-translator` dịch nhanh đoạn tiếng Trung sang tiếng Việt.
+  - Bản dịch nháp này giúp giảm tới 90% công việc suy luận của Gemini. Thay vì bắt 
+    Gemini dịch từ con số 0, nó chỉ cần chỉnh sửa văn phong của bản dịch nháp này 
+    dựa trên bản gốc tiếng Trung và Glossary.
+
+* Bước 3.5: Gửi Prompt tối ưu đến LLM (Gemini/OpenAI/Claude)
+  - Prompt gửi đi bao gồm:
+    1. Chỉ dẫn hệ thống (System Instructions): Quy định văn phong kiếm hiệp/đô thị, 
+       quy tắc áp dụng Glossary, và cách xưng hô.
+    2. Danh sách Glossary khớp được.
+    3. Ngữ cảnh của chương trước.
+    4. Bản gốc tiếng Trung.
+    5. Bản dịch nháp tiếng Việt của Google Translate.
+  - AI nhận nhiệm vụ: Nhìn bản gốc tiếng Trung và bản dịch nháp tiếng Việt, áp dụng 
+    Glossary để tinh chỉnh ra bản dịch tiếng Việt thuần Việt, tự nhiên và đúng thuật ngữ nhất.
+
+* Bước 3.6: Cơ chế chống lỗi và Xoay vòng Key (Key Rotation & Fallback)
+  - Nếu gặp lỗi giới hạn lượt gọi (HTTP 429 Rate Limit) hoặc hết dung lượng (Quota Limit):
+    + Nếu có nhiều API key: Hệ thống tự động đảo sang key khác và tiếp tục dịch ngay (sau 1.5s).
+    + Nếu tất cả các key đều bận: Chờ hết thời gian phạt (21s - 120s) rồi thử lại.
+  - Trường hợp LLM lỗi nghiêm trọng liên tục (lỗi nội dung nhạy cảm, lỗi API quá tải):
+    + Hệ thống tự động Fallback (dùng tạm bản dịch nháp của Google Translate) 
+      để đảm bảo tiến trình dịch chương không bao giờ bị dừng hoặc bị treo giữa chừng.
+
+---
+
+4. GIAI ĐOẠN 4: HẬU XỬ LÝ & ĐÓNG GÓI XUẤT BẢN (POST-PROCESSING & EXPORTER)
+================================================================================
+Mục tiêu: Định dạng lại văn bản dịch cho đẹp mắt và đóng gói thành file tải về.
+
+* Bước 4.1: Làm sạch bản dịch Việt (`clean_translated_vietnamese_text`):
+  - Xóa bỏ các ký tự trống thừa, sửa các lỗi khoảng trắng (ví dụ: khoảng trắng trước 
+    dấu câu, dấu câu dính liền chữ).
+  - Loại bỏ các cụm từ rác phát sinh từ câu lệnh hệ thống của AI.
+  - Chuẩn hóa các dấu ngoặc kép `""` hoặc `「」` theo chuẩn văn bản truyện Việt Nam.
+
+* Bước 4.2: Tự động lưu file văn bản đơn lẻ (TXT)
+  - Ngay sau khi dịch xong mỗi chương, hệ thống lưu ngay chương đó thành file văn bản:
+    `backend/output/<Tên truyện>/Chương XXXX - <Tiêu đề>.txt`
+  - Giúp người dùng có thể đọc ngay lập tức các chương đã hoàn thành mà không cần 
+    chờ dịch hết cả cuốn truyện.
+
+* Bước 4.3: Đóng gói toàn bộ sách (Novel Packager)
+  - Khi toàn bộ các chương trong danh sách yêu cầu dịch xong, hệ thống kích hoạt 
+    trình đóng gói sách (`backend/app/services/exporter/packager.py`) để tạo ra 3 định dạng:
+    1. EPUB (Định dạng sách điện tử chuẩn):
+       - Tổng hợp thông tin sách, ảnh bìa, tạo bảng mục lục động (Table of Contents).
+       - Sử dụng `ebooklib` để đóng gói các file chương thành cấu trúc EPUB tiêu chuẩn 
+         có thể đọc trực tiếp trên các ứng dụng như Apple Books, Moon+ Reader, Kindle.
+    2. DOCX (Tài liệu Word):
+       - Sử dụng `python-docx` để ghép toàn bộ các chương truyện thành một tài liệu Word.
+       - Định dạng lề văn bản, font chữ, kích cỡ tiêu đề chương rõ ràng, sạch sẽ.
+    3. TXT Full (File văn bản tổng hợp):
+       - Ghép toàn bộ các chương đã dịch thành một file `.txt` duy nhất từ đầu đến cuối.
+
+* Bước 4.4: Phục vụ tải xuống (Download)
+  - Các file đóng gói được đưa vào thư mục `backend/output` và được cấu hình tĩnh 
+    bởi FastAPI (`app.mount("/output", ...)`).
+  - Frontend sẽ nhận được đường dẫn tải xuống trực tiếp và hiển thị nút "Tải sách" 
+    (EPUB, DOCX, TXT) cho người dùng tải về thiết bị.
+================================================================================
