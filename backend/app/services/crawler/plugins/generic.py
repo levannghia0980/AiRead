@@ -1,12 +1,18 @@
 import re
+import asyncio
+import logging
 from urllib.parse import urljoin
 from typing import Dict, List, Any
 import httpx
 from bs4 import BeautifulSoup
 from app.services.crawler.base import BaseScraper
 
+logger = logging.getLogger(__name__)
+
 class GenericScraper(BaseScraper):
-    """Fallback generic scraper using general heuristic patterns."""
+    """Fallback generic scraper using general heuristic patterns.
+    Supports dynamic fallback using Playwright for JS-heavy/AJAX websites.
+    """
 
     HEADERS = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -17,15 +23,14 @@ class GenericScraper(BaseScraper):
         # Catch-all fallback
         return True
 
-    async def _fetch_html(self, url: str) -> str:
+    async def _fetch_html_static(self, url: str) -> str:
+        """Fetches static HTML using httpx."""
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
             response = await client.get(url, headers=self.HEADERS)
             if response.status_code != 200:
                 raise Exception(f"Failed to fetch {url} (Status: {response.status_code})")
             
-            # Simple encoding fallback
             try:
-                # Detect charset in content-type
                 content_type = response.headers.get("content-type", "").lower()
                 if "gbk" in content_type or "gb2312" in content_type:
                     response.encoding = "gbk"
@@ -38,10 +43,46 @@ class GenericScraper(BaseScraper):
                 
             return response.text
 
-    async def get_novel_metadata(self, url: str) -> Dict[str, Any]:
-        html = await self._fetch_html(url)
-        soup = BeautifulSoup(html, "lxml")
+    async def _fetch_html_playwright(self, url: str) -> str:
+        """Fetches fully rendered HTML using shared Playwright browser instance."""
+        from app.services.crawler.playwright_manager import playwright_manager
+        logger.info(f"🌐 Falling back to Playwright for dynamic page: {url}")
+        
+        browser = await playwright_manager.get_browser()
+        context = await browser.new_context(
+            user_agent=self.HEADERS["User-Agent"],
+            viewport={"width": 1280, "height": 800}
+        )
+        try:
+            page = await context.new_page()
+            # Navigate and wait for network to stabilize
+            await page.goto(url, timeout=30000, wait_until="networkidle")
+            # Wait extra 1.5 seconds for AJAX/JS to finish rendering content
+            await asyncio.sleep(1.5)
+            return await page.content()
+        finally:
+            await context.close()
 
+    async def get_novel_metadata(self, url: str) -> Dict[str, Any]:
+        html = await self._fetch_html_static(url)
+        soup = BeautifulSoup(html, "lxml")
+        
+        metadata = self._parse_metadata(soup, url)
+        
+        # Fallback to Playwright if no chapters could be parsed (usually JS-rendered catalog)
+        if not metadata["chapters"]:
+            logger.info("⚠️ No chapters found using static parser. Trying Playwright...")
+            try:
+                html = await self._fetch_html_playwright(url)
+                soup = BeautifulSoup(html, "lxml")
+                metadata = self._parse_metadata(soup, url)
+            except Exception as e:
+                logger.error(f"Playwright metadata fallback failed: {e}")
+                
+        return metadata
+
+    def _parse_metadata(self, soup: BeautifulSoup, url: str) -> Dict[str, Any]:
+        """Parses novel metadata from a BeautifulSoup tree."""
         # Heuristic title detection
         title_el = soup.select_one("h1, .novel-title, .title, meta[property='og:title']")
         if title_el:
@@ -86,20 +127,16 @@ class GenericScraper(BaseScraper):
         chapters = []
         links = soup.find_all("a", href=True)
         idx = 1
-        
         seen_urls = set()
         
         for link in links:
             href = link["href"]
             text = link.text.strip()
             
-            # Simple heuristics for chapter URLs (contains digit, chapter, sections)
             is_ch_link = False
-            # e.g., contains 'chapter' or numbers that are not part of main domains
             href_lower = href.lower()
             text_lower = text.lower()
             
-            # Look for indicators of chapter link in text or url
             if any(term in text_lower for term in ["chương", "chapter", "第", "章"]):
                 is_ch_link = True
             elif re.search(r"/\d+/\d+(\.html?)?$", href_lower) or re.search(r"/\d+(\.html?)?$", href_lower):
@@ -126,19 +163,47 @@ class GenericScraper(BaseScraper):
         }
 
     async def get_chapter_content(self, url: str) -> str:
-        html = await self._fetch_html(url)
+        html = await self._fetch_html_static(url)
         soup = BeautifulSoup(html, "lxml")
+        
+        content = self._parse_chapter_content(soup)
+        
+        # Fallback to Playwright if no content or too short (typically AJAX/JS loading)
+        if not content or len(content.strip()) < 150:
+            logger.info(f"⚠️ Chapter content too short ({len(content) if content else 0} chars) using static parser. Trying Playwright...")
+            try:
+                html = await self._fetch_html_playwright(url)
+                soup = BeautifulSoup(html, "lxml")
+                content = self._parse_chapter_content(soup)
+            except Exception as e:
+                logger.error(f"Playwright chapter fallback failed: {e}")
+                
+        if not content or len(content.strip()) < 100:
+            raise Exception("Failed to locate any valid chapter content on the page (both HTTP and Playwright failed).")
+            
+        return content
 
-        # Heuristic content extraction
-        # Try common containers
-        content_el = soup.select_one("#content, .content, article, .chapter-content, #chapter-content, #book-content")
+    def _parse_chapter_content(self, soup: BeautifulSoup) -> str:
+        """Heuristic content extraction from a BeautifulSoup tree."""
+        # Expanded common containers to include AJAX-based classes/ids
+        selectors = [
+            "#content", ".content", "article", ".chapter-content", 
+            "#chapter-content", "#book-content", "#chaptercontent", 
+            ".Readarea", ".ReadAjax_content", "#read-content"
+        ]
+        
+        content_el = None
+        for sel in selectors:
+            content_el = soup.select_one(sel)
+            if content_el and len(content_el.text.strip()) > 100:
+                break
+                
         if not content_el:
             # Fallback: find the div with the most text density
             divs = soup.find_all("div")
             best_div = None
             max_len = 0
             for d in divs:
-                # Exclude header/footer
                 if any(cls in (d.get("class") or []) for cls in ["header", "footer", "nav", "comments"]):
                     continue
                 d_len = len(d.text.strip())
@@ -148,7 +213,7 @@ class GenericScraper(BaseScraper):
             content_el = best_div
 
         if not content_el:
-            raise Exception("Failed to locate chapter content text on the page.")
+            return ""
 
         # Clean tags
         for tag in content_el.select("script, style, iframe, .ad, .ads, a, button"):
