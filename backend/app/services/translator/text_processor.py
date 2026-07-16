@@ -326,24 +326,54 @@ for zh_word, vi_trans in SENSITIVE_LEXICON.items():
         _COMPILE_CENSOR_PATTERNS.append((re.compile(re.escape(zh_word), re.IGNORECASE), vi_trans))
 
 
+def _strip_watermark_paragraphs(paragraphs: List[str], min_len: int = 10, min_repeat: int = 2) -> List[str]:
+    """
+    Phát hiện và xóa các đoạn văn bản watermark chống cào.
+    
+    Watermark web thường là cùng 1 câu/đoạn được chèn vào nhiều vị trí
+    KHÔNG liên tiếp trong chương. Thuật toán: đếm số lần xuất hiện
+    của mỗi đoạn, nếu xuất hiện >= min_repeat lần thì xóa tất cả.
+    
+    Args:
+        paragraphs: Danh sách các đoạn/dòng đã qua xử lý sơ bộ
+        min_len: Chiều dài tối thiểu của đoạn để xét (bỏ qua dòng quá ngắn)
+        min_repeat: Số lần lặp tối thiểu để coi là watermark (mặc định 2)
+    """
+    if len(paragraphs) < 5:
+        return paragraphs
+    
+    # Đếm tần suất xuất hiện của mỗi dòng
+    line_counts: Dict[str, int] = {}
+    for p in paragraphs:
+        if len(p) >= min_len:
+            line_counts[p] = line_counts.get(p, 0) + 1
+    
+    # Tập hợp các dòng watermark (xuất hiện >= min_repeat lần)
+    watermark_lines = {line for line, count in line_counts.items() if count >= min_repeat}
+    
+    if watermark_lines:
+        for wm in watermark_lines:
+            sample = wm[:60] + "..." if len(wm) > 60 else wm
+            logger.info(f"🚫 Phát hiện watermark (lặp {line_counts[wm]} lần), đã xóa: \"{sample}\"")
+    
+    # Trả về danh sách đã lọc bỏ watermark
+    return [p for p in paragraphs if p not in watermark_lines]
+
+
 def preprocess_chinese_text(raw_text: str) -> str:
     """
     Tiền xử lý văn bản tiếng Trung thô trước khi dịch.
     
-    Bước 0: Quét thông minh và dịch trực tiếp các cụm từ nhạy cảm để bypass Censor
     Bước 1: Chuẩn hóa ký tự đặc biệt (fullwidth, BOM, zero-width)
     Bước 2: Xóa quảng cáo, watermark, link website
     Bước 3: Xóa dòng chỉ chứa tên trang truyện
     Bước 4: Loại bỏ dòng trùng lặp liên tiếp
-    Bước 5: Chuẩn hóa khoảng trắng và xuống dòng
+    Bước 5: Xóa watermark chống cào (câu lặp không liên tiếp)
+    Bước 6: Chuẩn hóa khoảng trắng và xuống dòng
     """
     if not raw_text:
         return ""
 
-    # Bước 0: Censor Bypass (thay thế trực tiếp từ nhạy cảm sang tiếng Việt)
-    for pattern, vi_trans in _COMPILE_CENSOR_PATTERNS:
-        raw_text = pattern.sub(vi_trans, raw_text)
-        
     # Bước 1: Chuẩn hóa ký tự unicode đặc biệt
     for old, new in CHINESE_PUNCTUATION_MAP.items():
         raw_text = raw_text.replace(old, new)
@@ -380,7 +410,10 @@ def preprocess_chinese_text(raw_text: str) -> str:
         
         cleaned_lines.append(line)
     
-    # Bước 5: Chuẩn hóa khoảng trắng
+    # Bước 5: Xóa watermark chống cào (câu lặp không liên tiếp xuyên suốt chương)
+    cleaned_lines = _strip_watermark_paragraphs(cleaned_lines, min_len=10, min_repeat=2)
+    
+    # Bước 6: Chuẩn hóa khoảng trắng
     text = "\n\n".join(cleaned_lines)
     text = re.sub(r"\n{3,}", "\n\n", text)
     
@@ -430,6 +463,15 @@ def build_glossary_context(text: str, glossaries: list) -> Tuple[str, Dict[str, 
 # ---- Bảng thay thế lỗi dịch máy phổ biến (machine translation artifacts) ----
 # Key: regex pattern (case insensitive), Value: replacement
 MACHINE_TRANSLATION_FIXES = [
+    # Lỗi từ nóng / nhạy cảm / địa danh sai do dịch tự động hoặc AI dịch sượng
+    (r"(?:xoát|xoạt) tồn tại cảm", "tìm cảm giác tồn tại"),
+    (r"khoáng cổ thước kim", "vô tiền khoáng hậu"),
+    (r"nước sữa hòa nhau", "hòa quyện hoàn hảo"),
+    (r"nước sữa hòa quyện", "hòa quyện hoàn hảo"),
+    (r"\bXu Xiaoxu\b", "Từ Tiểu Thụ"),
+    (r"\bXu Xiaoshou\b", "Từ Tiểu Thụ"),
+    (r"\bBlack Skyfall\b", "Hắc Lạc Nhai"),
+
     # Lỗi dịch nghĩa đen (literal translation artifacts)
     (r"ăn một (?:cái )?kinh ngạc", "giật mình"),
     (r"ăn một (?:cái )?kinh hãi", "giật mình kinh hãi"),
@@ -496,10 +538,51 @@ QUOTE_NORMALIZATION = [
 ]
 
 
-def postprocess_translated_text(
+def _strip_translated_watermarks(translated: str) -> str:
+    """
+    Xóa watermark trong bản dịch tiếng Việt.
+    
+    Phát hiện các câu/đoạn dịch bị lặp lại >= 2 lần ở các vị trí
+    không liên tiếp trong văn bản. Đây thường là do watermark gốc
+    tiếng Trung bị dịch ra cùng một câu tiếng Việt (hoặc tiếng Anh).
+    """
+    if not translated or len(translated) < 100:
+        return translated
+    
+    # Tách thành các đoạn bằng xuống dòng
+    paragraphs = [p.strip() for p in translated.split("\n") if p.strip()]
+    
+    if len(paragraphs) < 5:
+        return translated
+    
+    # Đếm tần suất xuất hiện của mỗi đoạn (chỉ xét đoạn đủ dài)
+    para_counts: Dict[str, int] = {}
+    for p in paragraphs:
+        # Bỏ qua đoạn quá ngắn hoặc chỉ có dấu câu
+        if len(p) > 20:
+            para_counts[p] = para_counts.get(p, 0) + 1
+    
+    # Tìm các đoạn watermark (lặp >= 2 lần)
+    watermark_paras = {p for p, count in para_counts.items() if count >= 2}
+    
+    if not watermark_paras:
+        return translated
+    
+    for wm in watermark_paras:
+        sample = wm[:80] + "..." if len(wm) > 80 else wm
+        logger.info(f"🚫 Xóa watermark dịch (lặp {para_counts[wm]} lần): \"{sample}\"")
+    
+    # Lọc bỏ các đoạn watermark
+    filtered = [p for p in paragraphs if p not in watermark_paras]
+    
+    return "\n\n".join(filtered)
+
+
+async def postprocess_translated_text(
     translated: str,
     glossary_map: Dict[str, str],
-    raw_chinese: str = ""
+    raw_chinese: str = "",
+    client = None
 ) -> str:
     """
     Hậu xử lý bản dịch tiếng Việt sau khi nhận từ AI.
@@ -512,6 +595,9 @@ def postprocess_translated_text(
     """
     if not translated:
         return ""
+    
+    # ---- Bước 0: Xóa watermark trong bản dịch (câu lặp không liên tiếp) ----
+    translated = _strip_translated_watermarks(translated)
     
     # ---- Bước 1: Chuẩn hóa dấu ngoặc kép ----
     for old, new in QUOTE_NORMALIZATION:
@@ -567,7 +653,7 @@ def postprocess_translated_text(
     translated = re.sub(r"\n{3,}", "\n\n", translated)
     
     # ---- Bước 6: Tự động dọn dẹp các cụm chữ Hán sót lại (Bypass Censor Fallback) ----
-    translated = resolve_remaining_chinese_chars(translated)
+    translated = await resolve_remaining_chinese_chars(translated, raw_chinese, glossary_map, client=client)
     
     return translated.strip()
 
@@ -779,9 +865,14 @@ def quality_check(translated: str, raw_chinese: str, glossary_map: Dict[str, str
 # ==============================================================================
 
 def translate_chinese_phrase_fallback(text: str) -> str:
-    """Dịch nhanh một cụm từ tiếng Trung bằng Google Translate API (đồng bộ, không cần async)."""
+    """Dịch nhanh một cụm từ tiếng Trung bằng Google Translate API (đồng bộ).
+    Nếu Google Translate bị rate limit (429), tự động chuyển sang MyMemory API làm dự phòng.
+    Nếu cả hai đều thất bại, sử dụng từ điển Hán-Việt offline (hanviet_data.py) để dịch hoàn toàn offline.
+    """
     if not text.strip():
         return ""
+        
+    # ── PHƯƠNG ÁN 1: GOOGLE TRANSLATE ──
     try:
         url = "https://translate.googleapis.com/translate_a/single"
         params = {
@@ -796,7 +887,7 @@ def translate_chinese_phrase_fallback(text: str) -> str:
             f"{url}?{query_string}",
             headers={"User-Agent": "Mozilla/5.0"}
         )
-        with urllib.request.urlopen(req, timeout=5.0) as response:
+        with urllib.request.urlopen(req, timeout=4.0) as response:
             data = json.loads(response.read().decode("utf-8"))
             translations = []
             if data and isinstance(data, list) and len(data) > 0 and data[0]:
@@ -806,50 +897,177 @@ def translate_chinese_phrase_fallback(text: str) -> str:
             if translations:
                 return "".join(translations)
     except Exception as e:
-        logger.warning(f"Dịch cụm từ fallback '{text}' thất bại: {e}")
+        logger.warning(f"Google Translate fallback cho '{text}' thất bại: {e}. Thử MyMemory...")
+
+    # ── PHƯƠNG ÁN 2: MYMEMORY API (Keyless fallback) ──
+    try:
+        url = "https://api.mymemory.translated.net/get"
+        params = {
+            "q": text,
+            "langpair": "zh|vi"
+        }
+        query_string = urllib.parse.urlencode(params)
+        req = urllib.request.Request(
+            f"{url}?{query_string}",
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urllib.request.urlopen(req, timeout=4.0) as response:
+            res_data = json.loads(response.read().decode("utf-8"))
+            translation = res_data.get("responseData", {}).get("translatedText", "")
+            if translation and translation.strip() and translation != text:
+                logger.info(f"✅ MyMemory giải cứu thành công cụm '{text}' -> '{translation}'")
+                return translation
+    except Exception as e:
+        logger.warning(f"MyMemory fallback cho '{text}' thất bại: {e}. Sử dụng từ điển Hán-Việt offline...")
+
+    # ── PHƯƠNG ÁN 3: TỪ ĐIỂN HÁN-VIỆT OFFLINE (Tối hậu thư - 100% thành công) ──
+    try:
+        from app.services.translator.hanviet_data import convert_to_hanviet
+        hv_trans = convert_to_hanviet(text)
+        if hv_trans and hv_trans != text:
+            logger.info(f"💾 Hán-Việt offline giải cứu thành công cụm '{text}' -> '{hv_trans}'")
+            return hv_trans
+    except Exception as e:
+        logger.warning(f"Lỗi nạp từ điển Hán-Việt: {e}")
+
     return text
 
 
-def resolve_remaining_chinese_chars(translated: str) -> str:
+def to_html_entities(text: str) -> str:
+    """Chuyển đổi văn bản sang HTML decimal entities để bypass regex kiểm tra chữ Trung Quốc."""
+    return "".join(f"&#{ord(c)};" for c in text)
+
+
+async def resolve_remaining_chinese_chars(translated: str, raw_chinese: str = "", glossary_map: Dict[str, str] = None, client = None) -> str:
     """
     Tìm mọi cụm chữ Hán còn sót lại trong bản dịch tiếng Việt, dịch nóng chúng
-    bằng Google Translate hoặc các nguồn khác và thay thế lại vào bản dịch.
+    bằng AI (Gemini) hoặc các nguồn khác và thay thế lại vào bản dịch.
     
-    Điều này giúp bảo vệ bản dịch không bị lỗi "còn chữ Trung Quốc"
-    và giữ nguyên 99.9% bản dịch chất lượng cao của AI mà không cần dịch lại.
+    Đặc biệt: Nếu câu chứa chữ Hán đó khớp với dòng gốc tiếng Trung,
+    ta tiến hành dịch lại CẢ CÂU/DÒNG để đảm bảo văn phong mượt mà nhất.
     """
     if not translated:
         return ""
+
+    # 1. Quét qua toàn bộ các mẫu từ nhạy cảm (Censor Patterns) và dịch trước
+    for pattern, vi_trans in _COMPILE_CENSOR_PATTERNS:
+        # Thay thế và bọc bằng thẻ span để frontend tô màu
+        # Dùng lambda hoặc hàm thay thế để có thể chèn đúng từ gốc vào title tooltip dưới dạng HTML Entity
+        def _replace_censor(m):
+            orig = m.group(0).strip()
+            entity_orig = to_html_entities(orig)
+            return f' <span class="censor-word" title="Từ gốc nhạy cảm: {entity_orig}">{vi_trans.strip()}</span> '
+        translated = pattern.sub(_replace_censor, translated)
         
-    # Regex tìm các cụm từ tiếng Trung Quốc liên tiếp
-    # Bao gồm các khối chữ Hán cơ bản và mở rộng
-    chinese_re = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3001-\u303f]+")
+    # 2. Xử lý các dòng có chứa chữ Trung Quốc còn sót lại bằng cách dịch cả dòng
+    chinese_re = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]")
     
-    matches = chinese_re.findall(translated)
-    if not matches:
-        return translated
+    if chinese_re.search(translated):
+        vi_lines = translated.split("\n")
+        zh_lines = [line.strip() for line in raw_chinese.split("\n") if line.strip()] if raw_chinese else []
         
-    # Lấy các phần tử duy nhất và sắp xếp giảm dần theo độ dài để tránh thay thế đè cụm từ ngắn
-    unique_matches = sorted(list(set(matches)), key=len, reverse=True)
-    
-    logger.info(f"🔍 Hậu xử lý: Phát hiện {len(unique_matches)} cụm chữ Hán sót lại: {unique_matches}")
-    
-    for zh_phrase in unique_matches:
-        # 1. Kiểm tra xem có trong SENSITIVE_LEXICON hay không
-        vi_trans = SENSITIVE_LEXICON.get(zh_phrase, None)
-        
-        # 2. Nếu không có, dịch nóng bằng Google Translate
-        if not vi_trans:
-            vi_trans = translate_chinese_phrase_fallback(zh_phrase)
+        for idx, vi_line in enumerate(vi_lines):
+            if chinese_re.search(vi_line):
+                # Tìm chữ Hán trong dòng vi_line
+                all_zh_chars = "".join(chinese_re.findall(vi_line))
+                
+                # Tìm dòng tiếng Trung gốc tương ứng
+                matched_zh_line = ""
+                if zh_lines and all_zh_chars.strip():
+                    # 1. Tìm khớp chuỗi con liên tục (chính xác cao nhất)
+                    for zh_line in zh_lines:
+                        if all_zh_chars in zh_line:
+                            matched_zh_line = zh_line
+                            break
+                    
+                    # 2. Nếu không khớp chuỗi con liên tục, tìm dòng có tỷ lệ trùng khớp cao nhất (tránh các từ cực ngắn)
+                    if not matched_zh_line and len(all_zh_chars) >= 3:
+                        best_match = None
+                        best_ratio = 0.0
+                        for zh_line in zh_lines:
+                            match_count = sum(1 for c in all_zh_chars if c in zh_line)
+                            ratio = match_count / len(all_zh_chars)
+                            if match_count >= 3 and ratio >= 0.7:
+                                if ratio > best_ratio:
+                                    best_ratio = ratio
+                                    best_match = zh_line
+                        if best_match:
+                            matched_zh_line = best_match
+                            
+                # Nếu tìm thấy dòng gốc tương ứng, ta tiến hành dịch cả dòng gốc
+                if matched_zh_line:
+                    logger.info(f"🔍 Hậu xử lý: Dịch lại CẢ CÂU từ dòng gốc bằng AI: '{matched_zh_line}'")
+                    translated_line = ""
+                    if client:
+                        try:
+                            # Prompt dịch câu đơn lẻ chất lượng cao bằng AI
+                            sys_prompt = "Bạn là một dịch giả Hán-Việt chuyên nghiệp, hãy dịch câu tiếng Trung sau sang tiếng Việt trôi chảy, mượt mà và tự nhiên nhất theo văn phong tiểu thuyết mạng. Trả về DUY NHẤT câu dịch tiếng Việt, không kèm giải thích hay ghi chú gì thêm."
+                            prompt = f"Dịch câu tiếng Trung sau sang tiếng Việt:\nBản gốc: {matched_zh_line}\nBản dịch tiếng Việt:"
+                            res = await client.translate(prompt, sys_prompt)
+                            translated_line = res.get("text", "").strip()
+                        except Exception as e:
+                            logger.error(f"⚠️ Dịch câu bằng AI thất bại: {e}. Fallback sang Google Translate...")
+                    
+                    if not translated_line:
+                        translated_line = translate_chinese_phrase_fallback(matched_zh_line)
+
+                    if translated_line and translated_line != matched_zh_line:
+                        # Áp dụng Ép Glossary bắt buộc cho câu vừa dịch lại này!
+                        if glossary_map:
+                            translated_line = _enforce_glossary(translated_line, glossary_map, raw_chinese=matched_zh_line)
+                        
+                        entity_zh = to_html_entities(matched_zh_line)
+                        vi_lines[idx] = f'<span class="fallback-line" title="Dịch lại từ gốc: {entity_zh}">{translated_line.strip()}</span>'
+                        logger.info(f"🔄 Đã dịch lại cả câu thành công: '{vi_line}' -> '{translated_line}'")
+                        continue
+                
+                # Nếu không tìm thấy dòng gốc, fallback về dịch cụm từ đơn lẻ
+                matches = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3001-\u303f]+").findall(vi_line)
+                if matches:
+                    unique_matches = sorted(list(set(matches)), key=len, reverse=True)
+                    for zh_phrase in unique_matches:
+                        vi_trans = ""
+                        if client:
+                            try:
+                                sys_prompt = "Bạn là dịch giả Hán-Việt. Hãy dịch cụm từ hoặc tên riêng tiếng Trung sau sang tiếng Việt trôi chảy. Trả về DUY NHẤT từ/cụm từ tiếng Việt, không giải thích."
+                                prompt = f"Dịch cụm từ sau: {zh_phrase}"
+                                res = await client.translate(prompt, sys_prompt)
+                                vi_trans = res.get("text", "").strip()
+                            except Exception:
+                                pass
+                        
+                        if not vi_trans:
+                            vi_trans = SENSITIVE_LEXICON.get(zh_phrase, None)
+                            if not vi_trans:
+                                vi_trans = translate_chinese_phrase_fallback(zh_phrase)
+                                
+                        if vi_trans and vi_trans != zh_phrase:
+                            entity_zh = to_html_entities(zh_phrase)
+                            span_html = f'<span class="fallback-word" title="Dịch nhanh từ gốc: {entity_zh}">{vi_trans.strip()}</span>'
+                            vi_line = vi_line.replace(zh_phrase, f" {span_html} ")
+                    
+                    # Áp dụng Ép Glossary bắt buộc cho dòng này đề phòng có tên riêng bị dịch sai
+                    if glossary_map:
+                        vi_line = _enforce_glossary(vi_line, glossary_map, raw_chinese=matched_zh_line or raw_chinese)
+                        
+                    vi_lines[idx] = vi_line
+
+        translated = "\n".join(vi_lines)
             
-        if vi_trans and vi_trans != zh_phrase:
-            # Thay thế cụm chữ Hán bằng bản dịch tiếng Việt tương ứng
-            translated = translated.replace(zh_phrase, f" {vi_trans.strip()} ")
-            logger.info(f"🔄 Đã sửa cụm chữ Hán: '{zh_phrase}' -> '{vi_trans}'")
-            
+    # 3. Nếu dòng chứa censor-word, ta tiến hành bọc cả dòng bằng censor-line để tô màu cả câu/dòng
+    vi_lines = translated.split("\n")
+    for idx, vi_line in enumerate(vi_lines):
+        if 'class="censor-word"' in vi_line and 'class="censor-line"' not in vi_line:
+            # Lấy title từ censor-word đầu tiên để gán cho dòng (nếu có)
+            title_match = re.search(r'title="([^"]+)"', vi_line)
+            title_attr = f' {title_match.group(0)}' if title_match else ''
+            vi_lines[idx] = f'<span class="censor-line"{title_attr}>{vi_line}</span>'
+    translated = "\n".join(vi_lines)
+
     # Dọn dẹp khoảng trắng thừa do việc chèn từ tạo ra
     translated = re.sub(r" {2,}", " ", translated)
     return translated.strip()
+
 
 
 

@@ -8,6 +8,17 @@ from app.models.models import Novel, Chapter
 # Conditional import helpers for docx and ebooklib to prevent crashes if they are not fully setup
 import re
 
+import html
+
+def strip_html_tags(text: str) -> str:
+    if not text:
+        return ""
+    # Remove HTML tags while preserving the inner content
+    clean = re.sub(r'<[^>]+>', '', text)
+    # Unescape HTML entities (e.g. &#20570; -> 做)
+    clean = html.unescape(clean)
+    return clean
+
 def save_txt_file(filepath: str, title: str, author: str, chapters: List[Chapter]):
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(f"TÊN TRUYỆN: {title}\n")
@@ -17,7 +28,7 @@ def save_txt_file(filepath: str, title: str, author: str, chapters: List[Chapter
         for ch in chapters:
             f.write(f"{ch.title}\n")
             f.write("-" * len(ch.title) + "\n\n")
-            f.write(ch.translated_text or "")
+            f.write(strip_html_tags(ch.translated_text or ""))
             f.write("\n\n" + "=" * 40 + "\n\n")
 
 def clean_chapter_text(text: str, title: str) -> str:
@@ -63,6 +74,7 @@ def save_txt_clean_file(filepath: str, title: str, author: str, chapters: List[C
         
         for ch in chapters:
             cleaned_body = clean_chapter_text(ch.translated_text or "", ch.title)
+            cleaned_body = strip_html_tags(cleaned_body)
             if cleaned_body:
                 f.write(cleaned_body)
                 f.write("\n\n")
@@ -112,6 +124,26 @@ def save_html_file(filepath: str, title: str, author: str, chapters: List[Chapte
             color: #ccc;
             font-size: 1.5em;
         }}
+        .fallback-word {
+            color: #d97706;
+            font-weight: bold;
+            border-bottom: 1px dashed rgba(217, 119, 6, 0.6);
+            background-color: rgba(217, 119, 6, 0.05);
+        }
+        .censor-word {
+            color: #e11d48;
+            font-weight: bold;
+            border-bottom: 1px dashed rgba(225, 29, 72, 0.6);
+            background-color: rgba(225, 29, 72, 0.05);
+        }
+        .fallback-line {
+            border-bottom: 1px dotted rgba(0, 180, 216, 0.4);
+            background-color: rgba(0, 180, 216, 0.02);
+        }
+        .censor-line {
+            border-bottom: 1px dotted rgba(225, 29, 72, 0.4);
+            background-color: rgba(225, 29, 72, 0.02);
+        }
     </style>
 </head>
 <body>
@@ -158,7 +190,7 @@ def save_docx_file(filepath: str, title: str, author: str, chapters: List[Chapte
     
     for ch in chapters:
         doc.add_heading(ch.title, level=1)
-        text = ch.translated_text or ""
+        text = strip_html_tags(ch.translated_text or "")
         paragraphs = text.split("\n\n")
         for para in paragraphs:
             if para.strip():
@@ -194,6 +226,22 @@ def save_epub_file(filepath: str, title: str, author: str, chapters: List[Chapte
             text-indent: 1em;
             margin-bottom: 0.5em;
             text-align: justify;
+        }
+        .fallback-word {
+            color: #d97706;
+            font-weight: bold;
+            border-bottom: 1px dashed rgba(217, 119, 6, 0.6);
+        }
+        .censor-word {
+            color: #e11d48;
+            font-weight: bold;
+            border-bottom: 1px dashed rgba(225, 29, 72, 0.6);
+        }
+        .fallback-line {
+            border-bottom: 1px dotted rgba(0, 180, 216, 0.4);
+        }
+        .censor-line {
+            border-bottom: 1px dotted rgba(225, 29, 72, 0.4);
         }
     """
     default_css = epub.EpubItem(

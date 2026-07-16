@@ -421,10 +421,11 @@ class TranslationJobManager:
                         filename = f"Chương {chapter_no:04d} - {ch_title}.txt"
                         filepath = os.path.join(novel_folder, filename)
                         
+                        from app.services.exporter.packager import strip_html_tags
                         with open(filepath, "w", encoding="utf-8") as f:
                             f.write(f"{chapter_title}\n")
                             f.write("=" * 40 + "\n\n")
-                            f.write(translated_cleaned)
+                            f.write(strip_html_tags(translated_cleaned))
                         
                         self.add_log(f"💾 Đã lưu: {filename}")
                     except Exception as save_err:
@@ -491,13 +492,24 @@ class TranslationJobManager:
             except asyncio.CancelledError:
                 # Revert chapter status to PENDING so it can be picked up when resumed
                 self.add_log(f"🛑 Bị hủy trong lúc xử lý chương {chapter_no}", "warning")
-                async with async_session() as db:
-                    await db.execute(
-                        update(Chapter)
-                        .where(Chapter.id == chapter_id)
-                        .values(status="PENDING", error_msg="Bị hủy do tạm dừng")
-                    )
-                    await db.commit()
+                import random
+                for retry in range(5):
+                    try:
+                        async with async_session() as db:
+                            await db.execute(
+                                update(Chapter)
+                                .where(Chapter.id == chapter_id)
+                                .values(status="PENDING", error_msg="Bị hủy do tạm dừng")
+                            )
+                            await db.commit()
+                        break
+                    except Exception as e:
+                        if "locked" in str(e).lower() and retry < 4:
+                            # Random jittered sleep to let other concurrent transactions finish
+                            await asyncio.sleep(0.15 * (retry + 1) + random.random() * 0.1)
+                        else:
+                            logger.error(f"Revert status for chapter {chapter_no} failed: {e}")
+                            break
                 raise
 
 # Singleton manager

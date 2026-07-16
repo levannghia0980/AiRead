@@ -80,3 +80,70 @@
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 229, 255, 0.4);
 }
+
+/* Fallback & Censor Highlight Styles in Reader */
+.fallback-word {
+  color: #f59e0b; /* Amber/Orange */
+  font-weight: 600;
+  border-bottom: 1px dashed rgba(245, 158, 11, 0.6);
+  cursor: help;
+  padding: 0 2px;
+  border-radius: 2px;
+  background-color: rgba(245, 158, 11, 0.05);
+  transition: all 0.2s ease;
+}
+
+.fallback-word:hover {
+  background-color: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+}
+
+.censor-word {
+  color: #f43f5e; /* Rose/Red-Pink */
+  font-weight: 600;
+  border-bottom: 1px dashed rgba(244, 63, 94, 0.6);
+  cursor: help;
+  padding: 0 2px;
+  border-radius: 2px;
+  background-color: rgba(244, 63, 94, 0.05);
+  transition: all 0.2s ease;
+}
+
+.censor-word:hover {
+  background-color: rgba(244, 63, 94, 0.15);
+  color: #fb7185;
+}
+
+/* Re-translated Full Sentence Highlight Styles */
+.fallback-line {
+  border-bottom: 1px dotted rgba(0, 229, 255, 0.35); /* Soft Cyan Dotted Underline */
+  cursor: help;
+  padding: 0 1px;
+  border-radius: 3px;
+  background-color: rgba(0, 229, 255, 0.02);
+  transition: all 0.2s ease;
+  display: inline-block;
+  width: 100%;
+}
+
+.fallback-line:hover {
+  background-color: rgba(0, 229, 255, 0.08);
+  border-bottom-color: rgba(0, 229, 255, 0.7);
+}
+
+.censor-line {
+  border-bottom: 1px dotted rgba(244, 63, 94, 0.35); /* Soft Rose Dotted Underline */
+  cursor: help;
+  padding: 0 1px;
+  border-radius: 3px;
+  background-color: rgba(244, 63, 94, 0.02);
+  transition: all 0.2s ease;
+  display: inline-block;
+  width: 100%;
+}
+
+.censor-line:hover {
+  background-color: rgba(244, 63, 94, 0.08);
+  border-bottom-color: rgba(244, 63, 94, 0.7);
+}
+

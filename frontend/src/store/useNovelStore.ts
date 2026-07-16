@@ -99,6 +99,7 @@ interface NovelStore {
   resetChapters: (novelId: number, chapterNos?: number[]) => Promise<void>
   saveToFolder: (novelId: number) => Promise<{ success: boolean; folder?: string; total_files?: number; folder_path?: string; message?: string }>
   fetchChapterText: (novelId: number, chapterNo: number) => Promise<{ chapter_no: number; title: string; translated_text: string; raw_text: string } | null>
+  updateChapterText: (novelId: number, chapterNo: number, text: string) => Promise<boolean>
   checkQuality: (novelId: number) => Promise<{ total_chapters: number; bad_count: number; bad_chapters: Array<{ chapter_no: number; title: string; status: string; issues: string[] }> }>
   downloadNovel: (novelId: number, fmt: 'txt' | 'docx') => Promise<void>
 
@@ -155,9 +156,9 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
     })
     // Tự động lưu vào backend .env (debounced 800ms)
     clearTimeout((window as any)._saveSettingsTimer)
-    ;(window as any)._saveSettingsTimer = setTimeout(() => {
-      get().saveSettingsToEnv(settings as any)
-    }, 800)
+      ; (window as any)._saveSettingsTimer = setTimeout(() => {
+        get().saveSettingsToEnv(settings as any)
+      }, 800)
   },
 
   saveSettingsToEnv: async (settings) => {
@@ -410,6 +411,19 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
       return null
     } catch {
       return null
+    }
+  },
+
+  updateChapterText: async (novelId, chapterNo, text) => {
+    try {
+      const res = await fetch(`/api/novels/${novelId}/chapters/${chapterNo}/text`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ translated_text: text })
+      })
+      return res.ok
+    } catch {
+      return false
     }
   },
 

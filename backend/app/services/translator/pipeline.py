@@ -332,9 +332,25 @@ class TranslationPipeline:
                     if not polished:
                         raise Exception("AI returned empty (no sys instruction)")
                 except Exception as second_err:
-                    logger.error(f"⚠️ Chunk {i} thất bại hoàn toàn: {second_err}. Dùng Google Translate làm fallback...")
-                    draft = await self._get_draft_translation(chunk_raw)
-                    polished = draft if draft else chunk_raw
+                    logger.warning(f"⚠️ Chunk {i} vẫn bị AI chặn. Giải cứu bằng Censor Bypass và dịch lại bằng AI...")
+                    try:
+                        from app.services.translator.text_processor import _COMPILE_CENSOR_PATTERNS
+                        masked_chunk_raw = chunk_raw
+                        for pattern, vi_trans in _COMPILE_CENSOR_PATTERNS:
+                            masked_chunk_raw = pattern.sub(vi_trans, masked_chunk_raw)
+                        
+                        # Dựng lại prompt với văn bản tiếng Trung đã được bypass
+                        masked_prompt = prompt.replace(chunk_raw, masked_chunk_raw)
+                        
+                        res = await self.client.translate(masked_prompt, "")
+                        polished = res.get("text", "").strip()
+                        if not polished:
+                            raise Exception("AI returned empty on masked attempt")
+                        logger.info(f"🎉 Giải cứu thành công Chunk {i} bằng AI chất lượng cao!")
+                    except Exception as third_err:
+                        logger.error(f"⚠️ Giải cứu bằng AI thất bại: {third_err}. Dùng Google Translate làm fallback...")
+                        draft = await self._get_draft_translation(chunk_raw)
+                        polished = draft if draft else chunk_raw
             except Exception as err:
                 logger.error(f"AI error on Chunk {i}: {err}")
                 if attempt < max_retries - 1:
@@ -344,7 +360,7 @@ class TranslationPipeline:
                     raise err
 
             # 5. Hậu xử lý
-            final_text = postprocess_translated_text(polished, glossary_map, raw_chinese=chunk_raw)
+            final_text = await postprocess_translated_text(polished, glossary_map, raw_chinese=chunk_raw, client=self.client)
 
             # 6. Kiểm tra chữ Trung sót → retry
             if self._has_chinese_chars(final_text):
