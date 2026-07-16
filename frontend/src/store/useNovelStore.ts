@@ -69,7 +69,7 @@ interface NovelStore {
   progress: ProgressData | null
   packagedResult: PackagedResult | null
 
-  // Settings (Persisted in localStorage)
+  // Settings (Persisted in localStorage + backend .env)
   provider: string
   model: string
   apiKeys: string
@@ -80,6 +80,8 @@ interface NovelStore {
   endChapter: number | null
 
   setSettings: (settings: { provider?: string; model?: string; apiKeys?: string; customPrompt?: string; delay?: number; concurrency?: number; startChapter?: number | null; endChapter?: number | null }) => void
+  saveSettingsToEnv: (settings?: { provider?: string; model?: string; apiKeys?: string; customPrompt?: string; delay?: number; concurrency?: number }) => Promise<void>
+  loadSettingsFromEnv: () => Promise<void>
   testApiKey: () => Promise<{ success: boolean; message: string }>
 
   fetchNovels: () => Promise<void>
@@ -97,6 +99,8 @@ interface NovelStore {
   resetChapters: (novelId: number, chapterNos?: number[]) => Promise<void>
   saveToFolder: (novelId: number) => Promise<{ success: boolean; folder?: string; total_files?: number; folder_path?: string; message?: string }>
   fetchChapterText: (novelId: number, chapterNo: number) => Promise<{ chapter_no: number; title: string; translated_text: string; raw_text: string } | null>
+  checkQuality: (novelId: number) => Promise<{ total_chapters: number; bad_count: number; bad_chapters: Array<{ chapter_no: number; title: string; status: string; issues: string[] }> }>
+  downloadNovel: (novelId: number, fmt: 'txt' | 'docx') => Promise<void>
 
   addLog: (log: LogEntry) => void
   setLogs: (logs: LogEntry[]) => void
@@ -149,6 +153,74 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
       if (settings.concurrency !== undefined) localStorage.setItem('airead_concurrency', settings.concurrency.toString())
       return newState
     })
+    // Tự động lưu vào backend .env (debounced 800ms)
+    clearTimeout((window as any)._saveSettingsTimer)
+    ;(window as any)._saveSettingsTimer = setTimeout(() => {
+      get().saveSettingsToEnv(settings as any)
+    }, 800)
+  },
+
+  saveSettingsToEnv: async (settings) => {
+    try {
+      const state = get()
+      const payload: Record<string, any> = {}
+      const src = settings ?? state
+      if ('apiKeys' in src && src.apiKeys !== undefined) payload.api_keys = src.apiKeys
+      if ('provider' in src && src.provider !== undefined) payload.provider = src.provider
+      if ('model' in src && src.model !== undefined) payload.model = src.model
+      if ('concurrency' in src && src.concurrency !== undefined) payload.concurrency = src.concurrency
+      if ('delay' in src && src.delay !== undefined) payload.delay = src.delay
+      if ('customPrompt' in src && src.customPrompt !== undefined) payload.custom_prompt = src.customPrompt
+      if (Object.keys(payload).length === 0) return
+      await fetch('/api/settings/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+    } catch (e) {
+      console.warn('Không thể lưu settings vào .env backend:', e)
+    }
+  },
+
+  loadSettingsFromEnv: async () => {
+    try {
+      const res = await fetch('/api/settings')
+      if (!res.ok) return
+      const data = await res.json()
+      // Backend .env có key hợp lệ → ưu tiên hơn localStorage
+      if (data.api_keys && data.api_keys.trim()) {
+        set((state) => {
+          const updates: Partial<NovelStore> = {}
+          if (data.api_keys) {
+            updates.apiKeys = data.api_keys
+            localStorage.setItem('airead_api_keys', data.api_keys)
+          }
+          if (data.provider) {
+            updates.provider = data.provider
+            localStorage.setItem('airead_provider', data.provider)
+          }
+          if (data.model) {
+            updates.model = data.model
+            localStorage.setItem('airead_model', data.model)
+          }
+          if (data.concurrency) {
+            updates.concurrency = data.concurrency
+            localStorage.setItem('airead_concurrency', String(data.concurrency))
+          }
+          if (data.delay) {
+            updates.delay = data.delay
+            localStorage.setItem('airead_delay', String(data.delay))
+          }
+          if (data.custom_prompt) {
+            updates.customPrompt = data.custom_prompt
+            localStorage.setItem('airead_custom_prompt', data.custom_prompt)
+          }
+          return { ...state, ...updates }
+        })
+      }
+    } catch (e) {
+      console.warn('Không thể tải settings từ backend .env:', e)
+    }
   },
 
   testApiKey: async () => {
@@ -339,6 +411,36 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
     } catch {
       return null
     }
+  },
+
+  checkQuality: async (novelId) => {
+    const res = await fetch(`/api/novels/${novelId}/check-quality`)
+    if (!res.ok) {
+      const err = await res.json()
+      throw new Error(err.detail || 'Lỗi kiểm tra chất lượng')
+    }
+    return await res.json()
+  },
+
+  downloadNovel: async (novelId, fmt) => {
+    const url = `/api/novels/${novelId}/download?fmt=${fmt}`
+    const res = await fetch(url)
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Lỗi tải file' }))
+      throw new Error(err.detail || 'Lỗi tải file')
+    }
+    const blob = await res.blob()
+    const disposition = res.headers.get('Content-Disposition') || ''
+    const match = disposition.match(/filename="?([^"]+)"?/)
+    const filename = match ? match[1] : `novel.${fmt}`
+    const objUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = objUrl
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(objUrl)
   },
 
   addLog: (log) => set((state) => ({ logs: [...state.logs, log].slice(-500) })),

@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from app.core.database import init_db
 from app.api.novels import router as novels_router
 from app.api.translation import router as translation_router
+from app.api.settings import router as settings_router
 
 app = FastAPI(title="AiRead Novel Translator API v2")
 
@@ -35,11 +36,21 @@ app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")
 # Register routers
 app.include_router(novels_router)
 app.include_router(translation_router)
+app.include_router(settings_router)
 
 @app.on_event("startup")
 async def startup_event():
     """Initializes tables on server startup."""
     await init_db()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Closes shared Playwright browser on shutdown."""
+    from app.services.crawler.playwright_manager import playwright_manager
+    try:
+        await playwright_manager.close()
+    except Exception:
+        pass
 
 # Serve static frontend builds if dist folder exists
 FRONTEND_DIST = os.path.join(BASE_DIR, "frontend", "dist")

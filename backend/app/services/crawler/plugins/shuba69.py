@@ -87,7 +87,10 @@ class Shuba69Scraper(BaseScraper):
                 raise Exception(f"Failed to fetch {url} (Status: {status_code})")
             return await page.content()
         finally:
-            await context.close()
+            try:
+                await context.close()
+            except Exception:
+                pass
 
     def _extract_bookinfo_from_js(self, html: str) -> dict:
         """

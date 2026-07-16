@@ -55,10 +55,13 @@ export default function App() {
     saveToFolder,
     resetChapters,
     fetchChapterText,
+    checkQuality,
+    downloadNovel,
     addLog,
     setLogs,
     setProgress,
-    setPackagedResult
+    setPackagedResult,
+    loadSettingsFromEnv
   } = useNovelStore()
 
   // Local UI State
@@ -73,6 +76,14 @@ export default function App() {
   // API Key Test State
   const [isTestingKey, setIsTestingKey] = useState(false)
   const [keyTestResult, setKeyTestResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [isSavedToEnv, setIsSavedToEnv] = useState(false)
+
+  // Quality Check State
+  const [isCheckingQuality, setIsCheckingQuality] = useState(false)
+  const [qualityResult, setQualityResult] = useState<{ total_chapters: number; bad_count: number; bad_chapters: Array<{ chapter_no: number; title: string; status: string; issues: string[] }> } | null>(null)
+
+  // Download State
+  const [isDownloading, setIsDownloading] = useState(false)
 
   // Reader State
   const [readingChapter, setReadingChapter] = useState<{ chapter_no: number; title: string; translated_text: string; raw_text: string } | null>(null)
@@ -91,6 +102,9 @@ export default function App() {
 
   useEffect(() => {
     fetchNovels()
+    
+    // Tải settings (bao gồm API key) từ backend .env khi khởi động
+    loadSettingsFromEnv()
     
     // Connect to Server-Sent Events stream for real-time logs and progress updates
     const eventSource = new EventSource('/api/translation/logs')
@@ -297,13 +311,41 @@ export default function App() {
     }
   }
 
+  // Handle Check Quality
+  const handleCheckQuality = async (novelId: number) => {
+    setIsCheckingQuality(true)
+    setQualityResult(null)
+    try {
+      const result = await checkQuality(novelId)
+      setQualityResult(result)
+    } catch (e: any) {
+      alert(`Lỗi kiểm tra chất lượng: ${e.message}`)
+    } finally {
+      setIsCheckingQuality(false)
+    }
+  }
+
+  // Handle Download Novel
+  const handleDownloadNovel = async (novelId: number, fmt: 'txt' | 'docx') => {
+    setIsDownloading(true)
+    try {
+      await downloadNovel(novelId, fmt)
+    } catch (e: any) {
+      alert(`Lỗi tải file: ${e.message}`)
+    } finally {
+      setIsDownloading(false)
+    }
+  }
+
   // Open Reader for a novel
   const handleOpenReader = async (novelId: number) => {
     setReadingChapter(null)
     setSaveResult(null)
+    setQualityResult(null)
     await fetchNovelDetails(novelId)
     setActiveTab('reader')
   }
+
 
   // Percentage Helper
   const getPercentage = (p: ProgressData | null) => {
@@ -802,35 +844,59 @@ export default function App() {
                 /* Chapter List View */
                 <div className="flex flex-col h-full">
                   {/* Novel Header */}
-                  <div className="border-b border-cyber-border px-5 py-4 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      {selectedNovel.novel.cover_url && (
-                        <img src={selectedNovel.novel.cover_url} alt="cover" className="w-10 h-14 object-cover rounded border border-cyber-border" />
-                      )}
-                      <div>
-                        <h2 className="text-md font-bold text-slate-100 truncate max-w-[200px]">{selectedNovel.novel.title}</h2>
-                        <p className="text-[10px] text-cyber-muted mt-0.5">
-                          {selectedNovel.chapters.filter(c => c.status === 'COMPLETED').length} / {selectedNovel.chapters.length} chương đã dịch
-                        </p>
+                  <div className="border-b border-cyber-border px-5 py-4 flex flex-col gap-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        {selectedNovel.novel.cover_url && (
+                          <img src={selectedNovel.novel.cover_url} alt="cover" className="w-10 h-14 object-cover rounded border border-cyber-border" />
+                        )}
+                        <div>
+                          <h2 className="text-md font-bold text-slate-100 truncate max-w-[200px]">{selectedNovel.novel.title}</h2>
+                          <p className="text-[10px] text-cyber-muted mt-0.5">
+                            {selectedNovel.chapters.filter(c => c.status === 'COMPLETED').length} / {selectedNovel.chapters.length} chương đã dịch
+                          </p>
+                        </div>
                       </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => handleResetChapters(selectedNovel.novel.id)}
-                        disabled={isResetting}
-                        className="border border-cyber-danger/30 hover:bg-cyber-danger/10 text-cyber-danger font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg disabled:opacity-40"
-                      >
-                        {isResetting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
-                        Reset Tất Cả
-                      </button>
-                      <button
-                        onClick={() => handleSaveToFolder(selectedNovel.novel.id)}
-                        disabled={isSavingToFolder || selectedNovel.chapters.filter(c => c.status === 'COMPLETED').length === 0}
-                        className="bg-gradient-to-r from-cyber-accent to-cyber-purple hover:opacity-90 text-cyber-bg font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg disabled:opacity-40"
-                      >
-                        {isSavingToFolder ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-                        Lưu Vào Thư Mục
-                      </button>
+                      <div className="flex gap-2 flex-wrap justify-end">
+                        {/* Check Quality Button */}
+                        <button
+                          onClick={() => handleCheckQuality(selectedNovel.novel.id)}
+                          disabled={isCheckingQuality}
+                          className="border border-yellow-500/40 hover:bg-yellow-500/10 text-yellow-400 font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg disabled:opacity-40"
+                          title="Kiểm tra nhanh các chương dịch lỗi"
+                        >
+                          {isCheckingQuality ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <span className="text-sm">🔍</span>}
+                          Kiểm Tra Lỗi
+                        </button>
+                        {/* Download TXT */}
+                        <button
+                          onClick={() => handleDownloadNovel(selectedNovel.novel.id, 'txt')}
+                          disabled={isDownloading || selectedNovel.chapters.filter(c => c.status === 'COMPLETED').length === 0}
+                          className="border border-cyber-accent/40 hover:bg-cyber-accent/10 text-cyber-accent font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg disabled:opacity-40"
+                          title="Tải file TXT gộp tất cả chương"
+                        >
+                          {isDownloading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                          TXT
+                        </button>
+                        {/* Download DOCX */}
+                        <button
+                          onClick={() => handleDownloadNovel(selectedNovel.novel.id, 'docx')}
+                          disabled={isDownloading || selectedNovel.chapters.filter(c => c.status === 'COMPLETED').length === 0}
+                          className="border border-cyber-purple/40 hover:bg-cyber-purple/10 text-cyber-purple font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg disabled:opacity-40"
+                          title="Tải file DOCX gộp tất cả chương"
+                        >
+                          {isDownloading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                          DOCX
+                        </button>
+                        <button
+                          onClick={() => handleResetChapters(selectedNovel.novel.id)}
+                          disabled={isResetting}
+                          className="border border-cyber-danger/30 hover:bg-cyber-danger/10 text-cyber-danger font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg disabled:opacity-40"
+                        >
+                          {isResetting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+                          Reset Tất Cả
+                        </button>
+                      </div>
                     </div>
                   </div>
 
@@ -846,16 +912,66 @@ export default function App() {
                     </div>
                   )}
 
+                  {/* Quality Check Results Panel */}
+                  {qualityResult && (
+                    <div className="mx-5 mt-3 rounded-xl border border-yellow-500/30 bg-yellow-500/5 overflow-hidden animate-fade-in">
+                      <div className="px-4 py-2.5 flex items-center justify-between bg-yellow-500/10 border-b border-yellow-500/20">
+                        <span className="text-xs font-bold text-yellow-400 flex items-center gap-2">
+                          🔍 Kết quả kiểm tra chất lượng
+                          <span className="px-2 py-0.5 rounded-full text-[10px] bg-yellow-500/20 text-yellow-300">
+                            {qualityResult.bad_count} / {qualityResult.total_chapters} chương lỗi
+                          </span>
+                        </span>
+                        <button
+                          onClick={() => setQualityResult(null)}
+                          className="text-yellow-500/60 hover:text-yellow-400 text-xs transition-colors"
+                        >✕</button>
+                      </div>
+                      {qualityResult.bad_count === 0 ? (
+                        <div className="px-4 py-3 text-xs text-cyber-success flex items-center gap-2">
+                          <CheckCircle className="w-3.5 h-3.5" />
+                          Tất cả {qualityResult.total_chapters} chương đều ổn. Không phát hiện lỗi dịch!
+                        </div>
+                      ) : (
+                        <div className="max-h-48 overflow-y-auto">
+                          {qualityResult.bad_chapters.map(bc => (
+                            <div key={bc.chapter_no} className="px-4 py-2 border-b border-yellow-500/10 last:border-0 flex items-start justify-between gap-2 hover:bg-yellow-500/5 transition-colors">
+                              <div className="flex-1 min-w-0">
+                                <p className="text-[11px] font-bold text-yellow-300 truncate">Ch. {bc.chapter_no} — {bc.title}</p>
+                                {bc.issues.map((issue, i) => (
+                                  <p key={i} className="text-[10px] text-yellow-500/80 mt-0.5 break-all">• {issue}</p>
+                                ))}
+                              </div>
+                              <button
+                                onClick={() => handleResetChapters(selectedNovel.novel.id, [bc.chapter_no])}
+                                className="flex-shrink-0 text-[10px] font-bold px-2 py-1 rounded-lg bg-cyber-danger/15 border border-cyber-danger/30 text-cyber-danger hover:bg-cyber-danger/25 transition-all whitespace-nowrap flex items-center gap-1"
+                                title="Xóa và dịch lại chương này"
+                              >
+                                <RotateCcw className="w-3 h-3" />
+                                Dịch lại
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {/* Chapter List */}
                   <div className="flex-1 overflow-y-auto p-3" style={{ maxHeight: '60vh' }}>
                     <div className="flex flex-col gap-1">
                       {selectedNovel.chapters.map((ch) => {
                         const isCompleted = ch.status === 'COMPLETED'
                         const isFailed = ch.status === 'FAILED'
+                        const hasBadQuality = qualityResult?.bad_chapters.some(bc => bc.chapter_no === ch.chapter_no) ?? false
                         return (
                           <div
                             key={ch.id}
-                            className="w-full flex items-center justify-between px-4 py-2 rounded-xl text-xs border border-cyber-border/10 hover:bg-slate-900/40 hover:border-cyber-border/30 transition-all duration-150 group"
+                            className={`w-full flex items-center justify-between px-4 py-2 rounded-xl text-xs border transition-all duration-150 group ${
+                              hasBadQuality
+                                ? 'border-yellow-500/40 bg-yellow-500/5 hover:bg-yellow-500/10'
+                                : 'border-cyber-border/10 hover:bg-slate-900/40 hover:border-cyber-border/30'
+                            }`}
                           >
                             <button
                               onClick={() => isCompleted && handleReadChapter(selectedNovel.novel.id, ch.chapter_no)}
@@ -865,20 +981,22 @@ export default function App() {
                               }`}
                             >
                               <span className={`w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold flex-shrink-0 ${
-                                isCompleted 
-                                  ? 'bg-cyber-success/15 text-cyber-success border border-cyber-success/30'
-                                  : isFailed
-                                    ? 'bg-cyber-danger/15 text-cyber-danger border border-cyber-danger/30'
-                                    : 'bg-slate-900/60 text-slate-500 border border-cyber-border/30'
+                                hasBadQuality
+                                  ? 'bg-yellow-500/15 text-yellow-400 border border-yellow-500/40'
+                                  : isCompleted 
+                                    ? 'bg-cyber-success/15 text-cyber-success border border-cyber-success/30'
+                                    : isFailed
+                                      ? 'bg-cyber-danger/15 text-cyber-danger border border-cyber-danger/30'
+                                      : 'bg-slate-900/60 text-slate-500 border border-cyber-border/30'
                               }`}>
                                 {ch.chapter_no}
                               </span>
                               <div className="min-w-0">
                                 <p className={`font-medium truncate ${
-                                  isCompleted ? 'text-slate-200' : 'text-slate-500'
+                                  hasBadQuality ? 'text-yellow-300' : isCompleted ? 'text-slate-200' : 'text-slate-500'
                                 }`}>{ch.title}</p>
                                 <p className="text-[10px] text-cyber-muted mt-0.5">
-                                  {isCompleted ? '✅ Đã dịch' : isFailed ? '❌ Lỗi' : '⏳ Chờ dịch'}
+                                  {hasBadQuality ? '⚠️ Có lỗi dịch' : isCompleted ? '✅ Đã dịch' : isFailed ? '❌ Lỗi' : '⏳ Chờ dịch'}
                                 </p>
                               </div>
                             </button>
@@ -1076,7 +1194,15 @@ export default function App() {
             <div className="flex flex-col gap-1.5">
               <label className="text-[10px] text-cyber-muted uppercase tracking-wider font-bold flex items-center justify-between">
                 <span>API Keys</span>
-                <span className="text-[8px] text-cyber-muted normal-case font-normal">(Phân tách bởi dấu chấm phẩy ;)</span>
+                <span className="flex items-center gap-1.5">
+                  {isSavedToEnv && (
+                    <span className="flex items-center gap-1 text-[8px] text-cyber-success font-semibold animate-fade-in">
+                      <CheckCircle className="w-2.5 h-2.5" />
+                      Đã lưu vào .env
+                    </span>
+                  )}
+                  <span className="text-[8px] text-cyber-muted normal-case font-normal">(Phân tách bởi dấu chấm phẩy ;)</span>
+                </span>
               </label>
               <div className="flex gap-2">
                 <input 
@@ -1085,6 +1211,10 @@ export default function App() {
                   onChange={(e) => {
                     setSettings({ apiKeys: e.target.value })
                     setKeyTestResult(null)
+                    setIsSavedToEnv(false)
+                    // Hiển thị "Đã lưu" sau khi debounce save xong (~900ms)
+                    clearTimeout((window as any)._savedBadgeTimer)
+                    ;(window as any)._savedBadgeTimer = setTimeout(() => setIsSavedToEnv(true), 900)
                   }}
                   placeholder="Nhập API Key 1; API Key 2;..."
                   className="flex-1 glass-input rounded-xl px-3 py-2 text-xs"

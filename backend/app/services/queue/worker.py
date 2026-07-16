@@ -117,8 +117,7 @@ class TranslationJobManager:
         self.api_keys = config.get("api_key", "")
         self.custom_prompt = config.get("prompt", "")
         self.delay = float(config.get("delay", 0.1))
-        # Tối ưu: 15 luồng mặc định để tận dụng tối đa rate limit OpenRouter
-        self.concurrency = max(int(config.get("concurrency", 15)), 15)
+        self.concurrency = max(int(config.get("concurrency", 3)), 1)
         self.start_chapter = config.get("start_chapter")
         self.end_chapter = config.get("end_chapter")
         
@@ -177,9 +176,6 @@ class TranslationJobManager:
                 pass
             self.http_client = None
             
-        # Close shared browser if any
-        await playwright_manager.close()
-        
         async with async_session() as db:
             progress = await self.get_progress(db)
             self.broadcast("progress", progress)
@@ -197,7 +193,13 @@ class TranslationJobManager:
         """Concurrent translation worker."""
         client = None
         try:
-            client = TranslatorClient(self.provider, self.model, self.api_keys, http_client=self.http_client)
+            client = TranslatorClient(
+                self.provider,
+                self.model,
+                self.api_keys,
+                concurrency=self.concurrency,
+                http_client=self.http_client
+            )
         except Exception as e:
             self.is_running = False
             self.stage = "failed"
@@ -207,6 +209,9 @@ class TranslationJobManager:
         while self.is_running:
             chapter = None
             chapter_id = None
+            should_sleep = False  # sleep NGOÀI lock để tránh giữ lock khi idle
+            should_wait_active = False  # đang chờ worker khác xử lý xong
+            _wait_active_since = getattr(self, '_wait_active_since', None)
             
             # Acquire DB lock to query and reserve the next chapter safely
             async with self._db_lock:
@@ -264,8 +269,8 @@ class TranslationJobManager:
                                     
                             break
                         else:
-                            # Wait for other active tasks to finish
-                            pass
+                            # Còn worker khác đang xử lý → chờ bên ngoài lock
+                            should_wait_active = True
                     else:
                         # Atomic check-and-set: chỉ reserve nếu status vẫn còn PENDING/FAILED
                         # Dùng UPDATE ... WHERE status IN (...) để tránh race condition giữa các worker
@@ -279,8 +284,9 @@ class TranslationJobManager:
                         await db.commit()
                         
                         if reserve_result.rowcount == 0:
-                            # Một worker khác đã reserve chapter này trước — bỏ qua và tìm chapter khác
+                            # Một worker khác đã reserve chapter này trước — thử lại sau
                             chapter = None
+                            should_sleep = True
                         else:
                             # Fetch essential variables to process outside the lock
                             chapter_id = chapter.id
@@ -289,10 +295,36 @@ class TranslationJobManager:
                             chapter_source_url = chapter.source_url
                             chapter_raw_text = chapter.raw_text
                             self.current_chapter_no = chapter_no
-                
-                if not chapter:
-                    await asyncio.sleep(0.2)
-                    continue
+            
+            # Xử lý ngoài lock để không block worker khác
+            if should_wait_active:
+                import time as _time
+                now = _time.monotonic()
+                if _wait_active_since is None:
+                    self._wait_active_since = now
+                elif now - _wait_active_since > 300:  # 5 phút bị stuck
+                    # Rescue: reset các chương stuck về PENDING
+                    self.add_log("⚠️ Phát hiện chương bị kẹt (stuck >5phút). Đang reset về PENDING...", "warning")
+                    async with async_session() as db:
+                        await db.execute(
+                            update(Chapter)
+                            .where(Chapter.novel_id == self.novel_id)
+                            .where(Chapter.status.in_(["CRAWLING", "TRANSLATING"]))
+                            .values(status="PENDING", error_msg="Auto-reset: stuck quá 5 phút")
+                        )
+                        await db.commit()
+                    self._wait_active_since = None
+                # Chờ dài hơn khi không có chương nào để làm — tránh busy-wait
+                await asyncio.sleep(1.0)
+                continue
+            else:
+                # Reset bộ đếm khi có việc làm
+                self._wait_active_since = None
+            
+            if should_sleep or not chapter:
+                # Race condition: bị worker khác cướp mất — retry nhanh
+                await asyncio.sleep(0.2)
+                continue
 
 
             try:

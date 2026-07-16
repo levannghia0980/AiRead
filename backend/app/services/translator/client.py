@@ -30,6 +30,18 @@ class AdaptiveLimiter:
         self._lock = asyncio.Lock()
         self._cond = asyncio.Condition(lock=self._lock)
 
+    async def adjust_for_provider(self, provider: str, model: str, num_keys: int, user_concurrency: int = 15):
+        """Tự động điều chỉnh giới hạn song song phù hợp với nhà cung cấp."""
+        provider = provider.lower()
+        model = model.lower()
+        
+        async with self._lock:
+            # Tôn trọng cấu hình luồng song song do người dùng chọn trên UI
+            self.max_limit = max(user_concurrency, 1)
+            self.limit = self.max_limit
+            logger.info(f"⚙️ Adaptive Limiter: Đặt giới hạn song song theo UI -> {self.limit}")
+            self._cond.notify_all()
+
     async def acquire(self):
         async with self._cond:
             while self._active_requests >= self.limit:
@@ -54,12 +66,12 @@ class AdaptiveLimiter:
     async def on_rate_limit(self):
         """Giảm limit khi bị rate limit — an toàn để bảo toàn key."""
         async with self._cond:
-            self.limit = max(2, self.limit - 3)
+            self.limit = max(1, self.limit - 3)
             logger.warning(f"⏳ Adaptive Limiter: Rate limit hit → Concurrency → {self.limit}")
             self._cond.notify_all()
 
 
-global_limiter = AdaptiveLimiter(start=8, max_limit=30)
+global_limiter = AdaptiveLimiter(start=15, max_limit=30)
 
 
 class TranslatorClient:
@@ -73,7 +85,7 @@ class TranslatorClient:
     - Tối đa số chương/key bằng cách phân phối request đều giữa các key
     """
     
-    def __init__(self, provider: str, model: str, api_keys_str: str, http_client: Optional[httpx.AsyncClient] = None):
+    def __init__(self, provider: str, model: str, api_keys_str: str, concurrency: int = 15, http_client: Optional[httpx.AsyncClient] = None):
         self.provider = provider.lower()
         self.model = model
         # Split API keys by semicolon and strip whitespace
@@ -88,6 +100,13 @@ class TranslatorClient:
         
         if not self.api_keys:
             raise ValueError("No valid API keys provided.")
+            
+        # Tự động điều chỉnh giới hạn song song dựa trên config UI
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(global_limiter.adjust_for_provider(self.provider, self.model, len(self.api_keys), concurrency))
+        except Exception:
+            pass
 
     def get_current_key(self) -> str:
         """Returns the currently active API key."""
@@ -243,7 +262,8 @@ class TranslatorClient:
                         await asyncio.sleep(cooldown)
                     else:
                         # Đã thử hết tất cả keys → chờ đầy đủ
-                        wait_time = max(suggested_delay, base_delay * (2 ** min(attempt, 5)))
+                        min_wait = 30.0 if self.provider == "gemini" else base_delay
+                        wait_time = max(suggested_delay, min_wait * (1.5 ** min(attempt, 5)))
                         wait_time = min(wait_time, 90.0) * jitter
                         logger.warning(
                             f"⏳ Tất cả key đều bận (HTTP {status_code}). "

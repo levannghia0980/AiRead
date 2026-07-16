@@ -61,7 +61,10 @@ class GenericScraper(BaseScraper):
             await asyncio.sleep(1.5)
             return await page.content()
         finally:
-            await context.close()
+            try:
+                await context.close()
+            except Exception:
+                pass
 
     async def get_novel_metadata(self, url: str) -> Dict[str, Any]:
         html = await self._fetch_html_static(url)

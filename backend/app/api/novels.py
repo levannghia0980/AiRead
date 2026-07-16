@@ -1,6 +1,10 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
+import io
+import re
+from urllib.parse import quote
 import os
 import hashlib
 from sqlalchemy import select, delete
@@ -10,6 +14,9 @@ from app.models.models import Novel, Chapter, Glossary, TranslationCache
 from app.services.crawler.engine import scrape_novel_metadata
 
 router = APIRouter(prefix="/api/novels", tags=["Novels"])
+
+# Regex phát hiện chữ Hán còn sót trong bản dịch
+_CHINESE_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]")
 
 class AnalyzeRequest(BaseModel):
     url: str
@@ -317,3 +324,188 @@ async def reset_chapters(novel_id: int, payload: ResetChaptersRequest, db: Async
                     
     await db.commit()
     return {"success": True, "message": f"Đã reset {len(chapters)} chương về trạng thái chờ dịch."}
+
+
+# ===========================================================================
+# KIỂM TRA CHẤT LƯỢNG DỊCH (NHANH — CHỈ DÙNG CODE, KHÔNG GỌI AI)
+# ===========================================================================
+
+@router.get("/{novel_id}/check-quality")
+async def check_translation_quality(novel_id: int, db: AsyncSession = Depends(get_db)):
+    """
+    Quét nhanh tất cả chương đã dịch và phát hiện các lỗi phổ biến:
+    - Còn chữ Hán (chữ Trung) trong bản dịch
+    - Bản dịch rỗng hoặc quá ngắn so với bản gốc (ratio < 0.3)
+    - Chương FAILED chưa được dịch lại
+    
+    Trả về danh sách chương bị lỗi cùng mô tả lỗi.
+    """
+    stmt = (
+        select(Chapter)
+        .where(Chapter.novel_id == novel_id)
+        .order_by(Chapter.chapter_no.asc())
+    )
+    result = await db.execute(stmt)
+    chapters = result.scalars().all()
+
+    bad_chapters = []
+
+    for ch in chapters:
+        issues = []
+
+        # 1. Chương FAILED chưa được dịch lại
+        if ch.status == "FAILED":
+            issues.append(f"Lỗi dịch: {ch.error_msg or 'Không rõ nguyên nhân'}")
+
+        # 2. Chương COMPLETED nhưng bản dịch bị vấn đề
+        if ch.status == "COMPLETED":
+            translated = ch.translated_text or ""
+
+            # 2a. Bản dịch rỗng
+            if not translated.strip():
+                issues.append("Bản dịch rỗng (không có nội dung)")
+
+            else:
+                # 2b. Còn chữ Hán trong bản dịch
+                chinese_matches = _CHINESE_RE.findall(translated)
+                if chinese_matches:
+                    sample = "".join(chinese_matches[:20])
+                    issues.append(f"Còn {len(chinese_matches)} chữ Hán trong bản dịch (VD: {sample})")
+
+                # 2c. Tỷ lệ độ dài quá thấp (dịch thiếu nội dung)
+                raw = ch.raw_text or ""
+                if raw.strip() and len(raw) > 100:
+                    ratio = len(translated) / len(raw)
+                    if ratio < 0.3:
+                        issues.append(f"Dịch thiếu nội dung: bản dịch chỉ bằng {ratio:.0%} bản gốc")
+
+        if issues:
+            bad_chapters.append({
+                "chapter_no": ch.chapter_no,
+                "title": ch.title,
+                "status": ch.status,
+                "issues": issues,
+            })
+
+    return {
+        "total_chapters": len(chapters),
+        "bad_count": len(bad_chapters),
+        "bad_chapters": bad_chapters,
+    }
+
+
+# ===========================================================================
+# TẢI FILE GỘP (TXT HOẶC DOCX)
+# ===========================================================================
+
+@router.get("/{novel_id}/download")
+async def download_novel(
+    novel_id: int,
+    fmt: str = Query("txt", description="Định dạng xuất: 'txt' hoặc 'docx'"),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Gộp toàn bộ chương đã dịch thành một file duy nhất.
+    Mỗi chương bắt đầu bằng tên chương, nội dung tuần tự từ chương 1 đến hết.
+    Hỗ trợ định dạng: txt, docx
+    """
+    novel = await db.get(Novel, novel_id)
+    if not novel:
+        raise HTTPException(status_code=404, detail="Không tìm thấy truyện")
+
+    stmt = (
+        select(Chapter)
+        .where(Chapter.novel_id == novel_id, Chapter.status == "COMPLETED")
+        .order_by(Chapter.chapter_no.asc())
+    )
+    result = await db.execute(stmt)
+    chapters = list(result.scalars().all())
+
+    if not chapters:
+        raise HTTPException(status_code=400, detail="Chưa có chương nào được dịch xong.")
+
+    # Tên file an toàn
+    invalid_chars = '<>:"/\\|?*\r\n\t'
+    safe_title = "".join(c for c in novel.title if c not in invalid_chars).strip()
+    safe_title = safe_title.replace("  ", " ") or "novel"
+
+    fmt = fmt.lower().strip()
+
+    # ── TXT ──────────────────────────────────────────────────────────────────
+    if fmt == "txt":
+        lines = []
+        lines.append(novel.title)
+        lines.append(f"Tác giả: {novel.author or 'Khuyết Danh'}")
+        lines.append("=" * 60)
+        lines.append("")
+
+        for ch in chapters:
+            lines.append(ch.title)
+            lines.append("-" * 40)
+            lines.append(ch.translated_text or "")
+            lines.append("")
+            lines.append("")
+
+        content = "\n".join(lines)
+        buf = io.BytesIO(content.encode("utf-8"))
+        buf.seek(0)
+        filename = f"{safe_title}.txt"
+        # RFC 5987: fallback ASCII + UTF-8 encoded filename for non-ASCII chars
+        ascii_fallback = "novel.txt"
+        encoded_name = quote(filename)
+
+        return StreamingResponse(
+            buf,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded_name}"}
+        )
+
+    # ── DOCX ─────────────────────────────────────────────────────────────────
+    elif fmt == "docx":
+        try:
+            from docx import Document
+            from docx.shared import Pt, RGBColor
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
+        except ImportError:
+            raise HTTPException(
+                status_code=500,
+                detail="Thư viện python-docx chưa được cài. Chạy: pip install python-docx"
+            )
+
+        doc = Document()
+
+        # Tiêu đề truyện
+        title_para = doc.add_heading(novel.title, level=0)
+        title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        author_para = doc.add_paragraph(f"Tác giả: {novel.author or 'Khuyết Danh'}")
+        author_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        doc.add_paragraph("")
+
+        for ch in chapters:
+            # Tên chương — Heading 1
+            doc.add_heading(ch.title, level=1)
+
+            # Nội dung chương — chia theo dòng để giữ định dạng đoạn
+            text = ch.translated_text or ""
+            for para_text in text.split("\n"):
+                if para_text.strip():
+                    doc.add_paragraph(para_text.strip())
+
+            doc.add_paragraph("")  # Khoảng cách giữa các chương
+
+        buf = io.BytesIO()
+        doc.save(buf)
+        buf.seek(0)
+        filename = f"{safe_title}.docx"
+        ascii_fallback = "novel.docx"
+        encoded_name = quote(filename)
+
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded_name}"}
+        )
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Định dạng không hỗ trợ: {fmt}. Dùng 'txt' hoặc 'docx'.")
