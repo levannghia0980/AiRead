@@ -6,6 +6,9 @@ Dựa trên 22 quy tắc dịch thuật chất lượng biên tập viên.
 """
 import re
 import logging
+import json
+import urllib.request
+import urllib.parse
 from typing import List, Dict, Tuple
 
 logger = logging.getLogger(__name__)
@@ -563,6 +566,9 @@ def postprocess_translated_text(
     # Gom các dòng trống liên tiếp thành một
     translated = re.sub(r"\n{3,}", "\n\n", translated)
     
+    # ---- Bước 6: Tự động dọn dẹp các cụm chữ Hán sót lại (Bypass Censor Fallback) ----
+    translated = resolve_remaining_chinese_chars(translated)
+    
     return translated.strip()
 
 
@@ -766,6 +772,85 @@ def quality_check(translated: str, raw_chinese: str, glossary_map: Dict[str, str
         warnings.append(f"⚠️ Phát hiện có thể tên pinyin chưa Hán Việt hóa: {set(pinyin_matches)}")
     
     return warnings
+
+
+# ==============================================================================
+# HẬU XỬ LÝ DỌN DẸP CHỮ HÁN SÓT LẠI (CLEAN RESIDUAL CHINESE CHARS)
+# ==============================================================================
+
+def translate_chinese_phrase_fallback(text: str) -> str:
+    """Dịch nhanh một cụm từ tiếng Trung bằng Google Translate API (đồng bộ, không cần async)."""
+    if not text.strip():
+        return ""
+    try:
+        url = "https://translate.googleapis.com/translate_a/single"
+        params = {
+            "client": "gtx",
+            "sl": "zh-CN",
+            "tl": "vi",
+            "dt": "t",
+            "q": text
+        }
+        query_string = urllib.parse.urlencode(params)
+        req = urllib.request.Request(
+            f"{url}?{query_string}",
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urllib.request.urlopen(req, timeout=5.0) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            translations = []
+            if data and isinstance(data, list) and len(data) > 0 and data[0]:
+                for item in data[0]:
+                    if item and len(item) > 0:
+                        translations.append(item[0])
+            if translations:
+                return "".join(translations)
+    except Exception as e:
+        logger.warning(f"Dịch cụm từ fallback '{text}' thất bại: {e}")
+    return text
+
+
+def resolve_remaining_chinese_chars(translated: str) -> str:
+    """
+    Tìm mọi cụm chữ Hán còn sót lại trong bản dịch tiếng Việt, dịch nóng chúng
+    bằng Google Translate hoặc các nguồn khác và thay thế lại vào bản dịch.
+    
+    Điều này giúp bảo vệ bản dịch không bị lỗi "còn chữ Trung Quốc"
+    và giữ nguyên 99.9% bản dịch chất lượng cao của AI mà không cần dịch lại.
+    """
+    if not translated:
+        return ""
+        
+    # Regex tìm các cụm từ tiếng Trung Quốc liên tiếp
+    # Bao gồm các khối chữ Hán cơ bản và mở rộng
+    chinese_re = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3001-\u303f]+")
+    
+    matches = chinese_re.findall(translated)
+    if not matches:
+        return translated
+        
+    # Lấy các phần tử duy nhất và sắp xếp giảm dần theo độ dài để tránh thay thế đè cụm từ ngắn
+    unique_matches = sorted(list(set(matches)), key=len, reverse=True)
+    
+    logger.info(f"🔍 Hậu xử lý: Phát hiện {len(unique_matches)} cụm chữ Hán sót lại: {unique_matches}")
+    
+    for zh_phrase in unique_matches:
+        # 1. Kiểm tra xem có trong SENSITIVE_LEXICON hay không
+        vi_trans = SENSITIVE_LEXICON.get(zh_phrase, None)
+        
+        # 2. Nếu không có, dịch nóng bằng Google Translate
+        if not vi_trans:
+            vi_trans = translate_chinese_phrase_fallback(zh_phrase)
+            
+        if vi_trans and vi_trans != zh_phrase:
+            # Thay thế cụm chữ Hán bằng bản dịch tiếng Việt tương ứng
+            translated = translated.replace(zh_phrase, f" {vi_trans.strip()} ")
+            logger.info(f"🔄 Đã sửa cụm chữ Hán: '{zh_phrase}' -> '{vi_trans}'")
+            
+    # Dọn dẹp khoảng trắng thừa do việc chèn từ tạo ra
+    translated = re.sub(r" {2,}", " ", translated)
+    return translated.strip()
+
 
 
 
