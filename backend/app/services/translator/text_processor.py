@@ -1263,6 +1263,10 @@ def force_repair_all_errors(translated: str, glossary_map: Dict[str, str] = None
     if not translated:
         return translated
 
+    # 0. Dọn dẹp các đuôi ký tự / tiếng rác lặp lại do lỗi máy tính / token rác (Ví dụ: "Tống Huyênênênênên" ➔ "Tống Huyên")
+    translated = re.sub(r"([a-zA-ZàáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđÀÁẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬÈÉẺẼẸÊẾỀỂỄỆÌÍỈĨỊÒÓỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢÙÚỦŨỤƯỨỪỬỮỰỲÝỶỸỴĐ])\1{4,}", r"\1", translated)
+    translated = re.sub(r"(ê|ên|nê|ng|ơi|ơ|a|e|i|o|u){4,}", r"\1", translated, flags=re.IGNORECASE)
+
     # 1. Ép sửa 100% Pinyin & dịch sai danh từ nhân vật
     pinyin_fixes = [
         (r"\bSu Tan'?er\b", "Tô Đàn Nhi"),
@@ -1277,6 +1281,10 @@ def force_repair_all_errors(translated: str, glossary_map: Dict[str, str] = None
         (r"\bXiao Chan\b", "Tiểu Thiền"),
         (r"\bNing Yi\b", "Ninh Dịch"),
         (r"\bNingYi\b", "Ninh Dịch"),
+        (r"\bYe Feixin\b", "Diệp Phi"),
+        (r"\bYe Fei\b", "Diệp Phi"),
+        (r"\bSong Xuan\b", "Tống Huyên"),
+        (r"\bTống Huyênên+\b", "Tống Huyên"),
         (r"\bQingyi\b", "Thanh Y"),
         (r"\bRuoping\b", "Nhược Bình"),
         (r"\bA Kang\b", "A Khang"),
@@ -1295,6 +1303,20 @@ def force_repair_all_errors(translated: str, glossary_map: Dict[str, str] = None
 
     # 2. Quy đổi các Pinyin dạng Xxx'er ➔ Xxx Nhi (Ví dụ: Tan'er ➔ Đàn Nhi, Feng'er ➔ Phong Nhi)
     translated = re.sub(r"\b([A-Z][a-z]+)'er\b", r"\1 Nhi", translated)
+
+    # 2b. TỰ ĐỘNG CHUYỂN CÁC TÊN PINYIN BỊ LỌT KHÔNG CÓ TRONG TỪ ĐIỂN SANG ÂM HÁN VIỆT 0 TOKEN
+    # Ví dụ: Pinyin rác còn lọt như "Song Xuan" hoặc chữ Pinyin viết hoa không dấu ➔ tra Hán-Việt 0 token
+    from app.services.translator.hanviet_data import convert_to_hanviet_name
+    def _pinyin_to_hanviet(match):
+        term = match.group(0)
+        # Nếu đã là tiếng Việt chuẩn thì giữ nguyên
+        if any(c in term for c in "àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ"):
+            return term
+        hv = convert_to_hanviet_name(term)
+        return hv if (hv and hv != term) else term
+
+    # Trích các từ Pinyin viết hoa không dấu 2-3 âm tiết lặp lại
+    translated = re.sub(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2}\b", _pinyin_to_hanviet, translated)
 
     # 3. Ép sửa đại từ cổ trang thô cứng / dịch sai từ tiếng Trung
     lines = translated.split("\n")

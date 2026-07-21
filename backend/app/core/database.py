@@ -31,7 +31,17 @@ async def get_db():
             await session.close()
 
 async def init_db():
-    """Initializes the database schema."""
+    """Initializes the database schema and performs auto-migrations."""
     async with engine.begin() as conn:
         # Create all tables defined in models
         await conn.run_sync(Base.metadata.create_all)
+        
+        # Auto-migrate: Bổ sung cột 'notes' cho bảng glossaries nếu DB SQLite cũ chưa có
+        try:
+            from sqlalchemy import text
+            res = await conn.execute(text("PRAGMA table_info(glossaries)"))
+            cols = [row[1] for row in res.fetchall()]
+            if "notes" not in cols:
+                await conn.execute(text("ALTER TABLE glossaries ADD COLUMN notes TEXT"))
+        except Exception:
+            pass

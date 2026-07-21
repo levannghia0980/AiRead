@@ -7,7 +7,7 @@ Tài liệu này tổng hợp toàn bộ kiến trúc công nghệ, lịch sử 
 ## 🛠️ 1. ARCHITECTURE & TECHNOLOGY STACK (CÔNG NGHỆ HỆ THỐNG)
 
 - **Backend Framework:** FastAPI (Python 3.10+), Uvicorn Server, Asyncio Event Loop.
-- **Database Layer:** SQLite (SQLAlchemy AsyncSession), Pydantic schemas.
+- **Database Layer:** SQLite (SQLAlchemy AsyncSession), Auto-migration Engine (`ALTER TABLE glossaries ADD COLUMN notes TEXT`).
 - **AI Core / LLM Providers:**
   - Gemini API (Google DeepMind) / OpenRouter (DeepSeek V3/R1).
   - Multi-tier Retry Mechanism + Dynamic System Instruction Injection.
@@ -15,7 +15,12 @@ Tài liệu này tổng hợp toàn bộ kiến trúc công nghệ, lịch sử 
   - Microsoft Edge Neural TTS (`edge-tts`).
   - Giọng nữ truyền cảm: `vi-VN-HoaiMyNeural` @ `+75%` (1.75x speed).
   - **Trang Audio Studio Độc Lập:** Giao diện Trình Phát Âm Thanh cao cấp (Play/Pause, Tua 10s, Seekbar kéo thả chỉnh đoạn, Thanh kéo Volume 0-100%, Đổi tốc độ 1.0x-2.0x).
-- **Crawler & Scraper Engine:** Playwright / HTTPX Async + Custom Parsers (69shuba, twkan, alicesw, etc.).
+- **Crawler & Scraper Engine (Multi-Plugin Dedicated Architecture):**
+  - **Dynamic Engine:** HTTPX Async + Playwright / Custom Parsers.
+  - **Dedicated Scrapers:**
+    - `Shuba69Scraper` (69shuba.cx / 69shuba.com).
+    - `AliceswScraper` (`alicesw.com`): Tự động giải mã các link chương dạng mã băm Hash URL (như `/book/31135/1909bc70efc01.html`, `/book/31135/b99612993a94c.html`), tự động quy đổi về trang Mục Lục Đầy Đủ `/other/chapters/id/30340.html` để bóc tách chính xác 100% toàn bộ 1589+ chương mà không bỏ sót bất kỳ chương nào.
+    - `GenericScraper` (Catch-all fallback).
 - **Translation Pipeline (Data-Driven Architecture & 0-Token Cost Pyramid):**
   1. **Tầng 1 (0 Token, 0 Latency - Dict Tĩnh & Lookup Table):**
      - Dấu câu `PUNCT_MAP` (`，。！？「」『』` ➔ `, . ! ? " "`) & Đơn vị cổ `UNIT_MAP` (`两/文/里/尺/子时/三更`).
@@ -45,9 +50,9 @@ Hệ thống tuân thủ 20 nhóm quy tắc dịch thuật chuẩn Tiên Hiệp 
 
 ## 📝 3. LỊCH SỬ KẾ HOẠCH & NÂNG CẤP (CHANGELOG)
 
-### 📅 Version 2.6.3 - [2026-07-21]
-- **Tự Động Phục Hồi Session HTTP Client (Closed HTTP Client Session Recovery Fix):**
-  - **Khắc phục triệt để lỗi `Cannot send a request, as the client has been closed`:** Kiểm tra trạng thái `is_closed` của `self.http_client` trước khi gửi request trong `client.py`. Nếu phiên HTTP trước đó đã đóng, hệ thống sẽ tự động tạo một `httpx.AsyncClient` mới 100% để tiếp tục gửi request mà không bao giờ bị dính lỗi kẹt vòng lặp retry.
+### 📅 Version 2.7.1 - [2026-07-21]
+- **Tích Hợp Tự Động Migration Cấu Trúc SQLite DB (`database.py`):**
+  - **Khắc phục triệt để lỗi `sqlite3.OperationalError: no such column: glossaries.notes`:** Bổ sung cơ chế tự động thực thi query `ALTER TABLE glossaries ADD COLUMN notes TEXT` trong hàm `init_db()` khi ứng dụng khởi chạy. Đảm bảo mọi file SQLite `database.db` cũ cũng được cập nhật schema tự động 100% mà không bị mất dữ liệu.
 
-### 📅 Version 2.6.2 - [2026-07-21]
-- **Sửa Lỗi Thuộc Tính Model `Glossary.notes`:** Bổ sung cột `notes` vào model `Glossary` và truy cập an toàn bằng `getattr(g, 'notes', None)`.
+### 📅 Version 2.7.0 - [2026-07-21]
+- **Tạo Plugin Cào Truyện Chuyên Dụng AliceswScraper (`alicesw.com`).**

@@ -1,10 +1,12 @@
 from typing import Dict, Any
 from app.services.crawler.plugins.shuba69 import Shuba69Scraper
+from app.services.crawler.plugins.alicesw import AliceswScraper
 from app.services.crawler.plugins.generic import GenericScraper
 
 # Registered scraper plugins in check order
 SCRAPERS = [
     Shuba69Scraper,
+    AliceswScraper,
     GenericScraper,  # Fallback must be last
 ]
 
