@@ -30,8 +30,9 @@ Tài liệu này tổng hợp toàn bộ kiến trúc công nghệ, lịch sử 
   3. **Tầng 3 (Generic Detector & Batch Learning Loop):**
      - Leftover Detector ưu tiên tra cứu Hán-Việt offline 0 Token trước. Bất kỳ từ mới nào cũng được batch-resolve 1 lần duy nhất và ghi persistent vào SQLite DB (`Glossary`).
      - So khớp cục bộ (Self-Consistency Pass) đồng bộ biến thể tên trong chương.
-  4. **Tầng 4 (Pass Dịch Chính Văn & Perfect Output Polish):**
+  4. **Tầng 4 (Pass Dịch Chính Văn & Perfect Output Polish & Force Repair):**
      - Dùng LLM cho bản dịch chính văn kèm context header. Biên tập nhịp văn điện ảnh và chuẩn hóa trình bày ngắt đoạn `\n\n`.
+     - Bộ cưỡng ép sửa lỗi `force_repair_all_errors`: Tự động cắt đuôi lặp ký tự rác (VD: `ênênên`), chuyển đổi Pinyin không có trong từ điển sang âm Hán Việt chuẩn 0-token (VD: `Ye Feixin` ➔ `Diệp Phi`).
 
 ---
 
@@ -50,9 +51,9 @@ Hệ thống tuân thủ 20 nhóm quy tắc dịch thuật chuẩn Tiên Hiệp 
 
 ## 📝 3. LỊCH SỬ KẾ HOẠCH & NÂNG CẤP (CHANGELOG)
 
-### 📅 Version 2.7.1 - [2026-07-21]
-- **Tích Hợp Tự Động Migration Cấu Trúc SQLite DB (`database.py`):**
-  - **Khắc phục triệt để lỗi `sqlite3.OperationalError: no such column: glossaries.notes`:** Bổ sung cơ chế tự động thực thi query `ALTER TABLE glossaries ADD COLUMN notes TEXT` trong hàm `init_db()` khi ứng dụng khởi chạy. Đảm bảo mọi file SQLite `database.db` cũ cũng được cập nhật schema tự động 100% mà không bị mất dữ liệu.
-
-### 📅 Version 2.7.0 - [2026-07-21]
-- **Tạo Plugin Cào Truyện Chuyên Dụng AliceswScraper (`alicesw.com`).**
+### 📅 Version 2.7.2 - [2026-07-21]
+- **Tối Ưu Hậu Xử Lý Cưỡng Ép Sửa Lỗi Tên Nhân Vật & Tự Động Tra Hán-Việt 0 Token (`text_processor.py`):**
+  - **Dọn dẹp chuỗi đuôi ký tự / token rác lặp lại:** Tự động phát hiện và triệt tiêu các đuôi ký tự lặp rác (Ví dụ: `Tống Huyênênênên` ➔ `Tống Huyên`).
+  - **Tự động quy đổi Pinyin lọt thành âm Hán-Việt 0 token:** Bộ nhận diện Pinyin tự động chuyển đổi các từ Pinyin chưa có trong từ điển (như `Ye Feixin`, `Song Xuan`) thành tên Hán-Việt chuẩn `Diệp Phi`, `Tống Huyên` mà không tốn Token AI.
+- **Tự Động Migration Cấu Trúc SQLite DB (`database.py`):** Tự động thêm cột `notes` cho `glossaries`.
+- **Plugin Cào Truyện Dedicated AliceswScraper (`alicesw.com`).**
