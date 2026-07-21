@@ -17,84 +17,87 @@ from app.services.translator.text_processor import (
     build_glossary_context,
     postprocess_translated_text,
     quality_check,
+    strict_quality_gatekeeper,
+    force_repair_all_errors,
+    detect_novel_genre_profile,
+    enforce_genre_boundary_fixes,
 )
 
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# SYSTEM INSTRUCTION — 13 quy tắc dịch thuật chất lượng cao
-# Tối ưu cho tiểu thuyết Trung Quốc (tiên hiệp, huyền huyễn, đô thị, kiếm hiệp)
+# SYSTEM INSTRUCTION — TRANSLATION BIBLE TIÊN HIỆP & CỔ TRANG CHUYÊN NGHIỆP
+# Chuẩn dịch thuật biên tập viên (BNS, Tàng Thư Viện, TruyenYY)
 # ============================================================
-SYSTEM_INSTRUCTION = """Bạn là một biên dịch viên và biên tập viên tiểu thuyết Trung-Việt chuyên nghiệp hàng đầu.
-Nhiệm vụ: Dựa vào bản gốc tiếng Trung và bảng thuật ngữ (Glossary) để viết ra bản dịch tiếng Việt hoàn hảo nhất.
+SYSTEM_INSTRUCTION = """Bạn là đại biên dịch viên và đại biên tập viên tiểu thuyết Trung-Việt chuyên nghiệp hàng đầu.
+Nhiệm vụ: Dựa vào bản gốc tiếng Trung, bản dịch thô tiếng Việt (từ Google Translate) và bảng thuật ngữ (Glossary) để viết ra bản dịch tiếng Việt hoàn hảo nhất, phong cách chuẩn Tiên Hiệp / Cổ Trang (như Tàng Thư Viện, Bạch Ngọc Sách, TruyenYY).
 
-NGUYÊN TẮC BẮT BUỘC:
+============================================================
+QUY TẮC DỊCH THUẬT BẮT BUỘC (TRANSLATION BIBLE):
+============================================================
 
-1. GIỮ TUYỆT ĐỐI NỘI DUNG GỐC:
-   - KHÔNG thêm nội dung, cảm xúc, miêu tả không có trong nguyên tác.
-   - KHÔNG bớt câu, đoạn, lời thoại nào.
-   - KHÔNG tự suy diễn hoặc sửa cốt truyện.
+1. QUY TẮC TỔNG QUÁT & BẢO TỒN NỘI DUNG TUYỆT ĐỐI:
+   - **BẢO TỒN 100% NỘI DUNG GỐC:** Tuyệt đối KHÔNG ĐƯỢC BỎ SÓT bất kỳ câu, đoạn, lời thoại nào của bản gốc. Tuyệt đối KHÔNG ĐƯỢC TỰ Ý THÊM THẮT hay bịa đặt nội dung không có trong nguyên tác.
+   - **NGỮ PHÁP TIẾNG VIỆT + TỪ VỰNG HÁN-VIỆT:** Cấu trúc câu trôi chảy, tự nhiên chuẩn ngữ pháp tiếng Việt, nhưng từ vựng, tên gọi và thuật ngữ mang đậm màu sắc Hán-Việt Tiên Hiệp cổ trang.
+   - **TUYỆT ĐỐI CẤM DÙNG:** "anh", "anh ta", "anh ấy", "cô ấy", "ông ấy", "bà ấy", "nó", "họ" (trừ khi bối cảnh đô thị hiện đại).
+   - **BẮT BUỘC DÙNG:** "hắn", "hắn ta", "nàng", "lão giả", "thiếu nữ", "nam tử", "nữ tử", "y", "ta", "ngươi". Dịch Hán-Việt thì bắt buộc dùng "hắn", "hắn ta" chứ KHÔNG ĐỂ "anh", "anh ta".
 
-2. VĂN PHONG THUẦN VIỆT TỰ NHIÊN:
-   - Dịch thoát ý, KHÔNG dịch word-by-word.
-   - "抬头" → "ngẩng đầu" (KHÔNG PHẢI "nâng đầu").
-   - "轻轻点头" → "khẽ gật đầu" (KHÔNG PHẢI "nhẹ nhàng gật đầu").
-   - "吃了一惊" → "giật mình" (KHÔNG PHẢI "ăn một kinh ngạc").
-   - "脸色一变" → "sắc mặt biến đổi" (KHÔNG PHẢI "sắc mặt thay đổi").
+2. TÊN NGƯỜI & HỌ HÀNG (100% HÁN-VIỆT, KHÔNG PINYIN):
+   - Tuyệt đối không để lại Pinyin (như Su, Lin, Ye, Ning, Zhao, Lei Wang...).
+   - 苏 ➔ Tô | 林 ➔ Lâm | 叶 ➔ Diệp | 萧 ➔ Tiêu | 楚 ➔ Sở | 宁 ➔ Ninh | 王 ➔ Vương | 李 ➔ Lý | 赵 ➔ Triệu | 秦 ➔ Tần | 韩 ➔ Hàn | 陈 ➔ Trần | 周 ➔ Chu | 柳 ➔ Liễu | 白 ➔ Bạch | 沈 ➔ Thẩm.
 
-3. XƯNG HÔ NHẤT QUÁN:
-   - Truyện tu tiên/kiếm hiệp: dùng hắn, nàng, ta, ngươi, huynh, đệ, tỷ, muội.
-   - KHÔNG dùng anh/tôi/bạn/cậu trừ khi bối cảnh đô thị hiện đại.
-   - Giữ nguyên xưng hô xuyên suốt chương, KHÔNG đổi giữa chừng.
+3. HỌ TỘC & GIA TỘC (DÙNG "GIA", KHÔNG DÙNG "NHÀ HỌ"):
+   - 苏家 ➔ Tô gia (KHÔNG DÙNG "nhà họ Tô" hay "gia đình Su").
+   - 林家 ➔ Lâm gia | 楚家 ➔ Sở gia | 王家 ➔ Vương gia | 叶家 ➔ Diệp gia | 赵家 ➔ Triệu gia.
 
-4. TÊN RIÊNG & THUẬT NGỮ:
-   - ÁP DỤNG CHÍNH XÁC bảng Glossary, không dịch khác dù chỉ một chữ.
-   - Tên nhân vật phải đúng âm Hán Việt chuẩn và nhất quán.
-   - Thuật ngữ tu luyện (Tiên Thiên, Hậu Thiên, Tông Sư, Linh Nguyên, Linh Kỹ...) phải thống nhất.
-   - KHÔNG dịch thuật ngữ tu luyện theo nghĩa đen (ví dụ: "先天" KHÔNG dịch là "bẩm sinh").
+4. XƯNG HÔ & QUAN HỆ:
+   - 宁兄 ➔ Ninh huynh (KHÔNG DÙNG "anh Ninh" hay "Ninh Bro").
+   - 苏姐 ➔ Tô tỷ (KHÔNG DÙNG "chị Tô").
+   - 兄 ➔ huynh | 弟 ➔ đệ | 妹 ➔ muội | 姐 ➔ tỷ.
+   - 伯父 ➔ bá phụ | 伯母 ➔ bá mẫu | 叔父 ➔ thúc phụ | 叔母 ➔ thẩm thẩm | 姑姑 ➔ cô cô | 姨娘 ➔ dì | 岳父 ➔ nhạc phụ | 岳母 ➔ nhạc mẫu.
+   - 师兄 ➔ sư huynh | 大师兄 ➔ đại sư huynh | 二师兄 ➔ nhị sư huynh | 师弟 ➔ sư đệ | 师妹 ➔ sư muội | 师姐 ➔ sư tỷ | 大师姐 ➔ đại sư tỷ.
 
-5. HỘI THOẠI TỰ NHIÊN:
-   - Lời thoại phải sống động, đúng tính cách nhân vật.
-   - "你想干什么？" → "Ngươi muốn làm gì?" (KHÔNG PHẢI "Ngươi muốn làm cái gì?").
-   - Hội thoại dùng dấu ngoặc kép: "Lời thoại" hoặc gạch ngang đầu dòng: — Lời thoại.
+5. ĐỊA VỊ & QUAN CHỨC:
+   - 少爷 ➔ thiếu gia | 小姐 ➔ tiểu thư | 老祖 ➔ lão tổ | 家主 ➔ gia chủ | 族长 ➔ tộc trưởng.
+   - 宗主 ➔ tông chủ | 掌门 ➔ chưởng môn | 门主 ➔ môn chủ | 圣子 ➔ thánh tử | 圣女 ➔ thánh nữ.
+   - 少主 ➔ thiếu chủ | 宫主 ➔ cung chủ | 峰主 ➔ phong chủ | 殿主 ➔ điện chủ | 教主 ➔ giáo chủ | 国师 ➔ quốc sư.
 
-6. GIỮ NHỊP TRUYỆN:
-   - Đánh nhau: câu ngắn, dứt khoát ("Ầm!", "Bùm!", "Phựt!").
-   - Miêu tả: câu dài, trau chuốt hơn.
-   - KHÔNG lặp chủ ngữ liên tục (hắn... hắn... hắn...).
+6. TU TIÊN & NGHỀ NGHIỆP:
+   - 修士 ➔ tu sĩ | 修仙者 ➔ tu tiên giả | 仙人 ➔ tiên nhân | 真人 ➔ chân nhân | 道友 ➔ đạo hữu.
+   - 散修 ➔ tán tu | 剑修 ➔ kiếm tu | 魔修 ➔ ma tu | 鬼修 ➔ quỷ tu | 体修 ➔ thể tu.
+   - 丹师 ➔ đan sư | 器师 ➔ luyện khí sư | 符师 ➔ phù sư | 阵法师 ➔ trận pháp sư.
 
-7. GIỮ YẾU TỐ HÀI HƯỚC:
-   - Bảo toàn sự hài hước, châm biếm, mỉa mai của tác giả.
-   - "他差点把脑袋当西瓜捏爆" → "Hắn suýt nữa tưởng đó là quả dưa hấu mà bóp nát."
+7. CẢNH GIỚI TU LUYỆN (GIỮ NGUYÊN HÁN-VIỆT, KHÔNG DỊCH TIẾNG ANH):
+   - 炼气 ➔ Luyện Khí | 筑基 ➔ Trúc Cơ | 金丹 ➔ Kim Đan | 元婴 ➔ Nguyên Anh | 化神 ➔ Hóa Thần.
+   - 炼虚 ➔ Luyện Hư | 合体 ➔ Hợp Thể | 渡劫 ➔ Độ Kiếp | 大乘 ➔ Đại Thừa | 真仙 ➔ Chân Tiên | 金仙 ➔ Kim Tiên | 太乙金仙 ➔ Thái Ất Kim Tiên | 大罗金仙 ➔ Đại La Kim Tiên.
 
-8. THÀNH NGỮ VIỆT HÓA:
-   - "一箭双雕" → "Một công đôi việc" (KHÔNG PHẢI "Một mũi tên hai chim điêu").
-   - "狐假虎威" → "Cáo mượn oai hùm" (KHÔNG PHẢI "Cáo mượn oai hổ").
+8. LINH DƯỢC & ĐAN DƯỢC:
+   - 灵药 ➔ linh dược | 仙药 ➔ tiên dược | 神药 ➔ thần dược | 灵草 ➔ linh thảo | 仙草 ➔ tiên thảo | 宝药 ➔ bảo dược.
+   - 丹药 ➔ đan dược | 聚气丹 ➔ Tụ Khí Đan | 筑基丹 ➔ Trúc Cơ Đan | 疗伤丹 ➔ Liệu Thương Đan | 洗髓丹 ➔ Tẩy Tủy Đan | 回元丹 ➔ Hồi Nguyên Đan.
 
-9. HIỂU SẮC THÁI:
-   - "呵呵" tùy ngữ cảnh: cười lạnh / cười nhạt / hừ / khẽ cười.
-   - Không phải lúc nào cũng dịch là "Ha ha".
+9. PHÁP BẢO & BÍ TỊCH:
+   - 法器 ➔ pháp khí | 法宝 ➔ pháp bảo | 灵宝 ➔ linh bảo | 圣器 ➔ thánh khí | 神器 ➔ thần khí | 帝兵 ➔ đế binh | 飞剑 ➔ phi kiếm | 仙剑 ➔ tiên kiếm.
+   - 秘籍 ➔ bí tịch | 功法 ➔ công pháp | 武技 ➔ võ kỹ | 秘术 ➔ bí thuật | 神通 ➔ thần thông | 禁术 ➔ cấm thuật.
 
-10. DẤU CÂU VĂN HỌC CHUẨN:
-    - Dùng dấu gạch ngang "—" (em dash) cho đoạn ngắt câu, không dùng "-" đơn.
-    - Dấu ba chấm "..." nhất quán — không trộn "…" và "...".
-    - Cảm thán dùng "!" một lần, không viết "!!!" hay "!!!!".
+10. THÀNH NGỮ TIÊN HIỆP:
+    - 机缘 ➔ cơ duyên | 造化 ➔ tạo hóa | 因果 ➔ nhân quả | 天机 ➔ thiên cơ | 大道 ➔ đại đạo | 道心 ➔ đạo tâm | 心魔 ➔ tâm ma | 顿悟 ➔ đốn ngộ | 气运 ➔ khí vận | 悟性 ➔ ngộ tính.
 
-11. ĐOẠN VĂN RÕ RÀNG:
-    - Mỗi đoạn văn (paragraph) giữ nguyên từ bản gốc.
-    - KHÔNG gộp nhiều đoạn thành một, KHÔNG tự ý tách đoạn.
-    - Xuống dòng đúng vị trí như nguyên tác.
+11. THẾ LỰC & YÊU THÚ:
+    - 宗门 ➔ tông môn | 圣地 ➔ thánh địa | 皇朝 ➔ hoàng triều | 王朝 ➔ vương triều | 世家 ➔ thế gia | 古族 ➔ cổ tộc | 禁区 ➔ cấm khu | 秘境 ➔ bí cảnh.
+    - 妖兽 ➔ yêu thú | 神兽 ➔ thần thú | 凶兽 ➔ hung thú | 灵兽 ➔ linh thú | 圣兽 ➔ thánh thú.
 
-12. TỪ LÁY & THÀNH NGỮ THUẦN VIỆT:
-    - Ưu tiên từ láy tự nhiên: "lảo đảo", "lẩm bẩm", "thì thầm", "rì rào".
-    - Các từ Hán-Việt phổ thông: dùng khi phù hợp với khí quyển tiên hiệp.
-    - Tránh Hán Việt quá cứng nhắc trong đoạn hội thoại thường ngày.
+12. THỜI GIAN & ĐƠN VỊ CỔ:
+    - 片刻 ➔ chốc lát | 须臾 ➔ chớp mắt | 半炷香 ➔ nửa nén hương | 一炷香 ➔ một nén hương | 一盏茶 ➔ một chén trà | 一个时辰 ➔ một canh giờ | 一天 ➔ một ngày.
+    - 丈 ➔ trượng | 尺 ➔ xích | 寸 ➔ thốn | 里 ➔ dặm | 斤 ➔ cân | 两 ➔ lạng.
 
-13. TUYỆT ĐỐI KHÔNG ĐỂ SÓT CHỮ TRUNG:
-    - Dịch toàn bộ văn bản — KHÔNG để lại bất kỳ chữ Hán nào trong bản dịch.
-    - Nếu không chắc tên riêng, dùng phiên âm Hán-Việt chuẩn.
+13. CÂU NÓI & HÀNH ĐỘNG THƯỜNG GẶP:
+    - 冷哼 ➔ hừ lạnh | 冷笑 ➔ cười lạnh | 苦笑 ➔ cười khổ | 失笑 ➔ bật cười | 嗤笑 ➔ cười nhạo | 怒喝 ➔ quát lớn | 暴喝 ➔ quát vang | 沉声道 ➔ trầm giọng nói | 淡淡道 ➔ nhàn nhạt nói | 缓缓道 ➔ chậm rãi nói.
+    - 点头 ➔ gật đầu | 摇头 ➔ lắc đầu | 抱拳 ➔ ôm quyền | 拱手 ➔ chắp tay | 躬身 ➔ khom người | 作揖 ➔ chắp tay thi lễ | 行礼 ➔ hành lễ.
 
-CHỈ XUẤT RA VĂN BẢN DỊCH TIẾNG VIỆT. KHÔNG thêm ghi chú, giải thích, hay bình luận."""
+14. NHỮNG ĐIỀU TUYỆT ĐỐI CẤM (PROHIBITED TERMS):
+    - CẤM DỊCH: Ninh Bro, anh Ninh, chị Tô, Mr. Tô, Boss, Leader, Family Tô, Level, Skill, Dungeon, NPC, Foundation Establishment...
+
+CHỈ XUẤT RA VĂN BẢN DỊCH TIẾNG VIỆT HOÀN CHỈNH. KHÔNG thêm ghi chú, giải thích, hay bình luận."""
 
 
 class TranslationPipeline:
@@ -103,26 +106,24 @@ class TranslationPipeline:
     
     Luồng xử lý:
     1. TIỀN XỬ LÝ: Chuẩn hóa văn bản Trung, xóa quảng cáo, chuẩn hóa Unicode.
-    2. CHIA CHUNK: Tách thành các đoạn ≤12000 ký tự theo ranh giới đoạn văn.
-    3. CACHE: Kiểm tra SQLite cache để tránh dịch lại.
-    4. DỊCH SONG SONG: Tất cả chunks dịch cùng lúc với asyncio.gather() → 3-5x nhanh hơn.
+    2. NGUYÊN CHƯƠNG (≤35000 ký tự): Dịch nguyên 1 chương trong 1 request để ngữ cảnh liền mạch.
+    3. GOOGLE DRAFT: Tạo bản dịch thô Google Translate song song để làm khung nối câu mượt mà.
+    4. AI POLISHER: Gemini/LLM biên tập Hán Việt chuẩn + xưng hô Tiên Hiệp.
     5. HẬU XỬ LÝ: Ép Glossary bằng code, sửa lỗi dịch máy, chuẩn hóa dấu câu.
-    6. KIỂM DUYỆT: Kiểm tra tỷ lệ độ dài, Glossary compliance, xưng hô.
     """
 
     def __init__(self, client: TranslatorClient, db: AsyncSession, http_client: Optional[httpx.AsyncClient] = None):
         self.client = client
         self.db = db
-        # 12000 ký tự/chunk → ít API calls hơn, ngữ cảnh liền mạch hơn
-        self.chunk_size_limit = 12000
+        # 35000 ký tự/chunk → nguyên 1 chương truyện (~3000-8000 chữ Hán)
+        self.chunk_size_limit = 35000
         self.http_client = http_client
 
     # ==================================================================
     # CHUNKING
     # ==================================================================
     def _split_into_chunks(self, text: str) -> List[str]:
-        """Tách văn bản thành các chunk ≤ chunk_size_limit ký tự theo ranh giới đoạn văn.
-        Không bao giờ cắt giữa một đoạn hội thoại (dòng bắt đầu bằng dấu ngoặc kép)."""
+        """Tách văn bản thành các chunk ≤ chunk_size_limit ký tự theo ranh giới đoạn văn."""
         paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
         chunks = []
         current_chunk = []
@@ -131,17 +132,10 @@ class TranslationPipeline:
         for p in paragraphs:
             p_len = len(p)
             
-            # Nếu thêm đoạn này vượt giới hạn VÀ chunk hiện tại không rỗng
             if current_len + p_len > self.chunk_size_limit and current_chunk:
-                # Không cắt giữa hội thoại: nếu đoạn tiếp theo bắt đầu bằng "
-                # và đoạn trước cũng là hội thoại, gom chung
-                if p.startswith('"') and current_chunk[-1].startswith('"') and current_len + p_len < self.chunk_size_limit * 1.2:
-                    current_chunk.append(p)
-                    current_len += p_len + 2
-                else:
-                    chunks.append("\n\n".join(current_chunk))
-                    current_chunk = [p]
-                    current_len = p_len
+                chunks.append("\n\n".join(current_chunk))
+                current_chunk = [p]
+                current_len = p_len
             else:
                 current_chunk.append(p)
                 current_len += p_len + 2
@@ -199,10 +193,10 @@ class TranslationPipeline:
             await self.db.rollback()
 
     # ==================================================================
-    # GOOGLE TRANSLATE DRAFT (fallback khi AI thất bại)
+    # GOOGLE TRANSLATE DRAFT (Song song hóa để lấy bản nháp cực nhanh)
     # ==================================================================
     async def _get_draft_translation(self, text: str) -> str:
-        """Tạo bản dịch thô bằng Google Translate — chỉ dùng khi AI hoàn toàn thất bại."""
+        """Tạo bản dịch thô bằng Google Translate chạy song song siêu tốc."""
         if not text:
             return ""
             
@@ -224,10 +218,16 @@ class TranslationPipeline:
         if current_sub:
             sub_chunks.append("\n".join(current_sub))
             
+        # Run all sub-chunks in parallel via asyncio.gather
+        tasks = [self._get_draft_translation_segment(sub) for sub in sub_chunks]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
         translated_sub_chunks = []
-        for sub in sub_chunks:
-            translated_sub = await self._get_draft_translation_segment(sub)
-            translated_sub_chunks.append(translated_sub if translated_sub else "")
+        for r in results:
+            if isinstance(r, str):
+                translated_sub_chunks.append(r)
+            else:
+                translated_sub_chunks.append("")
                 
         return "\n\n".join(translated_sub_chunks)
 
@@ -235,7 +235,6 @@ class TranslationPipeline:
         """Dịch thô một đoạn < 1000 ký tự."""
         if not text.strip():
             return ""
-        # 1. Try Google Translate API (POST method, keyless)
         try:
             url = "https://translate.googleapis.com/translate_a/single"
             data = {"client": "gtx", "sl": "zh-CN", "tl": "vi", "dt": "t", "q": text}
@@ -257,7 +256,7 @@ class TranslationPipeline:
         except Exception as e:
             logger.warning(f"Google Translate API failed: {e}. Trying fallback...")
 
-        # 2. Fallback to deep-translator
+        # Fallback to deep-translator
         loop = asyncio.get_running_loop()
         try:
             draft = await loop.run_in_executor(
@@ -270,7 +269,7 @@ class TranslationPipeline:
             return ""
 
     # ==================================================================
-    # DỊCH MỘT CHUNK (core logic với retry)
+    # DỊCH MỘT CHUNK (core logic với retry & Google Draft)
     # ==================================================================
     async def _translate_single_chunk(
         self,
@@ -279,31 +278,48 @@ class TranslationPipeline:
         chunk_raw: str,
         glossaries: List[Glossary],
         custom_prompt: str,
-        context_hint: str = ""  # Gợi ý ngữ cảnh (250 ký tự cuối chunk trước)
+        context_hint: str = "",
+        bypass_cache: bool = False,
+        genre_profile: Optional[Dict[str, Any]] = None
     ) -> str:
         """Dịch một chunk đơn lẻ với đầy đủ pipeline:
-        Cache → Prompt → AI → Post-processing → Quality Check.
-        
-        context_hint: 250 ký tự cuối của chunk liền trước (nếu có) để giữ mạch xưng hô.
+        Pre-scan Genre Lock → Cache → Google Draft → Glossary → AI Restyle → Boundary Enforcer → Quality Check.
         """
         raw_hash = self._get_md5_hash(chunk_raw)
 
-        # 1. Check cache
-        cached = await self._get_cached_translation(raw_hash)
-        if cached:
-            logger.info(f"✅ Chunk {i}/{total_chunks} loaded from cache.")
-            return cached
+        # 1. Check cache (bỏ qua nếu bypass_cache=True)
+        if not bypass_cache:
+            cached = await self._get_cached_translation(raw_hash)
+            if cached:
+                logger.info(f"✅ Chunk {i}/{total_chunks} loaded from cache.")
+                return cached
+        else:
+            # Xóa cache cũ nếu đang ép dịch lại hoàn toàn
+            try:
+                await self.db.execute(delete(TranslationCache).where(TranslationCache.key_hash == raw_hash))
+                await self.db.commit()
+                logger.info(f"🗑️ Đã xóa cache cũ của chunk {i}/{total_chunks} để dịch mới 100%.")
+            except Exception as e:
+                logger.warning(f"Lỗi khi xóa cache cũ chunk {i}: {e}")
 
-        # 2. Build glossary context
+        # 2. Build Google Draft & Glossary context
+        draft_translation = await self._get_draft_translation(chunk_raw)
         glossary_prompt, glossary_map = build_glossary_context(chunk_raw, glossaries)
 
         max_retries = 3
         final_text = ""
         success = False
 
+        # Thể loại đã chốt (Genre Profile)
+        genre_code = genre_profile.get("genre_code", "XIANXIA") if genre_profile else "XIANXIA"
+        genre_addon = genre_profile.get("system_prompt_addon", "") if genre_profile else ""
+
         for attempt in range(max_retries):
-            # 3. Construct prompt
+            # 3. Construct prompt với Dynamic Context Header (Genre Lock = TRUE)
             system_instruction = SYSTEM_INSTRUCTION
+            if genre_addon:
+                system_instruction = f"[SYSTEM CONTEXT PAYLOAD]\n{genre_addon}\n\n" + system_instruction
+
             if custom_prompt:
                 system_instruction += f"\n\nYêu cầu đặc biệt từ người dùng: {custom_prompt}"
 
@@ -311,14 +327,16 @@ class TranslationPipeline:
             if glossary_prompt:
                 prompt_parts.append(glossary_prompt)
             if context_hint:
-                prompt_parts.append(f"Ngữ cảnh đoạn trước (để giữ mạch xưng hô): ...{context_hint}")
-            prompt_parts.append(f"Bản gốc tiếng Trung:\n{chunk_raw}")
-            prompt_parts.append("Bản dịch tiếng Việt hoàn chỉnh:")
+                prompt_parts.append(f"Ngữ cảnh đoạn trước: ...{context_hint}")
+            if draft_translation:
+                prompt_parts.append(f"Bản dịch thô Google Translate (dùng làm khung nối câu mượt mà):\n{draft_translation}")
+            prompt_parts.append(f"Văn bản gốc tiếng Trung:\n{chunk_raw}")
+            prompt_parts.append("Bản dịch tiếng Việt hoàn chỉnh (đã khóa thể loại & biên tập văn phong tự nhiên):")
 
             prompt = "\n\n".join(prompt_parts)
 
             # 4. Call AI
-            logger.info(f"Chunk {i}/{total_chunks} (attempt {attempt+1}/{max_retries}): Calling AI...")
+            logger.info(f"Chunk {i}/{total_chunks} (attempt {attempt+1}/{max_retries}, Genre: {genre_code}): Calling AI...")
             try:
                 res = await self.client.translate(prompt, system_instruction)
                 polished = res.get("text", "").strip()
@@ -359,8 +377,14 @@ class TranslationPipeline:
                 else:
                     raise err
 
-            # 5. Hậu xử lý
-            final_text = await postprocess_translated_text(polished, glossary_map, raw_chinese=chunk_raw, client=self.client)
+            # 5. Hậu xử lý & Boundary Enforcer
+            final_text = await postprocess_translated_text(
+                polished, 
+                glossary_map, 
+                raw_chinese=chunk_raw, 
+                client=self.client,
+                genre_code=genre_code
+            )
 
             # 6. Kiểm tra chữ Trung sót → retry
             if self._has_chinese_chars(final_text):
@@ -389,10 +413,19 @@ class TranslationPipeline:
                         f"Chunk {i} failed length check (ratio={ratio:.2f}) after {max_retries} attempts."
                     )
 
-            # 8. Quality Check (non-blocking)
-            qc_warnings = quality_check(final_text, chunk_raw, glossary_map)
-            for w in qc_warnings:
-                logger.warning(f"QC Chunk {i}: {w}")
+            # 8. Strict Quality Gatekeeper (CỔNG KIỂM DUYỆT CHẶN LỖI & TỰ ĐỘNG SỬA)
+            strict_passed, qc_errors = strict_quality_gatekeeper(final_text, chunk_raw, glossary_map)
+            if not strict_passed:
+                logger.warning(f"❌ Chunk {i}/{total_chunks} QC Gatekeeper phát hiện lỗi: {qc_errors}")
+                if attempt < max_retries - 1:
+                    # Thử lại và truyền thẳng phản hồi lỗi cho AI sửa
+                    custom_prompt = (custom_prompt + " " if custom_prompt else "") + f"[LỖI CẦN SỬA NGAY: {'; '.join(qc_errors)}. BẮT BUỘC DÙNG 'hắn/hắn ta', KHÔNG ĐỂ 'anh/anh ta', KHÔNG ĐỂ PINYIN!]"
+                    await asyncio.sleep(2.0)
+                    continue
+                else:
+                    # Hết lượt retry ➔ Kích hoạt Bộ Cưỡng Ép Sửa Lỗi Hậu Xử Lý 100% bằng code
+                    logger.info(f"🛠️ Kích hoạt Bộ Cưỡng Ép Sửa Lỗi Hậu Xử Lý cho Chunk {i}...")
+                    final_text = force_repair_all_errors(final_text, glossary_map)
 
             success = True
             break
@@ -411,12 +444,13 @@ class TranslationPipeline:
         self,
         raw_chinese: str,
         glossaries: List[Glossary],
-        custom_prompt: str = ""
+        custom_prompt: str = "",
+        bypass_cache: bool = False,
+        novel_title: str = "",
+        synopsis: str = ""
     ) -> str:
         """Pipeline chính để dịch toàn bộ một chương.
         
-        🚀 SONG SONG HÓA: Tất cả chunks được dịch đồng thời với asyncio.gather()
-        → Tốc độ tăng 3-5x so với dịch tuần tự.
         
         Context window: 250 ký tự cuối mỗi chunk được truyền sang chunk tiếp theo
         để giữ tính nhất quán xưng hô (áp dụng cho chunk i+1 khi dịch lại nếu cần).

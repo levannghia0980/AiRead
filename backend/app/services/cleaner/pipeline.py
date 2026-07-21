@@ -64,22 +64,7 @@ def clean_raw_chinese_text(text: str) -> str:
         if any(term in line_lower for term in ["69shuba", "69shu", "69shu.pro", "69shu.cx", "69shu.me", "twkan", "twkan.com", "twkan.co", "shuba"]):
             continue
             
-        # Skip consecutive duplicate lines
-        if cleaned_lines and cleaned_line == cleaned_lines[-1]:
-            continue
-            
         cleaned_lines.append(cleaned_line)
-    
-    # Strip non-consecutive watermarks: detect paragraphs that appear 2+ times
-    # across the entire chapter (anti-scraping watermarks inserted at random positions)
-    if len(cleaned_lines) >= 5:
-        line_counts = {}
-        for cl in cleaned_lines:
-            if len(cl) >= 10:
-                line_counts[cl] = line_counts.get(cl, 0) + 1
-        watermark_set = {l for l, c in line_counts.items() if c >= 2}
-        if watermark_set:
-            cleaned_lines = [cl for cl in cleaned_lines if cl not in watermark_set]
         
     # Reassemble and normalize spacing
     # Ensure paragraphs are separated by exactly one blank line

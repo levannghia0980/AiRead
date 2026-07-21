@@ -21,9 +21,12 @@ import {
   Save,
   ChevronRight,
   ChevronLeft,
-  Wand2
+  Wand2,
+  Headphones,
+  Volume2
 } from 'lucide-react'
 import { useNovelStore, ProgressData } from './store/useNovelStore'
+import AudioStudio from './components/AudioStudio'
 
 export default function App() {
   const {
@@ -66,7 +69,7 @@ export default function App() {
   } = useNovelStore()
 
   // Local UI State
-  const [activeTab, setActiveTab] = useState<'translate' | 'glossary' | 'library' | 'reader'>('translate')
+  const [activeTab, setActiveTab] = useState<'translate' | 'glossary' | 'library' | 'reader' | 'audio'>('translate')
 
   // Crawler URL State
   const [inputUrl, setInputUrl] = useState('')
@@ -106,6 +109,56 @@ export default function App() {
   const [quickZh, setQuickZh] = useState('')
   const [quickVi, setQuickVi] = useState('')
   const [isAddingQuickGlossary, setIsAddingQuickGlossary] = useState(false)
+
+  // Audio Engine State
+  const [isGeneratingAudio, setIsGeneratingAudio] = useState(false)
+  const [audioStatus, setAudioStatus] = useState<any>(null)
+  const [audioFiles, setAudioFiles] = useState<any[]>([])
+
+  const fetchAudioFiles = async (novelId: number) => {
+    try {
+      const res = await fetch(`/api/novels/${novelId}/audio/files`)
+      if (res.ok) {
+        const data = await res.json()
+        setAudioFiles(data.files || [])
+      }
+    } catch (e) {
+      console.error("Failed to fetch audio files", e)
+    }
+  }
+
+  const handleGenerateAudio = async (novelId: number) => {
+    setIsGeneratingAudio(true)
+    try {
+      const res = await fetch(`/api/novels/${novelId}/audio/generate`, { method: 'POST' })
+      const data = await res.json()
+      alert(data.message)
+      pollAudioStatus(novelId)
+    } catch (e) {
+      console.error("Failed to start audio generation", e)
+      setIsGeneratingAudio(false)
+    }
+  }
+
+  const pollAudioStatus = (novelId: number) => {
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/novels/${novelId}/audio/status`)
+        if (res.ok) {
+          const status = await res.json()
+          setAudioStatus(status)
+          if (!status.is_running) {
+            setIsGeneratingAudio(false)
+            clearInterval(interval)
+            fetchAudioFiles(novelId)
+          }
+        }
+      } catch (e) {
+        clearInterval(interval)
+        setIsGeneratingAudio(false)
+      }
+    }, 3000)
+  }
 
   // Auto-scroll for logs terminal
   const terminalEndRef = useRef<HTMLDivElement>(null)
@@ -165,8 +218,11 @@ export default function App() {
         .then(res => res.json())
         .then(data => setNovelGlossary(data))
         .catch(err => console.error("Failed to load novel glossary", err))
+      fetchAudioFiles(selectedNovel.novel.id)
     } else {
       setNovelGlossary([])
+      setAudioFiles([])
+      setAudioStatus(null)
     }
   }, [selectedNovel])
 
@@ -601,16 +657,27 @@ export default function App() {
           >
             <Eye className="w-4 h-4" /> Đọc Truyện
           </button>
+          <button
+            onClick={() => setActiveTab('audio')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${activeTab === 'audio' ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/20 border border-emerald-500/40 text-emerald-400 font-bold' : 'text-slate-400 hover:text-slate-200'}`}
+          >
+            <Headphones className="w-4 h-4 text-emerald-400" /> Audio Studio
+          </button>
         </nav>
       </header>
 
       {/* Main Content Layout */}
-      <main className="flex-grow lg:flex-1 max-w-7xl w-full mx-auto p-4 lg:p-6 grid grid-cols-1 lg:grid-cols-3 gap-6 overflow-hidden min-h-0">
+      <main className="flex-grow lg:flex-1 max-w-7xl w-full mx-auto p-4 lg:p-6 overflow-hidden min-h-0 flex flex-col">
+        {activeTab === 'audio' ? (
+          <div className="glass-panel rounded-2xl p-0 flex-1 overflow-hidden h-full">
+            <AudioStudio novels={novels} />
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 overflow-hidden min-h-0 flex-1">
+            {/* Left Columns (Inputs, Control Panels, Glossary forms depending on tabs) */}
+            <div className="lg:col-span-2 flex flex-col gap-4 overflow-hidden h-full min-h-0">
 
-        {/* Left Columns (Inputs, Control Panels, Glossary forms depending on tabs) */}
-        <div className="lg:col-span-2 flex flex-col gap-4 overflow-hidden h-full min-h-0">
-
-          {activeTab === 'translate' && (
+              {activeTab === 'translate' && (
             <>
               {/* Novel URL Input Card */}
               <div className="glass-panel rounded-2xl p-6 flex flex-col gap-4">
@@ -1129,6 +1196,16 @@ export default function App() {
                             {isCheckingQuality ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <span className="text-sm">🔍</span>}
                             Kiểm Tra Lỗi
                           </button>
+                          {/* Generate Audio Hoai My 1.75x Button */}
+                          <button
+                            onClick={() => handleGenerateAudio(selectedNovel.novel.id)}
+                            disabled={isGeneratingAudio || selectedNovel.chapters.filter(c => c.status === 'COMPLETED').length === 0}
+                            className="border border-emerald-500/40 hover:bg-emerald-500/10 text-emerald-400 font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg disabled:opacity-40"
+                            title="Tạo Audio giọng nữ Hoài My (1.75x) tự động phân tập 3-4 tiếng"
+                          >
+                            {isGeneratingAudio ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Headphones className="w-3.5 h-3.5" />}
+                            Tạo Audio (1.75x)
+                          </button>
                           {/* Download TXT */}
                           <button
                             onClick={() => handleDownloadNovel(selectedNovel.novel.id, 'txt')}
@@ -1160,6 +1237,50 @@ export default function App() {
                         </div>
                       </div>
                     </div>
+
+                    {/* Audio Generation Status & Files Playlist Panel */}
+                    {(audioStatus?.is_running || audioFiles.length > 0) && (
+                      <div className="mx-5 mt-3 rounded-xl border border-emerald-500/30 bg-emerald-950/20 overflow-hidden animate-fade-in flex-shrink-0 p-3">
+                        <div className="flex items-center justify-between border-b border-emerald-500/20 pb-2 mb-2">
+                          <span className="text-xs font-bold text-emerald-400 flex items-center gap-2">
+                            <Headphones className="w-4 h-4" />
+                            Danh Sách Tập Audio MP3 (Giọng Hoài My 1.75x — 3-4 tiếng/tập)
+                          </span>
+                          {audioStatus?.is_running && (
+                            <span className="text-[11px] text-emerald-300 animate-pulse font-medium">
+                              ⏳ {audioStatus.progress_pct}% — {audioStatus.msg}
+                            </span>
+                          )}
+                        </div>
+
+                        {audioFiles.length > 0 ? (
+                          <div className="flex flex-col gap-2 max-h-48 overflow-y-auto">
+                            {audioFiles.map((file, idx) => (
+                              <div key={idx} className="flex items-center justify-between bg-slate-900/60 p-2 rounded-lg border border-emerald-500/20 text-xs">
+                                <div className="flex items-center gap-2 truncate">
+                                  <Volume2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                                  <span className="font-semibold text-slate-200 truncate">{file.filename}</span>
+                                  <span className="text-[10px] text-slate-400 flex-shrink-0">({file.size_mb} MB)</span>
+                                </div>
+                                <div className="flex items-center gap-2 flex-shrink-0">
+                                  <audio controls src={file.download_url} className="h-7 w-44" />
+                                  <a
+                                    href={file.download_url}
+                                    download
+                                    className="px-2 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded font-bold hover:bg-emerald-500/30 transition-all text-[11px] flex items-center gap-1"
+                                  >
+                                    <Download className="w-3 h-3" />
+                                    Tải MP3
+                                  </a>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-[11px] text-slate-400">Đang tiến hành tạo các tập Audio MP3...</p>
+                        )}
+                      </div>
+                    )}
 
                     {/* Save Result */}
                     {saveResult && (
@@ -1657,7 +1778,9 @@ export default function App() {
             </div>
           </div>
 
-        </div>
+            </div>
+          </div>
+        )}
       </main>
 
       {/* Footer details */}

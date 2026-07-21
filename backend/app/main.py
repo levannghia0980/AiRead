@@ -13,6 +13,7 @@ from app.core.database import init_db
 from app.api.novels import router as novels_router
 from app.api.translation import router as translation_router
 from app.api.settings import router as settings_router
+from app.api.audio import router as audio_router
 
 app = FastAPI(title="AiRead Novel Translator API v2")
 
@@ -37,6 +38,7 @@ app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")
 app.include_router(novels_router)
 app.include_router(translation_router)
 app.include_router(settings_router)
+app.include_router(audio_router)
 
 @app.on_event("startup")
 async def startup_event():

@@ -128,16 +128,80 @@ async def get_novel_details(novel_id: int, db: AsyncSession = Depends(get_db)):
         "chapters": chapters
     }
 
+async def clear_cache_for_raw_texts(db: AsyncSession, raw_texts: List[str]):
+    """
+    Xóa triệt để 100% cache trong bảng translation_cache liên quan đến danh sách văn bản tiếng Trung gốc.
+    Hỗ trợ tính MD5 hashes theo nhiều chunk sizes (35000, 12000, 5000) và xóa trực tiếp theo raw_text.
+    """
+    if not raw_texts:
+        return
+        
+    chunk_hashes = set()
+    for raw in raw_texts:
+        if not raw or not raw.strip():
+            continue
+            
+        paragraphs = [p.strip() for p in raw.split("\n") if p.strip()]
+        for size in [35000, 12000, 5000]:
+            current_chunk = []
+            current_len = 0
+            for p in paragraphs:
+                p_len = len(p)
+                if current_len + p_len > size and current_chunk:
+                    chunk_text = "\n\n".join(current_chunk)
+                    chunk_hashes.add(hashlib.md5(chunk_text.encode("utf-8")).hexdigest())
+                    current_chunk = [p]
+                    current_len = p_len
+                else:
+                    current_chunk.append(p)
+                    current_len += p_len + 2
+            if current_chunk:
+                chunk_text = "\n\n".join(current_chunk)
+                chunk_hashes.add(hashlib.md5(chunk_text.encode("utf-8")).hexdigest())
+                
+        chunk_hashes.add(hashlib.md5(raw.strip().encode("utf-8")).hexdigest())
+
+    if chunk_hashes:
+        hash_list = list(chunk_hashes)
+        for i in range(0, len(hash_list), 500):
+            batch = hash_list[i:i+500]
+            await db.execute(
+                delete(TranslationCache).where(TranslationCache.key_hash.in_(batch))
+            )
+    await db.commit()
+
+
 @router.delete("/{novel_id}")
 async def delete_novel(novel_id: int, db: AsyncSession = Depends(get_db)):
-    """Deletes novel and all its related chapters/glossaries."""
+    """Deletes novel and all its related chapters, glossaries, and translation cache."""
     novel = await db.get(Novel, novel_id)
     if not novel:
         raise HTTPException(status_code=404, detail="Không tìm thấy bộ truyện")
         
+    # Lấy toàn bộ raw_text của các chương để xóa sạch cache khỏi SQLite
+    stmt = select(Chapter.raw_text).where(Chapter.novel_id == novel_id, Chapter.raw_text != None)
+    res = await db.execute(stmt)
+    raw_texts = [r for r in res.scalars().all() if r]
+    
+    if raw_texts:
+        await clear_cache_for_raw_texts(db, raw_texts)
+        
     await db.delete(novel)
     await db.commit()
-    return {"success": True, "message": f"Đã xóa thành công truyện {novel.title}"}
+    return {"success": True, "message": f"Đã xóa hoàn toàn truyện '{novel.title}' và xóa sạch bộ nhớ tạm (cache)."}
+
+
+@router.delete("/{novel_id}/cache")
+async def clear_novel_cache(novel_id: int, db: AsyncSession = Depends(get_db)):
+    """API chủ động xóa sạch toàn bộ cache dịch thuật của bộ truyện."""
+    stmt = select(Chapter.raw_text).where(Chapter.novel_id == novel_id, Chapter.raw_text != None)
+    res = await db.execute(stmt)
+    raw_texts = [r for r in res.scalars().all() if r]
+    
+    if raw_texts:
+        await clear_cache_for_raw_texts(db, raw_texts)
+        return {"success": True, "message": f"Đã xóa sạch bộ nhớ tạm (cache) của truyện ID {novel_id}."}
+    return {"success": True, "message": "Không có cache nào để xóa."}
 
 # Glossary endpoints
 @router.get("/{novel_id}/glossary")
@@ -312,52 +376,12 @@ async def reset_chapters(novel_id: int, payload: ResetChaptersRequest, db: Async
     if not chapters:
         raise HTTPException(status_code=404, detail="Không tìm thấy chương để reset")
         
-    for ch in chapters:
-        # Clear Translation Cache for this chapter's chunks if raw_text exists
-        if ch.raw_text:
-            try:
-                # 1. Tách và dọn dẹp các đoạn văn để tìm các chunk chính xác (12000 ký tự) giống logic dịch
-                paragraphs = [p.strip() for p in ch.raw_text.split("\n") if p.strip()]
-                chunks = []
-                current_chunk = []
-                current_len = 0
-                for p in paragraphs:
-                    p_len = len(p)
-                    if current_len + p_len > 12000 and current_chunk:
-                        if p.startswith('"') and current_chunk[-1].startswith('"') and current_len + p_len < 12000 * 1.2:
-                            current_chunk.append(p)
-                            current_len += p_len + 2
-                        else:
-                            chunks.append("\n\n".join(current_chunk))
-                            current_chunk = [p]
-                            current_len = p_len
-                    else:
-                        current_chunk.append(p)
-                        current_len += p_len + 2
-                if current_chunk:
-                    chunks.append("\n\n".join(current_chunk))
-                
-                # Tính MD5 của từng chunk
-                chunk_hashes = [hashlib.md5(c.encode("utf-8")).hexdigest() for c in chunks if c.strip()]
-                
-                # 2. Xóa cache theo MD5 key_hash
-                if chunk_hashes:
-                    await db.execute(
-                        delete(TranslationCache).where(
-                            TranslationCache.key_hash.in_(chunk_hashes)
-                        )
-                    )
-                
-                # 3. Fallback: Xóa bằng so khớp chuỗi con (instr) để đảm bảo sạch 100% các đoạn lẻ khác
-                await db.execute(
-                    delete(TranslationCache).where(
-                        func.instr(ch.raw_text, TranslationCache.raw_text) > 0
-                    )
-                )
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).warning(f"Lỗi khi xóa cache của chương {ch.chapter_no}: {e}")
+    # Xóa sạch cache dịch thuật cũ của các chương này
+    raw_texts = [ch.raw_text for ch in chapters if ch.raw_text]
+    if raw_texts:
+        await clear_cache_for_raw_texts(db, raw_texts)
 
+    for ch in chapters:
         ch.status = "PENDING"
         ch.raw_text = None
         ch.translated_text = None

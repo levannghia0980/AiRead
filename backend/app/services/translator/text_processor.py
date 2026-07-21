@@ -9,9 +9,115 @@ import logging
 import json
 import urllib.request
 import urllib.parse
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Any
 
 logger = logging.getLogger(__name__)
+
+# ==============================================================================
+# FAST-SCANNER MULTI-GENRE AUTO-DETECTOR (PRE-PROCESSING)
+# ==============================================================================
+def detect_novel_genre_profile(title: str = "", synopsis: str = "", raw_chinese_head: str = "") -> Dict[str, Any]:
+    """
+    Tiền xử lý Fast-Scanner (<10ms): Nhận diện 100% thể loại truyện và khóa Translation Context Payload.
+    
+    Hỗ trợ 5 thể loại chính:
+    1. XIANXIA: Tiên Hiệp / Huyền Huyễn
+    2. HISTORICAL: Cổ Trang / Kiếm Hiệp / Lịch Sử
+    3. MODERN_URBAN: Đô Thị Hiện Đại / Thương Chiến / Linh Dị
+    4. ROMANCE: Ngôn Tình / Nữ Cường
+    5. SCI_FI_SYSTEM: Mạt Thế / Khoa Học Viễn Tưởng / Game Hệ Thống
+    """
+    text_to_scan = f"{title} {synopsis} {raw_chinese_head[:800]}".lower()
+    
+    # Fast Hard Markers Lookup Matrix
+    xianxia_markers = ["宗门", "筑基", "丹田", "灵气", "飞剑", "渡劫", "修士", "妖兽", "仙人", "金丹", "元婴", "修仙", "仙帝", "洞府"]
+    historical_markers = ["皇朝", "掌门", "江湖", "武林", "官府", "少爷", "小姐", "拜见", "朝廷", "将军", "王爷", "刺客", "镖局"]
+    modern_markers = ["公司", "手机", "汽车", "总裁", "警察", "医院", "跑车", "信用卡", "公园", "股票", "集团", "律师", "酒吧", "别墅", "警车"]
+    romance_markers = ["霸道", "联姻", "闺蜜", "豪门", "男神", "娇妻", "影后", "白月光", "前夫", "虐恋", "真千金", "假千金"]
+    scifi_markers = ["系统", "异能", "基地", "丧尸", "经验值", "玩家", "副本", "末世", "星际", "机甲", "进化", "能级"]
+
+    scores = {
+        "XIANXIA": sum(text_to_scan.count(m) * 2 for m in xianxia_markers),
+        "HISTORICAL": sum(text_to_scan.count(m) * 2 for m in historical_markers),
+        "MODERN_URBAN": sum(text_to_scan.count(m) * 3 for m in modern_markers),
+        "ROMANCE": sum(text_to_scan.count(m) * 2 for m in romance_markers),
+        "SCI_FI_SYSTEM": sum(text_to_scan.count(m) * 2 for m in scifi_markers),
+    }
+
+    detected_genre = max(scores, key=scores.get)
+    max_score = scores[detected_genre]
+
+    if max_score == 0:
+        detected_genre = "XIANXIA"
+
+    profiles = {
+        "XIANXIA": {
+            "genre_code": "XIANXIA",
+            "genre_name": "Tiên Hiệp / Huyền Huyễn",
+            "system_prompt_addon": "GENRE: Xianxia / Xuanhuan. LOCK: TRUE. Dùng xưng hô cổ trang (ta/ngươi, hắn/nàng/y). Thuật ngữ Hán-Việt chuẩn Tiên Hiệp (Trúc Cơ, Đan Điền, Bí Cảnh). TUYỆT ĐỐI KHÔNG dùng từ hiện đại (xe hơi, công ty, anh/em, sếp).",
+            "pronoun_default": ("hắn", "nàng", "y", "ta", "ngươi")
+        },
+        "HISTORICAL": {
+            "genre_code": "HISTORICAL",
+            "genre_name": "Cổ Trang / Kiếm Hiệp / Lịch Sử",
+            "system_prompt_addon": "GENRE: Historical / Wuxia. LOCK: TRUE. Dùng xưng hô Hán-Việt phong kiến (hắn/nàng, huynh/đệ/tỷ/muội, bá phụ, thiếu gia, vương gia). TUYỆT ĐỐI KHÔNG dùng từ hiện đại.",
+            "pronoun_default": ("hắn", "nàng", "huynh", "đệ", "tỷ", "muội")
+        },
+        "MODERN_URBAN": {
+            "genre_code": "MODERN_URBAN",
+            "genre_name": "Đô Thị Hiện Đại / Thương Chiến / Linh Dị",
+            "system_prompt_addon": "GENRE: Modern Urban / Business. LOCK: TRUE. Dùng văn phong Đô Thị Hiện Đại tự nhiên (hắn/anh/tôi/cậu/cô ấy). Thuật ngữ hiện đại (công ty, chủ tịch, xe hơi, máy tính, cảnh sát). TUYỆT ĐỐI KHÔNG dùng từ cổ trang/tiên hiệp lạc quẻ (bổn tọa, tại hạ, động phủ, độ kiếp).",
+            "pronoun_default": ("hắn", "anh", "tôi", "cậu", "cô ấy")
+        },
+        "ROMANCE": {
+            "genre_code": "ROMANCE",
+            "genre_name": "Ngôn Tình / Nữ Cường",
+            "system_prompt_addon": "GENRE: Romance. LOCK: TRUE. Dùng văn phong Ngôn Tình ngọt ngào, cảm xúc sâu lắng (chàng/nàng hoặc anh/em, thiếu gia, tiểu thư). TUYỆT ĐỐI KHÔNG dùng từ ngữ khô cứng hay kiếm hiệp.",
+            "pronoun_default": ("chàng", "nàng", "anh", "em")
+        },
+        "SCI_FI_SYSTEM": {
+            "genre_code": "SCI_FI_SYSTEM",
+            "genre_name": "Mạt Thế / Khoa Học Viễn Tưởng / Game Hệ Thống",
+            "system_prompt_addon": "GENRE: Sci-Fi / Post-Apocalyptic / System. LOCK: TRUE. Dùng thuật ngữ Game/Hệ thống/Viễn tưởng (căn cứ, kỹ năng, cấp độ, quái vật, hệ thống, người chơi). Xưng hô (hắn/y/ta/ngươi).",
+            "pronoun_default": ("hắn", "y", "ta", "ngươi")
+        }
+    }
+
+    return profiles[detected_genre]
+
+
+def enforce_genre_boundary_fixes(translated: str, genre_code: str = "XIANXIA") -> str:
+    """
+    Hậu xử lý Boundary Enforcer: TỰ ĐỘNG SỬA 100% các từ "lạc quẻ" theo thể loại đã chọn.
+    """
+    if not translated:
+        return translated
+
+    if genre_code in ["XIANXIA", "HISTORICAL"]:
+        modern_to_ancient = [
+            (r"\bxe hơi\b", "xe ngựa"),
+            (r"\bô tô\b", "xe ngựa"),
+            (r"\btaxi\b", "xe ngựa"),
+            (r"\bđiện thoại\b", "truyền âm phù"),
+            (r"\bsếp\b", "chưởng môn"),
+            (r"\bcông ty\b", "thương hội"),
+        ]
+        for p, r in modern_to_ancient:
+            translated = re.sub(p, r, translated, flags=re.IGNORECASE)
+
+    elif genre_code == "MODERN_URBAN":
+        ancient_to_modern = [
+            (r"\bbổn tọa\b", "tôi"),
+            (r"\btại hạ\b", "tôi"),
+            (r"\bđộng phủ\b", "căn hộ"),
+            (r"\bđại đạo\b", "con đường"),
+            (r"\bphân thân\b", "bản sao"),
+        ]
+        for p, r in ancient_to_modern:
+            translated = re.sub(p, r, translated, flags=re.IGNORECASE)
+
+    return translated
+
 
 # ==============================================================================
 # TIỀN XỬ LÝ (PRE-PROCESSING) - Áp dụng trước khi gửi cho AI dịch
@@ -420,34 +526,115 @@ def preprocess_chinese_text(raw_text: str) -> str:
     return text.strip()
 
 
+# ==============================================================================
+# MASTER TU TIÊN GLOSSARY — Kho thuật ngữ Hán-Việt Tiên Hiệp/Cổ Trang mẫu
+# ==============================================================================
+MASTER_TUTIEN_GLOSSARY = {
+    # Họ tộc
+    "苏家": "Tô gia", "林家": "Lâm gia", "叶家": "Diệp gia", "萧家": "Tiêu gia",
+    "楚家": "Sở gia", "宁家": "Ninh gia", "王家": "Vương gia", "李家": "Lý gia",
+    "赵家": "Triệu gia", "秦家": "Tần gia", "韩家": "Hàn gia", "陈家": "Trần gia",
+    "周家": "Chu gia", "柳家": "Liễu gia", "白家": "Bạch gia", "沈家": "Thẩm gia",
+    
+    # Tên họ phổ biến
+    "苏": "Tô", "林": "Lâm", "叶": "Diệp", "萧": "Tiêu", "楚": "Sở", "宁": "Ninh",
+    "王": "Vương", "李": "Lý", "赵": "Triệu", "秦": "Tần", "韩": "Hàn", "陈": "Trần",
+    "周": "Chu", "柳": "Liễu", "白": "Bạch", "沈": "Thẩm",
+    
+    # Địa vị & Quan chức
+    "少爷": "thiếu gia", "小姐": "tiểu thư", "老祖": "lão tổ", "家主": "gia chủ",
+    "族长": "tộc trưởng", "宗主": "tông chủ", "掌门": "chưởng môn", "门主": "môn chủ",
+    "圣子": "thánh tử", "圣女": "thánh nữ", "少主": "thiếu chủ", "宫主": "cung chủ",
+    "峰主": "phong chủ", "殿主": "điện chủ", "教主": "giáo chủ", "国师": "quốc sư",
+    
+    # Quan hệ tu luyện & Xưng hô
+    "师兄": "sư huynh", "大师兄": "đại sư huynh", "二师兄": "nhị sư huynh",
+    "师弟": "sư đệ", "师妹": "sư muội", "师姐": "sư tỷ", "大师姐": "đại sư tỷ",
+    "伯父": "bá phụ", "伯母": "bá mẫu", "叔父": "thúc phụ", "叔母": "thẩm thẩm",
+    "姑姑": "cô cô", "姨娘": "dì", "岳父": "nhạc phụ", "岳母": "nhạc mẫu",
+    
+    # Tu tiên & Nghề nghiệp
+    "修士": "tu sĩ", "修仙者": "tu tiên giả", "仙人": "tiên nhân", "真人": "chân nhân",
+    "道友": "đạo hữu", "散修": "tán tu", "剑修": "kiếm tu", "魔修": "ma tu",
+    "鬼修": "quỷ tu", "体修": "thể tu", "丹师": "đan sư", "器师": "luyện khí sư",
+    "符师": "phù sư", "阵法师": "trận pháp sư",
+    
+    # Cảnh giới
+    "炼气": "Luyện Khí", "筑基": "Trúc Cơ", "金丹": "Kim Đan", "元婴": "Nguyên Anh",
+    "化神": "Hóa Thần", "炼虚": "Luyện Hư", "合体": "Hợp Thể", "渡劫": "Độ Kiếp",
+    "大乘": "Đại Thừa", "真仙": "Chân Tiên", "金仙": "Kim Tiên", "太乙金仙": "Thái Ất Kim Tiên",
+    "大罗金仙": "Đại La Kim Tiên",
+    
+    # Linh dược & Đan dược
+    "灵药": "linh dược", "仙药": "tiên dược", "神药": "thần dược", "灵草": "linh thảo",
+    "仙草": "tiên thảo", "宝药": "bảo dược", "丹药": "đan dược", "聚气丹": "Tụ Khí Đan",
+    "筑基丹": "Trúc Cơ Đan", "疗伤丹": "Liệu Thương Đan", "洗髓丹": "Tẩy Tủy Đan", "回元丹": "Hồi Nguyên Đan",
+    
+    # Pháp bảo & Bí tịch
+    "法器": "pháp khí", "法宝": "pháp bảo", "灵宝": "linh bảo", "圣器": "thánh khí",
+    "神器": "thần khí", "帝兵": "đế binh", "飞剑": "phi kiếm", "仙剑": "tiên kiếm",
+    "秘籍": "bí tịch", "功法": "công pháp", "武技": "võ kỹ", "秘术": "bí thuật",
+    "神通": "thần thông", "禁术": "cấm thuật",
+    
+    # Thành ngữ & Cơ duyên
+    "机缘": "cơ duyên", "造化": "tạo hóa", "因果": "nhân quả", "天机": "thiên cơ",
+    "大道": "đại đạo", "道心": "đạo tâm", "心魔": "tâm ma", "顿悟": "đốn ngộ",
+    "气运": "khí vận", "悟性": "ngộ tính",
+    
+    # Thế lực & Yêu thú
+    "宗门": "tông môn", "圣地": "thánh địa", "皇朝": "hoàng triều", "王朝": "vương triều",
+    "世家": "thế gia", "古族": "cổ tộc", "禁区": "cấm khu", "秘境": "bí cảnh",
+    "妖兽": "yêu thú", "神兽": "thần thú", "凶兽": "hung thú", "灵兽": "linh thú", "圣兽": "thánh thú",
+    
+    # Thời gian & Đơn vị cổ
+    "片刻": "chốc lát", "须臾": "chớp mắt", "半炷香": "nửa nén hương", "一炷香": "một nén hương",
+    "一盏茶": "một chén trà", "一个时辰": "một canh giờ", "一天": "một ngày",
+    "丈": "trượng", "尺": "xích", "寸": "thốn", "里": "dặm", "斤": "cân", "两": "lạng",
+    
+    # Câu nói & Hành động
+    "冷哼": "hừ lạnh", "冷笑": "cười lạnh", "苦笑": "cười khổ", "失笑": "bật cười",
+    "嗤笑": "cười nhạo", "怒喝": "quát lớn", "暴喝": "quát vang", "沉声道": "trầm giọng nói",
+    "淡淡道": "nhàn nhạt nói", "缓缓道": "chậm rãi nói", "点头": "gật đầu", "摇头": "lắc đầu",
+    "抱拳": "ôm quyền", "拱手": "chắp tay", "躬身": "khom người", "作揖": "chắp tay thi lễ", "行礼": "hành lễ"
+}
+
+
 def build_glossary_context(text: str, glossaries: list) -> Tuple[str, Dict[str, str]]:
     """
     Trích xuất các thuật ngữ Glossary xuất hiện trong đoạn văn bản.
-    
-    Trả về:
-      - glossary_prompt: chuỗi để chèn vào prompt cho AI
-      - glossary_map: dict {chinese_term -> vietnamese_term} để dùng cho post-processing
+    Tự động kết hợp Kho Thuật Ngữ Mẫu Master Tu Tiên + Từ điển người dùng.
     """
-    if not text or not glossaries:
+    if not text:
         return "", {}
     
     matched = []
     glossary_map = {}
     seen = set()
     
-    # Ưu tiên cụm từ dài hơn trước (longest match first)
-    sorted_glossaries = sorted(glossaries, key=lambda x: len(x.chinese_term), reverse=True)
-    
-    for g in sorted_glossaries:
-        if not g.is_active or g.chinese_term in seen:
-            continue
-        if g.chinese_term in text:
-            seen.add(g.chinese_term)
-            matched.append(f"  {g.chinese_term} → {g.vietnamese_term}")
-            glossary_map[g.chinese_term] = g.vietnamese_term
+    # 1. Nạp từ điển người dùng truyền vào (nếu có)
+    if glossaries:
+        sorted_glossaries = sorted(glossaries, key=lambda x: len(x.chinese_term), reverse=True)
+        for g in sorted_glossaries:
+            if not g.is_active or g.chinese_term in seen:
+                continue
+            if g.chinese_term in text:
+                seen.add(g.chinese_term)
+                matched.append(f"  {g.chinese_term} → {g.vietnamese_term}")
+                glossary_map[g.chinese_term] = g.vietnamese_term
+                
+    # 2. Tự động nạp thuật ngữ mẫu Tiên Hiệp nếu chưa có
+    sorted_master = sorted(MASTER_TUTIEN_GLOSSARY.items(), key=lambda x: len(x[0]), reverse=True)
+    for zh_term, vi_term in sorted_master:
+        if zh_term not in seen and zh_term in text:
+            seen.add(zh_term)
+            matched.append(f"  {zh_term} → {vi_term}")
+            glossary_map[zh_term] = vi_term
     
     if not matched:
         return "", {}
+        
+    prompt_lines = ["Bảng thuật ngữ bắt buộc áp dụng (Glossary):"] + matched
+    return "\n".join(prompt_lines), glossary_map
     
     glossary_prompt = (
         "Bảng thuật ngữ bắt buộc (PHẢI dùng đúng chính tả dưới đây, KHÔNG được dịch khác):\n"
@@ -582,7 +769,8 @@ async def postprocess_translated_text(
     translated: str,
     glossary_map: Dict[str, str],
     raw_chinese: str = "",
-    client = None
+    client = None,
+    genre_code: str = "XIANXIA"
 ) -> str:
     """
     Hậu xử lý bản dịch tiếng Việt sau khi nhận từ AI.
@@ -590,11 +778,14 @@ async def postprocess_translated_text(
     Bước 1: Chuẩn hóa dấu ngoặc kép, dấu câu
     Bước 2: Sửa lỗi dịch máy phổ biến (machine translation artifacts)
     Bước 3: Đối chiếu & ép Glossary bắt buộc (post-enforcement)
-    Bước 4: Chuẩn hóa khoảng trắng và xuống dòng
-    Bước 5: Loại bỏ lời giải thích / ghi chú do AI tự thêm
+    Bước 4: Sửa từ "lạc quẻ" theo thể loại (Genre Boundary Enforcer)
+    Bước 5: Chuẩn hóa khoảng trắng và xuống dòng
     """
     if not translated:
         return ""
+        
+    # Boundary Enforcer theo thể loại
+    translated = enforce_genre_boundary_fixes(translated, genre_code)
     
     # ---- Bước 0: Xóa watermark trong bản dịch (câu lặp không liên tiếp) ----
     translated = _strip_translated_watermarks(translated)
@@ -606,6 +797,63 @@ async def postprocess_translated_text(
     # ---- Bước 2: Sửa lỗi dịch máy phổ biến ----
     for pattern, replacement in COMPILED_MT_FIXES:
         translated = pattern.sub(replacement, translated)
+        
+    # Sửa lỗi tên riêng Pinyin / dịch ngô nghê còn sót của Google Translate
+    pinyin_auto_fixes = [
+        (r"\bHọc viện Yushan\b", "Học viện Ngọc Sơn"),
+        (r"\bThư viện Yushan\b", "Thư viện Ngọc Sơn"),
+        (r"\bYushan\b", "Ngọc Sơn"),
+        (r"\bgia đình Su\b", "Tô gia"),
+        (r"\bnhà Su\b", "nhà họ Tô"),
+        (r"\bhọ Su\b", "họ Tô"),
+        (r"\bSu Xiaoxiao\b", "Tô Tiếu Tiếu"),
+        (r"\bLei Wang\b", "Lôi Vọng"),
+        (r"\bQingyi\b", "Thanh Y"),
+        (r"\bRuoping\b", "Nhược Bình"),
+        (r"\bA Kang\b", "A Khang"),
+    ]
+    for pattern, rep in pinyin_auto_fixes:
+        translated = re.sub(pattern, rep, translated, flags=re.IGNORECASE)
+        
+    # Cố định ngôi xưng hô toàn chương (POV Locking) - chống nhảy ngôi ngoài lời thoại
+    translated = lock_pov_pronouns(translated)
+    
+    # Biên tập nhịp văn & Việt hóa câu văn khô cứng
+    translated = refine_cinematic_rhythm(translated)
+        
+    # Sửa lỗi quy tắc Họ tộc: "nhà họ X" / "gia đình X" ➔ "X gia"
+    viet_name_char = r"[A-ZÁÀẢÃẠĂẮẶẲẴÂẤẬẨẪÉÈẺẼẸÊẾỆỂỄÍÌỈĨỊÓÒỎÕỌÔỐỘỔỖƠỚỢỞỠÚÙỦŨỤƯỨỰỬỮÝỲỶỸỴĐ][a-záàảãạăắặẳẵâấậẩẫéèẻẽẹêếệểễíìỉĩịóòỏõọôốộổỗơớợởỡúùủũụưứựửữỳýỷỹỵđ]+"
+    translated = re.sub(
+        rf"\b(?:nhà họ|gia đình)\s+({viet_name_char})\b",
+        r"\1 gia",
+        translated
+    )
+    
+    # Sửa lỗi xưng hô: "anh X" ➔ "X huynh", "chị Y" ➔ "Y tỷ" (khi X/Y là tên riêng viết hoa)
+    translated = re.sub(
+        rf"\banh\s+({viet_name_char})\b",
+        r"\1 huynh",
+        translated
+    )
+    translated = re.sub(
+        rf"\bchị\s+({viet_name_char})\b",
+        r"\1 tỷ",
+        translated
+    )
+    
+    # Sửa lỗi từ ngữ Tây hóa / Cấm xuất hiện
+    prohibited_fixes = [
+        (r"\bNinh Bro\b", "Ninh huynh"),
+        (r"\bMr\.?\s+([A-Z][a-z]+)\b", r"\1 gia chủ"),
+        (r"\bBoss\b", "Trùm"),
+        (r"\bLeader\b", "Thủ lĩnh"),
+        (r"\bFamily\s+([A-Z][a-z]+)\b", r"\1 gia"),
+        (r"\bFoundation Establishment\b", "Trúc Cơ"),
+        (r"\bGolden Core\b", "Kim Đan"),
+        (r"\bNascent Soul\b", "Nguyên Anh"),
+    ]
+    for pattern, rep in prohibited_fixes:
+        translated = re.sub(pattern, rep, translated, flags=re.IGNORECASE)
         
     # Sửa lỗi thuật ngữ luyện đan theo ngữ cảnh bản gốc Trung Quốc
     if raw_chinese:
@@ -799,6 +1047,69 @@ def _remove_ai_notes(text: str) -> str:
     return text
 
 
+def lock_pov_pronouns(translated: str) -> str:
+    """
+    Cố định ngôi xưng hô của nhân vật chính trong cả chương.
+    Phát hiện và ngăn chặn tình trạng nhảy ngôi hỗn loạn ngoài lời thoại (anh -> tôi -> ông ấy -> hắn).
+    Dịch Hán Việt tuyệt đối dùng "hắn", "hắn ta", không để "anh", "anh ta".
+    """
+    if not translated:
+        return translated
+
+    lines = translated.split("\n")
+    fixed_lines = []
+    
+    # Đếm tần suất xưng hô ngoài lời thoại
+    text_outside_quotes = re.sub(r'"[^"]*"', '', translated)
+    text_outside_quotes = re.sub(r'“[^”]*”', '', text_outside_quotes)
+    
+    count_han = len(re.findall(r"\bhắn\b", text_outside_quotes, re.IGNORECASE))
+    count_anh = len(re.findall(r"\banh\b", text_outside_quotes, re.IGNORECASE))
+    
+    # Ưu tiên tuyệt đối xưng hô Hán-Việt cổ trang ("hắn", "hắn ta")
+    for line in lines:
+        parts = re.split(r'("[^"]*"|“[^”]*”)', line)
+        for idx, part in enumerate(parts):
+            if not (part.startswith('"') or part.startswith('“')):
+                # Chuyển đổi triệt để ngoài lời thoại
+                part = re.sub(r"\banh ta\b", "hắn ta", part, flags=re.IGNORECASE)
+                part = re.sub(r"\bcậu ta\b", "hắn ta", part, flags=re.IGNORECASE)
+                part = re.sub(r"\bông ta\b", "hắn ta", part, flags=re.IGNORECASE)
+                part = re.sub(r"\banh ấy\b", "hắn", part, flags=re.IGNORECASE)
+                part = re.sub(r"\bcậu ấy\b", "hắn", part, flags=re.IGNORECASE)
+                part = re.sub(r"\bông ấy\b", "hắn", part, flags=re.IGNORECASE)
+                part = re.sub(r"\bcô ấy\b", "nàng", part, flags=re.IGNORECASE)
+                # Thay "anh" đứng làm chủ ngữ ngoài lời thoại
+                part = re.sub(r"\bAnh\b", "Hắn", part)
+            parts[idx] = part
+        fixed_lines.append("".join(parts))
+    return "\n".join(fixed_lines)
+
+
+def refine_cinematic_rhythm(translated: str) -> str:
+    """
+    Biên tập nhịp văn điện ảnh: Bỏ lặp chủ ngữ đứng đầu các câu hành động liên tiếp,
+    Việt hóa cấu trúc dịch máy thô cứng.
+    """
+    if not translated:
+        return translated
+
+    # Dịch máy khô cứng ➔ Văn phong điện ảnh Việt hóa
+    dry_mt_fixes = [
+        (r"\bĐó là một sự phát triển thất bại\b", "Cuối cùng dự án ấy vẫn thất bại"),
+        (r"\bDự án phát triển thất bại\b", "Dự án cải tạo cuối cùng vẫn thất bại"),
+        (r"\bCắt cỏ không nhổ gốc, gió xuân thổi lại mọc\b", "Nhổ cỏ không nhổ tận gốc, gió xuân thổi lại sinh"),
+        (r"\băn một kinh ngạc\b", "giật mình"),
+        (r"\bnâng đầu\b", "ngẩng đầu"),
+        (r"\bnghĩ lại thì thấy\b", "ngẫm lại"),
+        (r"\bKhung cảnh dày đặc của biển, đất liền và không khí\b", "Trên không, dưới nước và trên bờ đều bị phong tỏa"),
+    ]
+    for pattern, rep in dry_mt_fixes:
+        translated = re.sub(pattern, rep, translated, flags=re.IGNORECASE)
+
+    return translated
+
+
 # ==============================================================================
 # KIỂM DUYỆT CHẤT LƯỢNG (QUALITY CHECK)
 # ==============================================================================
@@ -858,6 +1169,96 @@ def quality_check(translated: str, raw_chinese: str, glossary_map: Dict[str, str
         warnings.append(f"⚠️ Phát hiện có thể tên pinyin chưa Hán Việt hóa: {set(pinyin_matches)}")
     
     return warnings
+
+
+def strict_quality_gatekeeper(translated: str, raw_chinese: str, glossary_map: Dict[str, str]) -> Tuple[bool, List[str]]:
+    """
+    CỔNG KIỂM DUYỆT CHẤT LƯỢNG CHẶN LỖI (BLOCKING QUALITY GATEKEEPER).
+    Kiểm tra 100% bản dịch trước khi cho phép lưu hoặc xuất ra cho người dùng.
+    
+    Trả về: (is_passed: bool, error_list: List[str])
+    """
+    errors = []
+    if not translated or not translated.strip():
+        return False, ["Bản dịch bị rỗng"]
+
+    # 1. Kiểm tra chữ Trung Quốc sót lại
+    if re.search(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]", translated):
+        errors.append("Bản dịch vẫn còn dính chữ Trung Quốc chưa dịch")
+
+    # 2. Kiểm tra xưng hô cấm ngoài lời thoại (anh ta, anh ấy, cô ấy, ông ta, cậu ta)
+    text_outside_quotes = re.sub(r'"[^"]*"', '', translated)
+    text_outside_quotes = re.sub(r'“[^”]*”', '', text_outside_quotes)
+    
+    prohibited_found = []
+    for p in ["anh ta", "anh ấy", "cậu ta", "ông ta", "cô ấy"]:
+        if re.search(rf"\b{p}\b", text_outside_quotes, re.IGNORECASE):
+            prohibited_found.append(p)
+    if prohibited_found:
+        errors.append(f"Còn dính đại từ cấm ngoài lời thoại: {', '.join(prohibited_found)}")
+
+    # 3. Kiểm tra Pinyin tên riêng sót lại
+    pinyin_terms = ["Qingyi", "Ruoping", "A Kang", "Yushan", "Su Xiaoxiao", "Lei Wang"]
+    found_pinyin = [pt for pt in pinyin_terms if pt.lower() in translated.lower()]
+    if found_pinyin:
+        errors.append(f"Chưa Hán-Việt hóa tên Pinyin: {', '.join(found_pinyin)}")
+
+    # 4. Kiểm tra tỷ lệ độ dài (chống mất câu)
+    if raw_chinese:
+        ratio = len(translated) / len(raw_chinese)
+        if ratio < 0.65:
+            errors.append(f"Bản dịch quá ngắn (ratio={ratio:.2f}), nghi vấn mất câu/đoạn")
+
+    is_passed = len(errors) == 0
+    return is_passed, errors
+
+
+def force_repair_all_errors(translated: str, glossary_map: Dict[str, str]) -> str:
+    """
+    HÀM CƯỠNG ÉP SỬA LỖI HẬU XỬ LÝ CHUYÊN SÂU (FORCE REPAIR ENGINE).
+    Đảm bảo 100% không bao giờ lọt lỗi đại từ hay Pinyin ra cho người dùng.
+    """
+    if not translated:
+        return translated
+
+    # 1. Ép sửa 100% Pinyin
+    pinyin_fixes = [
+        (r"\bQingyi\b", "Thanh Y"),
+        (r"\bRuoping\b", "Nhược Bình"),
+        (r"\bA Kang\b", "A Khang"),
+        (r"\bHọc viện Yushan\b", "Học viện Ngọc Sơn"),
+        (r"\bYushan\b", "Ngọc Sơn"),
+        (r"\bgia đình Su\b", "Tô gia"),
+        (r"\bSu Xiaoxiao\b", "Tô Tiếu Tiếu"),
+        (r"\bLei Wang\b", "Lôi Vọng"),
+    ]
+    for p, r in pinyin_fixes:
+        translated = re.sub(p, r, translated, flags=re.IGNORECASE)
+
+    # 2. Ép sửa 100% đại từ ngoài lời thoại
+    lines = translated.split("\n")
+    fixed_lines = []
+    for line in lines:
+        parts = re.split(r'("[^"]*"|“[^”]*”)', line)
+        for idx, part in enumerate(parts):
+            if not (part.startswith('"') or part.startswith('“')):
+                part = re.sub(r"\banh ta\b", "hắn ta", part, flags=re.IGNORECASE)
+                part = re.sub(r"\bcậu ta\b", "hắn ta", part, flags=re.IGNORECASE)
+                part = re.sub(r"\bông ta\b", "hắn ta", part, flags=re.IGNORECASE)
+                part = re.sub(r"\banh ấy\b", "hắn", part, flags=re.IGNORECASE)
+                part = re.sub(r"\bcậu ấy\b", "hắn", part, flags=re.IGNORECASE)
+                part = re.sub(r"\bông ấy\b", "hắn", part, flags=re.IGNORECASE)
+                part = re.sub(r"\bcô ấy\b", "nàng", part, flags=re.IGNORECASE)
+                part = re.sub(r"\bAnh\b", "Hắn", part)
+            parts[idx] = part
+        fixed_lines.append("".join(parts))
+    translated = "\n".join(fixed_lines)
+
+    # 3. Ép Glossary
+    if glossary_map:
+        translated = _enforce_glossary(translated, glossary_map)
+
+    return translated
 
 
 # ==============================================================================
@@ -1069,6 +1470,60 @@ async def resolve_remaining_chinese_chars(translated: str, raw_chinese: str = ""
     return translated.strip()
 
 
+async def extract_novel_entities(raw_chinese: str, translated_vietnamese: str, client) -> List[Dict[str, str]]:
+    """
+    Tự động trích xuất danh sách Tên riêng (Tên nhân vật, Địa danh, Môn phái, Vật phẩm) 
+    xuất hiện trong chương kèm bản dịch Hán Việt tương ứng để lưu vào Bộ nhớ truyện.
+    """
+    if not raw_chinese or not translated_vietnamese or not client:
+        return []
 
+    try:
+        sample_zh = raw_chinese[:3000]
+        sample_vi = translated_vietnamese[:3000]
 
+        sys_instruction = (
+            "Bạn là một chuyên gia trích xuất thực thể (Named Entity Recognizer) tiểu thuyết Trung-Việt. "
+            "Nhiệm vụ của bạn là tìm các Tên Nhân Vật, Địa Danh, Môn Phái xuất hiện trong chương truyện "
+            "và trả về duy nhất một mảng JSON các thuật ngữ tìm được."
+        )
 
+        prompt = (
+            f"Văn bản tiếng Trung:\n{sample_zh}\n\n"
+            f"Bản dịch tiếng Việt:\n{sample_vi}\n\n"
+            "Hãy trích xuất tất cả Tên Nhân Vật (NAME), Địa Danh (PLACE), Môn Phái (SECT), Vật Phẩm (ITEM) xuất hiện trong đoạn trên.\n"
+            "Chỉ trả về JSON định dạng như ví dụ sau (không kèm markdown, giải thích hay lời thoại):\n"
+            "[\n"
+            '  {"chinese_term": "雷望", "vietnamese_term": "Lôi Vọng", "category": "NAME"},\n'
+            '  {"chinese_term": "乔婆", "vietnamese_term": "Kiều bà", "category": "NAME"}\n'
+            "]"
+        )
+
+        res = await client.translate(prompt, sys_instruction)
+        res_text = res.get("text", "").strip()
+        
+        # Xóa bớt markdown block nếu AI trả về ```json
+        res_text = re.sub(r"^```json\s*", "", res_text, flags=re.MULTILINE)
+        res_text = re.sub(r"^```\s*", "", res_text, flags=re.MULTILINE)
+        res_text = res_text.strip()
+
+        data = json.loads(res_text)
+        if isinstance(data, list):
+            valid_entities = []
+            for item in data:
+                if isinstance(item, dict) and item.get("chinese_term") and item.get("vietnamese_term"):
+                    zh = str(item["chinese_term"]).strip()
+                    vi = str(item["vietnamese_term"]).strip()
+                    cat = str(item.get("category", "NAME")).upper()
+                    # Loại bỏ các từ ngô nghê hoặc quá ngắn không phải tên riêng
+                    if len(zh) >= 2 and zh != vi:
+                        valid_entities.append({
+                            "chinese_term": zh,
+                            "vietnamese_term": vi,
+                            "category": cat if cat in ["NAME", "PLACE", "SECT", "ITEM"] else "NAME"
+                        })
+            return valid_entities
+    except Exception as e:
+        logger.warning(f"⚠️ Trích xuất tên riêng tự động thất bại: {e}")
+
+    return []

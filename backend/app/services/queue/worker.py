@@ -14,6 +14,7 @@ from app.services.crawler.engine import scrape_chapter_content
 from app.services.cleaner.pipeline import clean_raw_chinese_text, clean_translated_vietnamese_text
 from app.services.translator.client import TranslatorClient
 from app.services.translator.pipeline import TranslationPipeline
+from app.services.translator.text_processor import extract_novel_entities
 from app.services.translator.memory import (
     build_glossary_prompt,
     get_previous_chapters_context,
@@ -384,7 +385,9 @@ class TranslationJobManager:
                         translated_cleaned = await pipeline.translate_chapter(
                             raw_chinese=raw_text,
                             glossaries=glossaries,
-                            custom_prompt=self.custom_prompt
+                            custom_prompt=self.custom_prompt,
+                            bypass_cache=True,
+                            novel_title=self.novel_title
                         )
                         
                         await db.execute(
@@ -398,6 +401,36 @@ class TranslationJobManager:
                             )
                         )
                         await db.commit()
+
+                        # Tự động trích xuất Tên riêng mới từ chương vừa dịch và lưu vào DB Glossary cho bộ truyện này
+                        try:
+                            extracted_terms = await extract_novel_entities(raw_text, translated_cleaned, client)
+                            if extracted_terms:
+                                added_count = 0
+                                for term in extracted_terms:
+                                    zh = term["chinese_term"]
+                                    vi = term["vietnamese_term"]
+                                    cat = term.get("category", "NAME")
+                                    
+                                    stmt = select(Glossary).where(
+                                        (Glossary.novel_id == self.novel_id) | (Glossary.novel_id == None),
+                                        Glossary.chinese_term == zh
+                                    )
+                                    res_g = await db.execute(stmt)
+                                    if not res_g.scalar_one_or_none():
+                                        new_g = Glossary(
+                                            novel_id=self.novel_id,
+                                            chinese_term=zh,
+                                            vietnamese_term=vi,
+                                            category=cat
+                                        )
+                                        db.add(new_g)
+                                        added_count += 1
+                                if added_count > 0:
+                                    await db.commit()
+                                    self.add_log(f"🏷️ Tự động ghi nhớ {added_count} tên riêng mới vào Từ điển của bộ truyện!")
+                        except Exception as ext_err:
+                            logger.warning(f"Failed to auto extract entities for chapter {chapter_no}: {ext_err}")
                     
                     self.add_log(f"✅ Dịch xong: Chương {chapter_no}")
                     self.consecutive_failures = 0
