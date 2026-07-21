@@ -284,3 +284,65 @@ async def generate_single_volume(
         "success": True,
         "message": f"Đã kích hoạt sinh Tập {volume_no:02d} cho truyện '{novel.title}'."
     }
+
+
+@router.get("/{novel_id}/audio/files")
+async def get_created_audio_files(
+    novel_id: int,
+    db: AsyncSession = Depends(get_db)
+):
+    """Liệt kê toàn bộ danh sách tất cả các file Audio MP3 đã được tạo thành công của bộ truyện này."""
+    novel = await db.get(Novel, novel_id)
+    if not novel:
+        raise HTTPException(status_code=404, detail="Không tìm thấy truyện")
+
+    invalid_chars = '<>:"/\\|?*\r\n\t'
+    safe_title = "".join(c for c in novel.title if c not in invalid_chars).strip().replace("  ", " ")
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    audio_folder = os.path.join(BASE_DIR, "output", safe_title, "audio")
+
+    files_list = []
+    if os.path.exists(audio_folder):
+        for fname in sorted(os.listdir(audio_folder)):
+            if fname.endswith(".mp3"):
+                fpath = os.path.join(audio_folder, fname)
+                size_mb = round(os.path.getsize(fpath) / (1024 * 1024), 2)
+                files_list.append({
+                    "filename": fname,
+                    "size_mb": size_mb,
+                    "download_url": f"/api/novels/{novel_id}/audio/download/{fname}"
+                })
+
+    return {
+        "novel_title": novel.title,
+        "total_files": len(files_list),
+        "files": files_list
+    }
+
+
+@router.get("/{novel_id}/audio/download/{filename}")
+async def download_audio_file(
+    novel_id: int,
+    filename: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Tải / Trích xuất luồng Audio MP3 trực tiếp cho giao diện Trình Phát Truyện."""
+    novel = await db.get(Novel, novel_id)
+    if not novel:
+        raise HTTPException(status_code=404, detail="Không tìm thấy truyện")
+
+    invalid_chars = '<>:"/\\|?*\r\n\t'
+    safe_title = "".join(c for c in novel.title if c not in invalid_chars).strip().replace("  ", " ")
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    filepath = os.path.join(BASE_DIR, "output", safe_title, "audio", filename)
+
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="File Audio không tồn tại")
+
+    return FileResponse(
+        path=filepath,
+        media_type="audio/mpeg",
+        filename=filename
+    )
+
+

@@ -11,9 +11,11 @@ from app.models.models import Novel, Chapter
 
 logger = logging.getLogger(__name__)
 
-# Giọng đọc chuẩn Microsoft Edge Neural TTS
-AUDIO_VOICE = "vi-VN-HoaiMyNeural"
-AUDIO_RATE = "+75%"  # Tốc độ đọc 1.75x
+# Giọng đọc chuẩn Microsoft Edge Neural TTS Việt Nam
+# vi-VN-NamMinhNeural: Giọng nam trầm ấm, truyền cảm, siêu hợp đọc truyện Tiên Hiệp / Cổ Trang
+# vi-VN-HoaiMyNeural: Giọng nữ trong trẻo, dịu dàng, ấm áp
+DEFAULT_AUDIO_VOICE = "vi-VN-NamMinhNeural"
+AUDIO_RATE = "+50%"  # Tốc độ đọc tự nhiên, ấm áp
 
 def strip_html_and_clean_text(text: str) -> str:
     """Làm sạch văn bản tiếng Việt trước khi đưa vào TTS đọc."""
@@ -106,7 +108,7 @@ class AudioTTSManager:
     def __init__(self, output_base_dir: str = "output"):
         self.output_base_dir = output_base_dir
 
-    async def generate_chapter_audio_mp3(self, text: str, output_filepath: str) -> bool:
+    async def generate_chapter_audio_mp3(self, text: str, output_filepath: str, voice: str = DEFAULT_AUDIO_VOICE) -> bool:
         """Sinh 1 file mp3 từ văn bản chương bằng edge-tts."""
         import edge_tts
         
@@ -117,7 +119,7 @@ class AudioTTSManager:
         try:
             communicate = edge_tts.Communicate(
                 cleaned,
-                voice=AUDIO_VOICE,
+                voice=voice,
                 rate=AUDIO_RATE
             )
             await communicate.save(output_filepath)
@@ -130,6 +132,7 @@ class AudioTTSManager:
         self,
         novel_title: str,
         volume_info: Dict[str, Any],
+        voice: str = DEFAULT_AUDIO_VOICE,
         progress_callback=None
     ) -> Optional[str]:
         """
@@ -157,8 +160,8 @@ class AudioTTSManager:
 
         logger.info(f"🎧 Bắt đầu sinh Audio Tập {vol_no:02d} ({start_ch} - {end_ch}) cho truyện '{safe_title}'...")
 
-        # Sinh Audio song song cho từng chương
-        semaphore = asyncio.Semaphore(5)  # 5 luồng song song cho edge-tts
+        # Sinh Audio siêu tốc độ 25 luồng song song (gấp 20x thực tế) cho edge-tts
+        semaphore = asyncio.Semaphore(25)
 
         async def _gen_ch(ch: Chapter, idx: int):
             async with semaphore:
@@ -168,7 +171,7 @@ class AudioTTSManager:
                 heading_intro = f"Chương {ch.chapter_no}. {ch.title}.\n\n"
                 full_text = heading_intro + (ch.translated_text or "")
                 
-                ok = await self.generate_chapter_audio_mp3(full_text, temp_path)
+                ok = await self.generate_chapter_audio_mp3(full_text, temp_path, voice=voice)
                 if progress_callback:
                     await progress_callback(idx + 1, total_ch, ch.chapter_no)
                 return temp_path if ok else None

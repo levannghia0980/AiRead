@@ -121,10 +121,10 @@ export default function AudioStudio({ novels }: AudioStudioProps) {
         if (res.ok) {
           const status = await res.json()
           setJobStatus(status)
+          fetchVolumes(novelId) // Cập nhật ngay danh sách tập đã tạo lên UI theo thời gian thực
           if (!status.is_running) {
             setIsGenerating(false)
             clearInterval(interval)
-            fetchVolumes(novelId)
           }
         }
       } catch (e) {
@@ -280,7 +280,7 @@ export default function AudioStudio({ novels }: AudioStudioProps) {
               🎧 Audio Studio — Trình Phát Truyện Cao Cấp
             </h1>
             <p className="text-xs text-slate-400">
-              Giọng nữ Hoài My (<code className="text-emerald-400">vi-VN-HoaiMyNeural</code>) @ 1.75x speed — Phân tập 3-4 tiếng êm ái
+              Giọng nam trầm ấm Nam Minh (<code className="text-emerald-400">vi-VN-NamMinhNeural</code>) / Hoài My — Siêu tốc 25 luồng song song (gấp 20x thực tế)
             </p>
           </div>
         </div>
