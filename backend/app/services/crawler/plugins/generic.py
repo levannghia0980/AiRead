@@ -57,8 +57,21 @@ class GenericScraper(BaseScraper):
             page = await context.new_page()
             # Navigate and wait for network to stabilize
             await page.goto(url, timeout=30000, wait_until="networkidle")
-            # Wait extra 1.5 seconds for AJAX/JS to finish rendering content
             await asyncio.sleep(1.5)
+            
+            # Thử click các nút "Mục lục" / "目录" / "展开" để nạp toàn bộ 1000+ chương
+            try:
+                selectors = [".icon-ml", ".catalog-btn", ".mulu", "a:has-text('目录')", "div:has-text('目录')", "a:has-text('Mục lục')"]
+                for sel in selectors:
+                    btn = await page.query_selector(sel)
+                    if btn:
+                        logger.info(f"👉 Bấm nút '{sel}' trong Playwright để nạp toàn bộ Mục Lục...")
+                        await btn.click()
+                        await asyncio.sleep(2.5)
+                        break
+            except Exception as e:
+                logger.debug(f"Không thể bấm nút Mục Lục: {e}")
+                
             return await page.content()
         finally:
             try:
@@ -72,13 +85,66 @@ class GenericScraper(BaseScraper):
         
         metadata = self._parse_metadata(soup, url)
         
-        # Fallback to Playwright if no chapters could be parsed (usually JS-rendered catalog)
-        if not metadata["chapters"]:
-            logger.info("⚠️ No chapters found using static parser. Trying Playwright...")
+        # 1. Nếu dán nhầm trang đọc chương lẻ (chỉ có 35 chương), tự chuyển hướng tới Trang Bìa Truyện (/novel/30340.html)
+        if len(metadata["chapters"]) < 100:
+            main_novel_link = None
+            for a in soup.find_all("a", href=True):
+                href = a["href"].strip()
+                if re.search(r"/(novel|info)/[a-zA-Z0-9_\-]+\.html", href, re.IGNORECASE):
+                    target_url = urljoin(url, href)
+                    if target_url != url:
+                        main_novel_link = target_url
+                        break
+            
+            if main_novel_link:
+                logger.info(f"🔍 Chuyển hướng từ trang đọc lẻ sang Trang Bìa Truyện: {main_novel_link}")
+                try:
+                    main_html = await self._fetch_html_static(main_novel_link)
+                    soup_main = BeautifulSoup(main_html, "lxml")
+                    main_metadata = self._parse_metadata(soup_main, main_novel_link)
+                    if len(main_metadata["chapters"]) > len(metadata["chapters"]):
+                        metadata = main_metadata
+                        soup = soup_main
+                        url = main_novel_link
+                except Exception as err:
+                    logger.warning(f"Chuyển hướng trang bìa thất bại: {err}")
+
+        # 2. Nếu ít hơn 100 chương, tìm link dẫn tới Trang Mục Lục Toàn Bộ (/other/chapters/ hay full/catalog/all)
+        if len(metadata["chapters"]) < 100:
+            full_cat_link = None
+            for a in soup.find_all("a", href=True):
+                href = a["href"].strip()
+                txt = a.text.strip()
+                if re.search(r"/(other/chapters|chapters|catalog|mulu|all|full)/", href, re.IGNORECASE) or any(t in txt for t in ["全部章节", "完整目录", "查看全部", "Mục lục"]):
+                    target_url = urljoin(url, href)
+                    if target_url != url:
+                        full_cat_link = target_url
+                        break
+            
+            if full_cat_link:
+                logger.info(f"🔍 Phát hiện link Trang Mục Lục Đầy Đủ: {full_cat_link}. Đang cào toàn bộ danh sách chương...")
+                try:
+                    full_html = await self._fetch_html_static(full_cat_link)
+                    soup_full = BeautifulSoup(full_html, "lxml")
+                    full_metadata = self._parse_metadata(soup_full, full_cat_link)
+                    if len(full_metadata["chapters"]) > len(metadata["chapters"]):
+                        full_metadata["title"] = metadata["title"] if metadata["title"] != "Unknown Novel" else full_metadata["title"]
+                        full_metadata["author"] = metadata["author"] if metadata["author"] != "Unknown Author" else full_metadata["author"]
+                        full_metadata["cover_url"] = metadata["cover_url"] or full_metadata["cover_url"]
+                        metadata = full_metadata
+                        logger.info(f"🎉 Đã cào thành công {len(metadata['chapters'])} chương từ trang Mục Lục Đầy Đủ!")
+                except Exception as err:
+                    logger.warning(f"Cào trang Mục Lục Đầy Đủ thất bại: {err}")
+        
+        # 3. Fallback sang Playwright nếu vẫn có ít hơn 10 chương (web dùng AJAX/Modal mục lục)
+        if len(metadata["chapters"]) < 10:
+            logger.info(f"⚠️ Chỉ tìm thấy {len(metadata['chapters'])} chương. Chuyển sang Playwright cào đầy đủ...")
             try:
                 html = await self._fetch_html_playwright(url)
                 soup = BeautifulSoup(html, "lxml")
-                metadata = self._parse_metadata(soup, url)
+                pw_metadata = self._parse_metadata(soup, url)
+                if len(pw_metadata["chapters"]) > len(metadata["chapters"]):
+                    metadata = pw_metadata
             except Exception as e:
                 logger.error(f"Playwright metadata fallback failed: {e}")
                 
@@ -95,6 +161,11 @@ class GenericScraper(BaseScraper):
                 title = title_el.text.strip()
         else:
             title = "Unknown Novel"
+
+        if title == "Unknown Novel" and soup.title and soup.title.text:
+            raw_t = soup.title.text.strip().split("-")[0].split("_")[0].strip()
+            if raw_t:
+                title = raw_t
 
         # Heuristic author detection
         author_el = soup.select_one("meta[name='author'], meta[property='og:novel:author'], .author, #author")
@@ -133,8 +204,14 @@ class GenericScraper(BaseScraper):
         seen_urls = set()
         
         for link in links:
-            href = link["href"]
+            href = link.get("href", "").strip()
             text = link.text.strip()
+            
+            # Bỏ qua các nút javascript, hashtag, void(0) và nút Xem Thêm
+            if not href or href.startswith("javascript:") or href == "#" or "javascript" in href.lower() or "void(" in href.lower():
+                continue
+            if any(term in text for term in ["查看更多", "展开", "更多章节", "Load More", "Show More", "View More"]):
+                continue
             
             is_ch_link = False
             href_lower = href.lower()
@@ -142,11 +219,17 @@ class GenericScraper(BaseScraper):
             
             if any(term in text_lower for term in ["chương", "chapter", "第", "章"]):
                 is_ch_link = True
-            elif re.search(r"/\d+/\d+(\.html?)?$", href_lower) or re.search(r"/\d+(\.html?)?$", href_lower):
+            elif (
+                re.search(r"/\d+/\d+(\.html?)?$", href_lower)
+                or re.search(r"/\d+(\.html?)?$", href_lower)
+                or re.search(r"/book/\d+/[a-zA-Z0-9_\-]+(\.html?)?$", href_lower)
+            ):
                 is_ch_link = True
                 
             if is_ch_link and text:
                 full_url = urljoin(url, href)
+                if not (full_url.startswith("http://") or full_url.startswith("https://")):
+                    continue
                 if full_url not in seen_urls:
                     seen_urls.add(full_url)
                     chapters.append({

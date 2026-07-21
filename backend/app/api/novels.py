@@ -82,7 +82,38 @@ async def save_novel(payload: SaveNovelRequest, db: AsyncSession = Depends(get_d
     existing_novel = result.scalar_one_or_none()
     
     if existing_novel:
-        return {"novel_id": existing_novel.id, "message": "Truyện đã tồn tại sẵn trong hệ thống."}
+        # Cập nhật thông tin truyện nếu có thay đổi
+        existing_novel.title = payload.title or existing_novel.title
+        existing_novel.cover_url = payload.cover_url or existing_novel.cover_url
+        existing_novel.genres = payload.genres or existing_novel.genres
+        existing_novel.status = payload.status or existing_novel.status
+        
+        # Đồng bộ danh sách chapter_no hiện có trong DB
+        stmt_ch = select(Chapter.chapter_no).where(Chapter.novel_id == existing_novel.id)
+        res_ch = await db.execute(stmt_ch)
+        existing_ch_nos = set(res_ch.scalars().all())
+        
+        # Thêm các chương mới chưa có trong DB (ví dụ từ chương 36 tới chương 1594)
+        new_chapters = []
+        for ch in payload.chapters:
+            if ch.chapter_no not in existing_ch_nos:
+                new_chapters.append(
+                    Chapter(
+                        novel_id=existing_novel.id,
+                        chapter_no=ch.chapter_no,
+                        title=ch.title,
+                        source_url=ch.url,
+                        status="PENDING"
+                    )
+                )
+        if new_chapters:
+            db.add_all(new_chapters)
+        await db.commit()
+        
+        return {
+            "novel_id": existing_novel.id,
+            "message": f"Đã cập nhật truyện! Thêm {len(new_chapters)} chương mới vào danh sách (Tổng: {len(existing_ch_nos) + len(new_chapters)} chương)."
+        }
 
     # Save new novel
     new_novel = Novel(
@@ -186,9 +217,12 @@ async def delete_novel(novel_id: int, db: AsyncSession = Depends(get_db)):
     if raw_texts:
         await clear_cache_for_raw_texts(db, raw_texts)
         
+    # Xóa sạch các Chapter và Glossary liên quan đến bộ truyện này
+    await db.execute(delete(Chapter).where(Chapter.novel_id == novel_id))
+    await db.execute(delete(Glossary).where(Glossary.novel_id == novel_id))
     await db.delete(novel)
     await db.commit()
-    return {"success": True, "message": f"Đã xóa hoàn toàn truyện '{novel.title}' và xóa sạch bộ nhớ tạm (cache)."}
+    return {"success": True, "message": f"Đã xóa hoàn toàn truyện '{novel.title}' và toàn bộ chương, bộ nhớ tạm (cache)."}
 
 
 @router.delete("/{novel_id}/cache")
@@ -424,6 +458,64 @@ async def reset_chapters(novel_id: int, payload: ResetChaptersRequest, db: Async
 
     await db.commit()
     return {"success": True, "message": f"Đã reset {len(chapters)} chương về trạng thái chờ dịch."}
+
+
+@router.delete("/{novel_id}/chapters/{chapter_no}")
+async def delete_single_chapter(novel_id: int, chapter_no: int, db: AsyncSession = Depends(get_db)):
+    """Xóa triệt để 100% dữ liệu 1 chương (raw_text, translated_text, cache SQLite, file vật lý) và đưa về PENDING để cào dịch lại hoàn toàn."""
+    stmt = select(Chapter).where(Chapter.novel_id == novel_id, Chapter.chapter_no == chapter_no)
+    res = await db.execute(stmt)
+    chapter = res.scalar_one_or_none()
+    
+    if not chapter:
+        raise HTTPException(status_code=404, detail="Không tìm thấy chương để xóa")
+        
+    # 1. Xóa cache SQLite
+    if chapter.raw_text:
+        await clear_cache_for_raw_texts(db, [chapter.raw_text])
+        
+    # 2. Xóa file vật lý trong thư mục output
+    novel = await db.get(Novel, novel_id)
+    if novel:
+        invalid_chars = '<>:"/\\|?*\r\n\t'
+        safe_title = "".join(c for c in novel.title if c not in invalid_chars).strip().replace("  ", " ")
+        BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        novel_folder = os.path.join(BASE_DIR, "output", safe_title)
+        
+        ch_title = "".join(c for c in chapter.title if c not in invalid_chars).strip()
+        filename = f"Chương {chapter.chapter_no:04d} - {ch_title}.txt"
+        filepath = os.path.join(novel_folder, filename)
+        if os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+            except Exception:
+                pass
+                
+    # 3. Reset về PENDING & xóa sạch dữ liệu đầu vào + đầu ra
+    chapter.status = "PENDING"
+    chapter.raw_text = None
+    chapter.translated_text = None
+    chapter.error_msg = None
+    chapter.token_count = 0
+    
+    # 4. Xóa khỏi danh sách bỏ qua chất lượng
+    try:
+        from app.models.models import Setting
+        import json
+        key = f"ignored_quality_{novel_id}"
+        stmt_setting = select(Setting).where(Setting.key == key)
+        res_setting = await db.execute(stmt_setting)
+        setting_entry = res_setting.scalar_one_or_none()
+        if setting_entry:
+            ignored_list = json.loads(setting_entry.value)
+            if chapter_no in ignored_list:
+                ignored_list.remove(chapter_no)
+                setting_entry.value = json.dumps(ignored_list)
+    except Exception:
+        pass
+        
+    await db.commit()
+    return {"success": True, "message": f"Đã xóa hoàn toàn dữ liệu chương {chapter_no} và reset về trạng thái cào dịch lại."}
 
 
 # Regex phát hiện câu tiếng Anh lẫn trong bản dịch (≥ 4 từ tiếng Anh liên tiếp)

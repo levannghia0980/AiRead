@@ -12,8 +12,10 @@ from deep_translator import GoogleTranslator
 import httpx
 from app.models.models import Glossary, TranslationCache
 from app.services.translator.client import TranslatorClient
+from app.services.translator.entity_builder import extract_and_build_entities
 from app.services.translator.text_processor import (
     preprocess_chinese_text,
+    universal_normalize_text,
     build_glossary_context,
     postprocess_translated_text,
     quality_check,
@@ -21,6 +23,10 @@ from app.services.translator.text_processor import (
     force_repair_all_errors,
     detect_novel_genre_profile,
     enforce_genre_boundary_fixes,
+    resolve_remaining_chinese_chars,
+    self_consistency_check,
+    auto_discover_leftover_entities,
+    perfect_output_polisher,
 )
 
 logger = logging.getLogger(__name__)
@@ -386,14 +392,20 @@ class TranslationPipeline:
                 genre_code=genre_code
             )
 
-            # 6. Kiểm tra chữ Trung sót → retry
+            # 6. Kiểm tra chữ Trung sót ➔ Kích hoạt Chinese Rescue Engine tự động giải cứu
             if self._has_chinese_chars(final_text):
-                logger.warning(f"⚠️ Chunk {i}/{total_chunks} attempt {attempt+1}: còn chữ Trung → dịch lại...")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2.0)
-                    continue
-                else:
-                    raise Exception(f"Chunk {i} vẫn còn chữ Trung sau {max_retries} lần thử.")
+                logger.warning(f"⚠️ Chunk {i}/{total_chunks}: còn chữ Trung ➔ Kích hoạt Chinese Rescue Engine...")
+                final_text = await resolve_remaining_chinese_chars(
+                    final_text,
+                    raw_chinese=chunk_raw,
+                    glossary_map=glossary_map,
+                    client=self.client
+                )
+                
+                # Nếu vẫn còn ký tự chữ Hán rác/watermark, tự động xóa sạch 100%
+                if self._has_chinese_chars(final_text):
+                    logger.info(f"🧹 Xóa bỏ các ký tự chữ Hán rác còn sót lại trong Chunk {i}...")
+                    final_text = re.sub(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]", "", final_text)
 
             # 7. Length verification
             len_zh = len(chunk_raw.strip())
@@ -447,40 +459,54 @@ class TranslationPipeline:
         custom_prompt: str = "",
         bypass_cache: bool = False,
         novel_title: str = "",
-        synopsis: str = ""
+        synopsis: str = "",
+        novel_id: int = 0,
+        db: Optional[AsyncSession] = None
     ) -> str:
-        """Pipeline chính để dịch toàn bộ một chương.
-        
-        
-        Context window: 250 ký tự cuối mỗi chunk được truyền sang chunk tiếp theo
-        để giữ tính nhất quán xưng hô (áp dụng cho chunk i+1 khi dịch lại nếu cần).
-        """
+        """Pipeline chính để dịch toàn bộ một chương với Data-Driven Architecture."""
         if not raw_chinese.strip():
             return ""
 
-        # TIỀN XỬ LÝ
-        cleaned_chinese = preprocess_chinese_text(raw_chinese)
+        # 1. TIỀN XỬ LÝ UNIVERSAL (Dấu câu + Đơn vị cổ + Tiền xử lý Hán)
+        cleaned_chinese = universal_normalize_text(preprocess_chinese_text(raw_chinese))
         if not cleaned_chinese:
             return ""
 
-        # CHIA CHUNK
+        # 2. DATA-DRIVEN PRE-SCANNER: Quét Tên riêng & Quan hệ nhân vật persistent
+        relationship_map = {}
+        if db and novel_id:
+            try:
+                entity_res = await extract_and_build_entities(
+                    cleaned_chinese,
+                    novel_id=novel_id,
+                    db=db,
+                    client=self.client,
+                    novel_title=novel_title
+                )
+                relationship_map = entity_res.get("relationship_map", {})
+            except Exception as e:
+                logger.warning(f"Lỗi Pre-Scanner Entities: {e}")
+
+        # Nhét Bản đồ quan hệ nhân vật vào prompt nếu có
+        if relationship_map:
+            rel_prompt = "\n[BẢNG QUAN HỆ & XƯNG HÔ NHÂN VẬT KHÓA CỨNG]:\n" + "\n".join([f"- {name}: {role}" for name, role in relationship_map.items()])
+            custom_prompt = (custom_prompt + "\n" if custom_prompt else "") + rel_prompt
+
+        # 3. CHIA CHUNK
         chunks = self._split_into_chunks(cleaned_chinese)
         total_chunks = len(chunks)
 
         if total_chunks == 1:
-            # Chỉ 1 chunk → gọi trực tiếp, không cần gather
             final = await self._translate_single_chunk(
                 1, 1, chunks[0], glossaries, custom_prompt, context_hint=""
             )
+            if db and novel_id:
+                final = await auto_discover_leftover_entities(final, cleaned_chinese, novel_id, db, client=self.client)
             return final
 
-        # SONG SONG HÓA: dịch tất cả chunks cùng lúc
-        # Mỗi chunk nhận context_hint = 250 ký tự đầu tiên của chunk liền trước
-        # (không phải cuối chunk trước vì chúng ta chưa có kết quả dịch khi bắt đầu song song)
-        # Đây là trade-off hợp lý: tốc độ tăng 3-5x, chất lượng vẫn tốt nhờ System Instruction mạnh.
-        context_hints = [""]  # Chunk đầu không có context
+        # SONG SONG HÓA
+        context_hints = [""]
         for i in range(1, total_chunks):
-            # Dùng 200 ký tự cuối của chunk gốc tiếng Trung như gợi ý chuyển đoạn
             prev_chunk_tail = chunks[i-1][-200:] if len(chunks[i-1]) > 200 else chunks[i-1]
             context_hints.append(prev_chunk_tail)
 
@@ -495,7 +521,6 @@ class TranslationPipeline:
         logger.info(f"🚀 Dịch song song {total_chunks} chunks cùng lúc...")
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Xử lý kết quả
         translated_chunks = []
         for i, result in enumerate(results):
             if isinstance(result, Exception):
@@ -503,5 +528,11 @@ class TranslationPipeline:
                 raise result
             translated_chunks.append(result)
 
+        full_translation = "\n\n".join(translated_chunks)
+
+        # 4. GENERIC DETECTOR LAYER: Tự động học từ mới và ghi vào DB Glossary
+        if db and novel_id:
+            full_translation = await auto_discover_leftover_entities(full_translation, cleaned_chinese, novel_id, db, client=self.client)
+
         logger.info(f"✅ Chương hoàn thành: {total_chunks}/{total_chunks} chunks song song.")
-        return "\n\n".join(translated_chunks)
+        return full_translation

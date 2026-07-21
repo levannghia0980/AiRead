@@ -354,13 +354,18 @@ class TranslationJobManager:
                             )
                             await db.commit()
                     except Exception as e:
+                        err_str = str(e)
                         self.consecutive_failures += 1
-                        self.add_log(f"⚠️ Cào chương {chapter_no} thất bại: {str(e)}", "danger")
+                        self.add_log(f"⚠️ Cào chương {chapter_no} thất bại: {err_str}", "danger")
+                        
+                        # Nếu lỗi do URL rác (như nút Xem thêm), đánh dấu FAILED_SKIP để không cào lặp lại
+                        fail_status = "FAILED_SKIP" if ("missing an 'http://'" in err_str or "javascript" in str(chapter_source_url).lower()) else "FAILED"
+                        
                         async with async_session() as db:
                             await db.execute(
                                 update(Chapter)
                                 .where(Chapter.id == chapter_id)
-                                .values(status="FAILED", error_msg=f"Lỗi cào: {str(e)}")
+                                .values(status=fail_status, error_msg=f"Lỗi cào: {err_str}")
                             )
                             await db.commit()
                         
@@ -387,7 +392,9 @@ class TranslationJobManager:
                             glossaries=glossaries,
                             custom_prompt=self.custom_prompt,
                             bypass_cache=True,
-                            novel_title=self.novel_title
+                            novel_title=self.novel_title,
+                            novel_id=self.novel_id,
+                            db=db
                         )
                         
                         await db.execute(
@@ -401,6 +408,9 @@ class TranslationJobManager:
                             )
                         )
                         await db.commit()
+
+                        # Reset bộ đếm lỗi liên tiếp khi dịch thành công
+                        self.consecutive_failures = 0
 
                         # Tự động trích xuất Tên riêng mới từ chương vừa dịch và lưu vào DB Glossary cho bộ truyện này
                         try:

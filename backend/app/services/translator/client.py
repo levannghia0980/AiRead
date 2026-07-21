@@ -319,7 +319,8 @@ class TranslatorClient:
     async def _call_api_internal(self, prompt: str, system_instruction: str, api_key: str) -> Dict[str, Any]:
         """Performs raw HTTP request to the selected API."""
         # Timeout 55s (giảm từ 90s) để tránh block lâu; OpenRouter thường trả lời nhanh
-        client_context = DummyAsyncContext(self.http_client) if self.http_client is not None else httpx.AsyncClient(
+        use_shared_client = self.http_client is not None and not getattr(self.http_client, "is_closed", False)
+        client_context = DummyAsyncContext(self.http_client) if use_shared_client else httpx.AsyncClient(
             timeout=httpx.Timeout(connect=10.0, read=55.0, write=15.0, pool=5.0)
         )
         async with client_context as client:

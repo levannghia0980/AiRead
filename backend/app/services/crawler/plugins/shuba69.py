@@ -175,22 +175,17 @@ class Shuba69Scraper(BaseScraper):
             if not link:
                 continue
             
-            href = link.get("href")
-            if not href:
+            href = link.get("href", "").strip()
+            if not href or href.startswith("javascript:") or href == "#" or "javascript" in href.lower() or "void(" in href.lower():
                 continue
             
             ch_title = link.text.strip()
-            if not ch_title:
+            if not ch_title or any(term in ch_title for term in ["查看更多", "展开", "更多章节", "Load More", "Show More", "View More"]):
                 continue
             
-            # Get data-num attribute for proper ordering
-            data_num = li.get("data-num")
-            try:
-                sort_key = int(data_num) if data_num else 0
-            except ValueError:
-                sort_key = 0
-            
             full_ch_url = urljoin(urls["catalog"], href)
+            if not (full_ch_url.startswith("http://") or full_ch_url.startswith("https://")):
+                continue
             
             chapters.append({
                 "_sort_key": sort_key,

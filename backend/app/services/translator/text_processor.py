@@ -14,6 +14,39 @@ from typing import List, Dict, Tuple, Any
 logger = logging.getLogger(__name__)
 
 # ==============================================================================
+# UNIVERSAL NORMALIZER (FIRST PASS - UNIVERSAL)
+# ==============================================================================
+PUNCT_MAP = str.maketrans({
+    "，": ", ", "。": ". ", "！": "! ", "？": "? ",
+    "「": "\u201c", "」": "\u201d", "『": "\u201c", "』": "\u201d",
+    "、": ", ", "：": ": ", "；": "; "
+})
+
+UNIT_MAP = {
+    "两": "lượng", "文": "văn", "里": "dặm", "尺": "thước",
+    "子时": "giờ Tý", "丑时": "giờ Sửu", "寅时": "giờ Dần", "卯时": "giờ Mão",
+    "辰时": "giờ Thìn", "巳时": "giờ Tị", "午时": "giờ Ngọ", "未时": "giờ Mùi",
+    "申时": "giờ Thân", "酉时": "giờ Dậu", "戌时": "giờ Tuất", "亥时": "giờ Hợi",
+    "三更": "canh ba", "五更": "canh năm", "一炷香": "nửa nén hương",
+    "半个时辰": "nửa canh giờ", "一个时辰": "một canh giờ"
+}
+
+def universal_normalize_text(text: str) -> str:
+    """
+    Chuẩn hóa universal ở bước đầu tiên:
+    1. Chuyển đổi toàn bộ dấu câu kiểu Trung Quốc sang dấu câu Việt Nam.
+    2. Quy đổi các đơn vị đo lường/thời gian/tiền tệ cổ cố định toàn cục.
+    """
+    if not text:
+        return text
+    # 1. Dấu câu
+    text = text.translate(PUNCT_MAP)
+    # 2. Đơn vị cổ cố định
+    for unit_zh, unit_vi in UNIT_MAP.items():
+        text = text.replace(unit_zh, unit_vi)
+    return text
+
+# ==============================================================================
 # FAST-SCANNER MULTI-GENRE AUTO-DETECTOR (PRE-PROCESSING)
 # ==============================================================================
 def detect_novel_genre_profile(title: str = "", synopsis: str = "", raw_chinese_head: str = "") -> Dict[str, Any]:
@@ -903,6 +936,15 @@ async def postprocess_translated_text(
     # ---- Bước 6: Tự động dọn dẹp các cụm chữ Hán sót lại (Bypass Censor Fallback) ----
     translated = await resolve_remaining_chinese_chars(translated, raw_chinese, glossary_map, client=client)
     
+    # ---- Bước 7: Cưỡng ép sửa 100% Pinyin & đại từ ngoài lời thoại ----
+    translated = force_repair_all_errors(translated, glossary_map)
+    
+    # ---- Bước 8: Đồng bộ tính nhất quán tên riêng (Self-Consistency Pass) ----
+    translated = self_consistency_check(translated, glossary_map)
+    
+    # ---- Bước 9: Perfect Output Polish (Hậu Xử Lý Hoàn Thiện Điện Ảnh) ----
+    translated = perfect_output_polisher(translated)
+    
     return translated.strip()
 
 
@@ -1213,7 +1255,7 @@ def strict_quality_gatekeeper(translated: str, raw_chinese: str, glossary_map: D
     return is_passed, errors
 
 
-def force_repair_all_errors(translated: str, glossary_map: Dict[str, str]) -> str:
+def force_repair_all_errors(translated: str, glossary_map: Dict[str, str] = None) -> str:
     """
     HÀM CƯỠNG ÉP SỬA LỖI HẬU XỬ LÝ CHUYÊN SÂU (FORCE REPAIR ENGINE).
     Đảm bảo 100% không bao giờ lọt lỗi đại từ hay Pinyin ra cho người dùng.
@@ -1221,8 +1263,20 @@ def force_repair_all_errors(translated: str, glossary_map: Dict[str, str]) -> st
     if not translated:
         return translated
 
-    # 1. Ép sửa 100% Pinyin
+    # 1. Ép sửa 100% Pinyin & dịch sai danh từ nhân vật
     pinyin_fixes = [
+        (r"\bSu Tan'?er\b", "Tô Đàn Nhi"),
+        (r"\bSu Taner\b", "Tô Đàn Nhi"),
+        (r"\bSu Tan\b", "Tô Đàn Nhi"),
+        (r"\bJuan'?er\b", "Quyên Nhi"),
+        (r"\bJuaner\b", "Quyên Nhi"),
+        (r"\bXing'?er\b", "Hạnh Nhi"),
+        (r"\bXinger\b", "Hạnh Nhi"),
+        (r"\bMyolie\b", "Hạnh Nhi"),
+        (r"\bChan'?er\b", "Tiểu Thiền"),
+        (r"\bXiao Chan\b", "Tiểu Thiền"),
+        (r"\bNing Yi\b", "Ninh Dịch"),
+        (r"\bNingYi\b", "Ninh Dịch"),
         (r"\bQingyi\b", "Thanh Y"),
         (r"\bRuoping\b", "Nhược Bình"),
         (r"\bA Kang\b", "A Khang"),
@@ -1231,11 +1285,18 @@ def force_repair_all_errors(translated: str, glossary_map: Dict[str, str]) -> st
         (r"\bgia đình Su\b", "Tô gia"),
         (r"\bSu Xiaoxiao\b", "Tô Tiếu Tiếu"),
         (r"\bLei Wang\b", "Lôi Vọng"),
+        (r"\bchơi cờ Go\b", "chơi cờ vây"),
+        (r"\bcờ Go\b", "cờ vây"),
+        (r"\bthị trấn cờ vây\b", "bàn cờ vây"),
+        (r"\bcờ thỏ cáo\b", "cờ ca-rô"),
     ]
     for p, r in pinyin_fixes:
         translated = re.sub(p, r, translated, flags=re.IGNORECASE)
 
-    # 2. Ép sửa 100% đại từ ngoài lời thoại
+    # 2. Quy đổi các Pinyin dạng Xxx'er ➔ Xxx Nhi (Ví dụ: Tan'er ➔ Đàn Nhi, Feng'er ➔ Phong Nhi)
+    translated = re.sub(r"\b([A-Z][a-z]+)'er\b", r"\1 Nhi", translated)
+
+    # 3. Ép sửa đại từ cổ trang thô cứng / dịch sai từ tiếng Trung
     lines = translated.split("\n")
     fixed_lines = []
     for line in lines:
@@ -1250,15 +1311,129 @@ def force_repair_all_errors(translated: str, glossary_map: Dict[str, str]) -> st
                 part = re.sub(r"\bông ấy\b", "hắn", part, flags=re.IGNORECASE)
                 part = re.sub(r"\bcô ấy\b", "nàng", part, flags=re.IGNORECASE)
                 part = re.sub(r"\bAnh\b", "Hắn", part)
+                # Sửa lỗi dịch nhầm từ 姑爷 (Cô gia / Tướng công) thành "Chú" / "Chú tôi" / "Chú cháu"
+                part = re.sub(r"\bChú cháu\b", "Cô gia", part, flags=re.IGNORECASE)
+                part = re.sub(r"\bChú tôi\b", "Cô gia", part, flags=re.IGNORECASE)
+                part = re.sub(r"\bngười chú\b", "cô gia", part, flags=re.IGNORECASE)
+                part = re.sub(r"\bchú tôi\b", "cô gia", part, flags=re.IGNORECASE)
+                part = re.sub(r"\bchú cháu\b", "cô gia", part, flags=re.IGNORECASE)
             parts[idx] = part
         fixed_lines.append("".join(parts))
     translated = "\n".join(fixed_lines)
 
-    # 3. Ép Glossary
+    # 4. Ép Glossary
     if glossary_map:
         translated = _enforce_glossary(translated, glossary_map)
 
     return translated
+
+
+def self_consistency_check(translated: str, glossary_map: Dict[str, str] = None) -> str:
+    """
+    Kiểm tra tính nhất quán tên riêng giữa các đoạn trong cùng 1 chương (Self-Consistency Pass).
+    Phát hiện biến thể tên (VD: Su Đàn Nhi vs Tô Đàn Nhi) và đồng bộ về tên Hán-Việt chuẩn trong Glossary.
+    """
+    if not translated:
+        return translated
+        
+    if glossary_map:
+        for zh_term, vi_term in glossary_map.items():
+            if not vi_term:
+                continue
+            # Nếu tên đúng có nhiều từ (VD: "Tô Đàn Nhi"), tìm các biến thể như "Su Đàn Nhi", "Suthan Nhi"...
+            parts = vi_term.split()
+            if len(parts) >= 2:
+                last_name = parts[-1]
+                pattern = re.compile(rf"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+{re.escape(last_name)}\b")
+                matches = pattern.findall(translated)
+                for match in matches:
+                    if match != vi_term and match != vi_term.strip():
+                        translated = translated.replace(match, vi_term)
+                        logger.info(f"🔄 Self-Consistency Pass: Đã đồng bộ '{match}' ➔ '{vi_term}'")
+    return translated
+
+
+async def auto_discover_leftover_entities(
+    translated: str,
+    raw_chinese: str,
+    novel_id: int,
+    db: Any = None,
+    client: Any = None
+) -> str:
+    """
+    Generic Detector: Phát hiện chữ Hán / Pinyin lặp lại còn sót trong bản dịch.
+    Gọi AI/Dictionary dịch 1 lần và TỰ ĐỘNG GHI PERSISTENT VÀO SQLITE DB (Glossary) cho các chương sau!
+    """
+    if not translated or not raw_chinese:
+        return translated
+
+    # Phát hiện cụm Hán sót lặp lại >= 1 lần
+    chinese_leftovers = re.findall(r"[\u4e00-\u9fff]{2,4}", translated)
+    freq = {}
+    for cl in chinese_leftovers:
+        freq[cl] = freq.get(cl, 0) + 1
+        
+    found_leftovers = [term for term, count in freq.items() if count >= 1]
+    
+    if found_leftovers and db and novel_id:
+        try:
+            from app.models.models import Glossary
+            from app.services.translator.hanviet_data import convert_to_hanviet_name
+            
+            logger.info(f"💡 Generic Detector: Phát hiện {len(found_leftovers)} từ Hán sót: {found_leftovers}. Đang tự học 0-token vào Glossary DB...")
+            new_entries = []
+            for term in found_leftovers:
+                # 1. Ưu tiên tra Hán Việt offline 0 token
+                vi_trans = convert_to_hanviet_name(term)
+                if not vi_trans or vi_trans == term or any(c in vi_trans for c in term):
+                    vi_trans = translate_chinese_phrase_fallback(term)
+                    
+                if vi_trans and vi_trans != term:
+                    translated = translated.replace(term, vi_trans)
+                    new_entries.append(
+                        Glossary(
+                            novel_id=novel_id,
+                            chinese_term=term,
+                            vietnamese_term=vi_trans,
+                            category="AUTO_DISCOVERED",
+                            notes="Auto-discovered 0-token leftover"
+                        )
+                    )
+            if new_entries:
+                db.add_all(new_entries)
+                await db.commit()
+                logger.info(f"✨ TỰ HỌC TỪ MỚI THÀNH CÔNG: Đã lưu {len(new_entries)} thuật ngữ mới vào DB!")
+        except Exception as e:
+            logger.warning(f"Lỗi tự học từ mới vào Glossary DB: {e}")
+            
+    return translated
+
+
+def perfect_output_polisher(translated: str) -> str:
+    """
+    Perfect Output Polish (Hậu Xử Lý Hoàn Thiện Điện Ảnh):
+    Biên tập nhịp văn, chuẩn hóa khoảng trắng xung quanh dấu ngoặc, gạch ngang và ngắt đoạn \\n\\n.
+    """
+    if not translated:
+        return translated
+
+    # 1. Dọn dẹp khoảng trắng quanh dấu câu Việt Nam
+    translated = re.sub(r"\s+([,.\?!;:])", r"\1", translated)
+    translated = re.sub(r'([“"\(])\s+', r'\1', translated)
+    translated = re.sub(r'\s+([”"\)])', r'\1', translated)
+    
+    # 2. Gom khoảng trắng nhiều dấu
+    translated = re.sub(r" {2,}", " ", translated)
+    
+    # 3. Chuẩn hóa dấu 3 chấm
+    translated = re.sub(r"\.{2,}", "...", translated)
+    
+    # 4. Chuẩn hóa dòng trống \n\n
+    lines = [line.strip() for line in translated.split("\n")]
+    translated = "\n".join(lines)
+    translated = re.sub(r"\n{3,}", "\n\n", translated)
+    
+    return translated.strip()
 
 
 # ==============================================================================

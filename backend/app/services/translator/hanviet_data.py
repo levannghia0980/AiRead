@@ -7,6 +7,19 @@ Dùng làm fallback offline 100% khi tất cả các API dịch thuật online (
 HANVIET_DICT = {
     "一": "nhất", "乙": "ất", "二": "nhị", "十": "thập", "丁": "đinh", "厂": "xưởng", "七": "thất",
     "卜": "bốc", "人": "nhân", "入": "nhập", "八": "bát", "九": "cửu", "几": "kỷ", "er": "nhi", "儿": "nhi",
+    # Tên riêng / Họ phổ biến
+    "苏": "tô", "檀": "đàn", "毅": "dịch", "婵": "thiền", "娟": "quyên", "杏": "hạnh",
+    "秦": "tần", "淮": "hoài", "陆": "lục", "红": "hồng", "提": "đề", "锦": "cẩm",
+    "武": "vũ", "朝": "triều", "江": "giang", "临": "lâm", "安": "an", "萧": "tiêu",
+    "林": "lâm", "楚": "sở", "陈": "trần", "李": "lý", "张": "trương", "赵": "triệu",
+    "钱": "tiền", "孙": "tôn", "周": "chu", "吴": "ngô", "郑": "trịnh", "王": "vương",
+    "冯": "phùng", "沈": "thẩm", "韩": "hàn", "杨": "dương", "朱": "chu", "许": "hứa",
+    "何": "hà", "吕": "lữ", "施": "thi", "曹": "tào", "严": "nghiêm", "华": "hoa",
+    "金": "kim", "魏": "ngụy", "陶": "đào", "姜": "khương", "谢": "tạ", "范": "phạm",
+    "彭": "bành", "鲁": "lỗ", "马": "mã", "凤": "phượng", "花": "hoa", "方": "phương",
+    "袁": "viên", "柳": "liễu", "唐": "đường", "薛": "tiết", "雷": "lôi", "贺": "hạ",
+    "罗": "la", "傅": "phó", "齐": "tề", "康": "khang", "顾": "cố", "孟": "mạnh",
+    "黄": "hoàng", "和": "hòa", "尹": "doãn",
     "了": "liễu", "力": "lực", "乃": "nãi", "刀": "đao", "又": "hựu", "三": "tam", "于": "vu",
     "干": "can", "亏": "khuy", "工": "công", "土": "thổ", "才": "tài", "寸": "thốn", "下": "hạ",
     "大": "đại", "丈": "trượng", "与": "dữ", "万": "vạn", "上": "thượng", "小": "tiểu", "口": "khẩu",
@@ -77,3 +90,10 @@ def convert_to_hanviet(text: str) -> str:
     for char in text:
         result.append(lookup_hanviet(char))
     return " ".join(result)
+
+def convert_to_hanviet_name(text: str) -> str:
+    """Chuyển đổi một tên chữ Hán sang Hán Việt chuẩn viết hoa từng từ (0 Token, 0 Latency)."""
+    if not text:
+        return ""
+    words = [lookup_hanviet(char).capitalize() for char in text]
+    return " ".join(words)

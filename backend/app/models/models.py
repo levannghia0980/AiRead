@@ -45,6 +45,7 @@ class Glossary(Base):
     chinese_term = Column(String, nullable=False)
     vietnamese_term = Column(String, nullable=False)
     category = Column(String, default="NAME")  # NAME, PLACE, SECT, ITEM, OTHER
+    notes = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
 
     # Relationships
