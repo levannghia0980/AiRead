@@ -1,0 +1,39 @@
+# Python bytecode cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Node.js
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Database & Generated Output
+*.db
+*.db-shm
+*.db-wal
+database.db
+novel.db
+Output/*
+!Output/**/.gitkeep
+scratch/
+*.mp3
+
+# Environment Variables & Secret Credentials
+.env
+.env.local
+.env.*.local
+
+# IDE & System files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+logs/
