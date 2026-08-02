@@ -30,10 +30,15 @@ WUXIA_PROFILE = {
 }
 
 COMMON_RULES = (
-    "1. VỀ DANH XƯNG & BỐI PHẬN: Luôn dịch theo cấu trúc [Tên riêng] + [Bối phận/Danh xưng] (Tên trước, chức danh sau). Ví dụ: 'Tang lão' (KHÔNG dùng 'Lão Tang'), 'Từ huynh' (KHÔNG dùng 'Huynh Từ'), 'Mã sư đệ' (KHÔNG dùng 'Sư đệ Mã'), 'Sân lão' (KHÔNG dùng 'Lão Sân'), 'Tiêu trưởng lão', 'Triệu sư tỷ', v.v.\n"
-    "2. KHÔNG DỊCH MÁY: Đọc hiểu ngữ cảnh trước sau để dịch mượt mà, tự nhiên và nhất quán trong toàn bộ chương.\n"
-    "3. HẠN CHẾ HÁN-VIỆT THÔNG THƯỜNG: Chỉ dùng từ Hán-Việt cho thực thể đặc trưng (Tên riêng, địa danh, tông môn, chiêu thức, bảo vật). Toàn bộ từ miêu tả hành động sinh hoạt, mô tả thường ngày phải dịch sang tiếng Việt tự nhiên, thuần Việt (ví dụ: dùng 'người thu xác' thay vì 'thu thây').\n"
-    "4. GIỮ NGUYÊN NỘI DUNG: Không tự ý thêm bớt tình tiết, hội thoại ngoài bản gốc."
+    "1. NHẤT QUÁN XƯNG HÔ & THÂN TỘC TƯƠNG ỨNG (TUYỆT ĐỐI BẮT BUỘC):\n"
+    "   - Phải xác định đúng AI ĐANG NÓI VỚI AI trong từng đoạn hội thoại.\n"
+    "   - Khi 2 nhân vật giao tiếp có quan hệ thân tộc hoặc bối phận (như Mẹ - Con, Cha - Con, Sư phụ - Đệ tử, Ông - Cháu, Huynh - Đệ, Sư huynh - Sư đệ, Sư tỷ - Sư muội, Chủ - Tớ), xưng hô phải TUYỆT ĐỐI NHẤT QUÁN THEO CẶP TƯƠNG ỨNG từ đầu đến cuối chương.\n"
+    "   - CẤM ĐẢO NGƯỢC CẶP XƯNG HÔ: Ví dụ nếu A là Mẹ và B là Con: A phải xưng 'Mẹ' (hoặc 'Nương/Mẫu thân') gọi B là 'Con' (hoặc 'Nhi tử'); B phải gọi A là 'Mẹ/Mẫu thân' xưng 'Con'. KHÔNG ĐƯỢC đảo ngược ở các câu tiếp theo thành B gọi A là 'Con' hay A gọi B là 'Mẹ', cũng KHÔNG ĐƯỢC tự ý nhảy sang 'ta - ngươi'.\n"
+    "   - Nếu bản dịch lót/Google bị dịch ngô nghê hoặc bị lộn xưng hô giữa các câu, BẠN PHẢI TỰ ĐỘNG SỬA LẠI TOÀN BỘ CHO NHẤT QUÁN VỚI CẶP XƯNG HÔ ĐÚNG BAN ĐẦU.\n"
+    "2. VỀ DANH XƯNG & BỐI PHẬN: Luôn dịch theo cấu trúc [Tên riêng] + [Bối phận/Danh xưng] (Tên trước, chức danh sau). Ví dụ: 'Tang lão' (KHÔNG dùng 'Lão Tang'), 'Từ huynh' (KHÔNG dùng 'Huynh Từ'), 'Mã sư đệ' (KHÔNG dùng 'Sư đệ Mã'), 'Sân lão' (KHÔNG dùng 'Lão Sân'), 'Tiêu trưởng lão', 'Triệu sư tỷ', v.v.\n"
+    "3. KHÔNG DỊCH MÁY: Đọc hiểu ngữ cảnh trước sau để dịch mượt mà, tự nhiên và nhất quán trong toàn bộ chương.\n"
+    "4. HẠN CHẾ HÁN-VIỆT THÔNG THƯỜNG: Chỉ dùng từ Hán-Việt cho thực thể đặc trưng (Tên riêng, địa danh, tông môn, chiêu thức, bảo vật). Toàn bộ từ miêu tả hành động sinh hoạt, mô tả thường ngày phải dịch sang tiếng Việt tự nhiên, thuần Việt (ví dụ: dùng 'người thu xác' thay vì 'thu thây').\n"
+    "5. GIỮ NGUYÊN NỘI DUNG: Không tự ý thêm bớt tình tiết, hội thoại ngoài bản gốc."
 )
 
 CONTEXT_PROFILES = {

@@ -30,10 +30,15 @@ WUXIA_PROFILE = {
 }
 
 COMMON_RULES = (
-    "1. BIÊN TẬP XƯNG HÔ & PHỤC HỒI CHỦ NGỮ: Khôi phục các chủ ngữ ẩn bị mất từ Google Dịch. Thay đổi đại từ xưng hô generic (như bạn, tôi, anh ấy, cô ấy) thành xưng hô chuẩn của ngữ cảnh.\n"
-    "2. DANH XƯNG & BỐI PHẬN: Luôn dùng cấu trúc [Tên riêng] + [Bối phận/Danh xưng] (Tên trước, chức danh sau). Sửa lại cấu trúc ngược của Google Dịch thành: 'Tang lão' (KHÔNG dùng 'Lão Tang'), 'Từ huynh' (KHÔNG dùng 'Huynh Từ'), 'Mã sư đệ' (KHÔNG dùng 'Sư đệ Mã'), 'Sân lão' (KHÔNG dùng 'Lão Sân'), 'Tiêu trưởng lão', 'Triệu sư tỷ', v.v.\n"
-    "3. GIỮ NGUYÊN Ý NGHĨA & THỰC THỂ: Giữ nguyên 100% các mã bảo vệ §PREFIX_XXXX§. Không thêm thắt tình tiết ngoài văn bản gốc. Giữ đúng các thực thể đã tra từ điển.\n"
-    "4. TỐI ƯU HÁN VIỆT: Chỉ giữ từ Hán-Việt cho thực thể đặc trưng. Các hành động sinh hoạt, mô tả thường ngày phải biên tập sang tiếng Việt tự nhiên và thuần Việt (ví dụ: sửa 'thu thây' thành 'người thu xác')."
+    "1. NHẤT QUÁN XƯNG HÔ & THÂN TỘC TƯƠNG ỨNG (TUYỆT ĐỐI BẮT BUỘC):\n"
+    "   - Phải xác định đúng AI ĐANG NÓI VỚI AI trong từng đoạn hội thoại.\n"
+    "   - Khi 2 nhân vật giao tiếp có quan hệ thân tộc hoặc bối phận (như Mẹ - Con, Cha - Con, Sư phụ - Đệ tử, Ông - Cháu, Huynh - Đệ, Sư huynh - Sư đệ, Sư tỷ - Sư muội, Chủ - Tớ), xưng hô phải TUYỆT ĐỐI NHẤT QUÁN THEO CẶP TƯƠNG ỨNG từ đầu đến cuối chương.\n"
+    "   - CẤM ĐẢO NGƯỢC CẶP XƯNG HÔ: Ví dụ nếu A là Mẹ và B là Con: A phải xưng 'Mẹ' (hoặc 'Nương/Mẫu thân') gọi B là 'Con' (hoặc 'Nhi tử'); B phải gọi A là 'Mẹ/Mẫu thân' xưng 'Con'. KHÔNG ĐƯỢC đảo ngược ở các câu tiếp theo thành B gọi A là 'Con' hay A gọi B là 'Mẹ', cũng KHÔNG ĐƯỢC tự ý nhảy sang 'ta - ngươi'.\n"
+    "   - Nếu bản dịch Google bị dịch ngô nghê hoặc bị lộn xưng hô giữa các câu (ví dụ câu trước dịch Mẹ - Con nhưng câu sau bị Google dịch lộn thành Ta - Ngươi hoặc Đảo ngược Con - Mẹ), BẠN PHẢI TỰ ĐỘNG SỬA LẠI TOÀN BỘ CHO NHẤT QUÁN VỚI CẶP XƯNG HÔ ĐÚNG BAN ĐẦU.\n"
+    "2. BIÊN TẬP XƯNG HÔ & PHỤC HỒI CHỦ NGỮ: Khôi phục các chủ ngữ ẩn bị mất từ Google Dịch. Thay đổi đại từ xưng hô generic (như bạn, tôi, anh ấy, cô ấy) thành xưng hô chuẩn của ngữ cảnh.\n"
+    "3. DANH XƯNG & BỐI PHẬN: Luôn dùng cấu trúc [Tên riêng] + [Bối phận/Danh xưng] (Tên trước, chức danh sau). Sửa lại cấu trúc ngược của Google Dịch thành: 'Tang lão' (KHÔNG dùng 'Lão Tang'), 'Từ huynh' (KHÔNG dùng 'Huynh Từ'), 'Mã sư đệ' (KHÔNG dùng 'Sư đệ Mã'), 'Sân lão' (KHÔNG dùng 'Lão Sân'), 'Tiêu trưởng lão', 'Triệu sư tỷ', v.v.\n"
+    "4. GIỮ NGUYÊN Ý NGHĨA & THỰC THỂ: Giữ nguyên 100% các mã bảo vệ §PREFIX_XXXX§. Không thêm thắt tình tiết ngoài văn bản gốc. Giữ đúng các thực thể đã tra từ điển.\n"
+    "5. TỐI ƯU HÁN VIỆT: Chỉ giữ từ Hán-Việt cho thực thể đặc trưng. Các hành động sinh hoạt, mô tả thường ngày phải biên tập sang tiếng Việt tự nhiên và thuần Việt (ví dụ: sửa 'thu thây' thành 'người thu xác')."
 )
 
 CONTEXT_PROFILES = {
