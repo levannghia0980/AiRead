@@ -257,7 +257,7 @@ def split_text_into_chunks(text: str, max_chars: int = 900) -> List[str]:
                 current_len = 0
             
             # Tách đoạn dài thành các câu (Giữ kèm dấu ngoặc kép / ngoặc ôm phía sau)
-            sentences = re.split(r'(?<=[.!?]["”’\)\}\]]?)\s+', para)
+            sentences = re.split(r'(?<=[.!?]|[.!?]["”’\)\}\]])\s+', para)
             for sent in sentences:
                 sent = sent.strip()
                 if not sent:
@@ -271,7 +271,7 @@ def split_text_into_chunks(text: str, max_chars: int = 900) -> List[str]:
                         current_chunk = []
                         current_len = 0
                     
-                    sub_parts = re.split(r'(?<=[,;:]["”’\)\}\]]?)\s+', sent)
+                    sub_parts = re.split(r'(?<=[,;:]|[,;:]["”’\)\}\]])\s+', sent)
                     for sp in sub_parts:
                         sp = sp.strip()
                         if not sp:
