@@ -50,7 +50,7 @@ COMMON_RULES = (
     "   - Quét và sửa triệt để các từ tiếng nước ngoài do Google Dịch đoán nhầm ngôn ngữ đầu câu (ví dụ: sửa 'Setelah' thành 'Sau khi' hoặc 'Nghe xong').\n"
     "   - Sửa các cụm từ dịch ngô nghê như 'dưới một cái' $\rightarrow$ 'lập tức / tức thì', 'có chút' $\rightarrow$ 'hơi / hơi chút'.\n"
     "6. BIÊN TẬP XƯNG HÔ & PHỤC HỒI CHỦ NGỮ: Khôi phục các chủ ngữ ẩn bị mất từ Google Dịch. Thay đổi đại từ xưng hô generic (như bạn, tôi, anh ấy, cô ấy) thành xưng hô chuẩn của ngữ cảnh.\n"
-    "7. DANH XƯNG & BỐI PHẬN: Luôn dùng cấu trúc [Tên riêng] + [Bối phận/Danh xưng] (Tên trước, chức danh sau). Sửa lại cấu trúc ngược của Google Dịch thành: 'Tang lão', 'Từ huynh', 'Mã sư đệ', 'Tiêu trưởng lão', 'Triệu sư tỷ', v.v.\n"
+    "7. DANH XƯNG & BỐI PHẬN: Luôn dùng cấu trúc [Tên riêng] + [Bối phận/Danh xưng] (Tên trước, chức danh sau). Sửa lại cấu trúc ngược của Google Dịch thành: 'Kiều trưởng lão', 'Tang lão', 'Từ huynh', 'Mã sư đệ', 'Tiêu trưởng lão', 'Triệu sư tỷ', v.v.\n"
     "8. GIỮ NGUYÊN Ý NGHĨA & THỰC THỂ: Giữ nguyên 100% các mã bảo vệ §PREFIX_XXXX§. Không thêm thắt tình tiết ngoài văn bản gốc. Giữ đúng các thực thể đã tra từ điển.\n"
     "9. BẢO TỒN NGUYÊN BẢN THUẬT NGỮ & SỐ ĐẾM HÁN-VIỆT CHUẨN (TUYỆT ĐỐI BẮT BUỘC):\n"
     "   - SỐ ĐẾM CẢNH GIỚI TU LUYỆN: BẮT BUỘC DÙNG SỐ HÁN-VIỆT (Nhất, Nhị, Tam, Tứ, Ngũ, Lục, Thất, Bát, Cửu, Thập...). Sửa các lỗi dịch thô dùng số thứ tự thuần Việt ('thứ ba', 'thứ 4', 'tầng thứ 4', 'tầng thứ ba') thành 'Tam Cảnh', 'Tứ Cảnh', 'Luyện Linh Tứ Cảnh', 'Luyện Linh Thập Cảnh'.\n"

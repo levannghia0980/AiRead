@@ -22,12 +22,13 @@ SYSTEM_PROMPT_INSTRUCTION = (
     "3. BỎ QUA HOÀN TOÀN đại từ nhân xưng (hắn, y, nàng, ngươi, ta...) hoặc các từ tiếng Việt thông dụng.\n"
     "4. NHÁNH 2 (Google Translate Errors): Nếu có lỗi do Google dịch sai (như để nguyên Pinyin/Tiếng Anh 'Serena', 'Wang Wei', 'Yayi' HOẶC dịch sai âm Hán-Việt đồng âm như Vương Vi -> Vương Uy), bạn PHẢI dịch lại từ tiếng Trung gốc sang Hán-Việt chuẩn và đưa vào 'corrections'.\n"
     "5. XỬ LÝ TIỀN TỐ/HẬU TỐ XƯNG HÔ: Các từ xưng hô kèm tên như Tiểu (小), Lão (老), A (阿), Đại (大), Ca (哥), Tỷ (姐)... Phải gắn liền với tên. Ví dụ: 小威 -> 'Tiểu Uy'.\n"
-    "6. ⚠️ NGUYÊN TẮC VÀNG — ĐẢO TRẬT TỰ CHỨC DANH SANG TIẾNG VIỆT THUẦN: Khi trích xuất tên nhân vật có chức danh/bối phận (như 长老 -> Trưởng lão, 宗主 -> Tông chủ, 门主 -> Môn chủ, 师兄 -> Sư huynh, 师姐 -> Sư tỷ, 师父 -> Sư phụ, 城主 -> Thành chủ, 殿主 -> Điện chủ, 峰主 -> Phong chủ...): BẮT BUỘC đảo trật tự Hán-Việt sang trật tự ngữ pháp Tiếng Việt chuẩn [Chức danh] + [Tên].\n"
-    "   Ví dụ: 乔长老 -> 'Trưởng lão Kiều' (TUYỆT ĐỐI KHÔNG DỊCH LÀ 'Kiều trưởng lão'), 李宗主 -> 'Tông chủ Lý', 张师兄 -> 'Sư huynh Trương', 穆师姐 -> 'Sư tỷ Mục'.\n\n"
+    "6. ⚠️ NGUYÊN TẮC VÀNG — GIỮ NGUYÊN TRẬT TỰ HÁN-VIỆT CỔ PHONG TRUYỆN TRUNG: Khi trích xuất tên nhân vật có chức danh/bối phận/chức vụ (như 长老 -> Trưởng lão, 宗主 -> Tông chủ, 门主 -> Môn chủ, 师兄 -> Sư huynh, 师姐 -> Sư tỷ, 师父 -> Sư phụ, 城主 -> Thành chủ, 殿主 -> Điện chủ, 峰主 -> Phong chủ, 老 -> Lão, 兄 -> Huynh...):\n"
+    "   BẮT BUỘC giữ nguyên trật tự Hán-Việt cổ phong: [Tên/Họ] + [Danh xưng/Chức danh/Lão/Huynh/Tỷ/Muội/Đệ/Trưởng lão].\n"
+    "   Ví dụ BẮT BUỘC: 乔长老 -> 'Kiều trưởng lão' (TUYỆT ĐỐI KHÔNG DỊCH LÀ 'Trưởng lão Kiều'), 桑老 -> 'Tang lão' (KHÔNG DỊCH LÀ 'Lão Tang'), 徐兄 -> 'Từ huynh' (KHÔNG DỊCH LÀ 'Huynh Từ'), 李宗主 -> 'Lý tông chủ', 张师兄 -> 'Trương sư huynh', 穆师姐 -> 'Mục sư tỷ'.\n\n"
     "Yêu cầu trả về kết quả dưới dạng JSON:\n"
     "{\n"
     '  "entities": [\n'
-    '    {"chinese_name": "乔长老", "vietnamese_name": "Trưởng lão Kiều", "entity_type": "NAME"},\n'
+    '    {"chinese_name": "乔长老", "vietnamese_name": "Kiều trưởng lão", "entity_type": "NAME"},\n'
     '    {"chinese_name": "莫雅仪", "vietnamese_name": "Mạc Nhã Nghi", "entity_type": "NAME"},\n'
     '    {"chinese_name": "雷神之息", "vietnamese_name": "Lôi Thần Chi Sức", "entity_type": "SKILL"},\n'
     '    {"chinese_name": "紫光雷翼", "vietnamese_name": "Tử Quang Lôi Dực", "entity_type": "ITEM"},\n'
