@@ -595,6 +595,9 @@ export default function AudioStudio({ novels }: AudioStudioProps) {
               <option value={10}>🎧 10 Chương / Tập</option>
               <option value={15}>🎧 15 Chương / Tập</option>
               <option value={20}>🎧 20 Chương / Tập</option>
+              <option value={30}>🎧 30 Chương / Tập</option>
+              <option value={50}>🎧 50 Chương / Tập</option>
+              <option value={100}>🎧 100 Chương / Tập</option>
             </select>
 
             <select

@@ -116,8 +116,8 @@ def sanitize_tts_text(text: str) -> str:
     # 5. Loại bỏ Tiêu đề chương ("Chương 27: Từ đại lừa bịp") và Nhãn kết thúc ("(Hết chương)", "[Hết]")
     # Giúp audio đọc xuyên suốt mạch truyện mà không bị gián đoạn bởi tiêu đề/hết chương.
     text = re.sub(r'^\s*Chương\s+\d+\s*[:.:-]?\s*.*$', '', text, flags=re.IGNORECASE | re.MULTILINE)
-    text = re.sub(r'[\(\[\{]?\s*(?:Hết\s+Chương(?:\s+\d+)?|Hết|Chương\s+kết\ thúc|Tác\ giả\ có\ lời\ muốn\ nói)[^\)\}\]\n]*[\)\]\}]?', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'^\s*(?:Hết\s+Chương|Hết\s+\d+|Hết)\.?\s*$', '', text, flags=re.IGNORECASE | re.MULTILINE)
+    text = re.sub(r'[\(\[\{]?\s*(?:Hết\s+Chương(?:\s+\d+)?|\bHết\b|Chương\s+kết\ thúc|Tác\ giả\ có\ lời\ muốn\ nói)[^\)\}\]\n]*[\)\]\}]?', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'^\s*(?:Hết\s+Chương|\bHết\b\s+\d+|\bHết\b)\.?\s*$', '', text, flags=re.IGNORECASE | re.MULTILINE)
 
     # 6. Chuẩn hóa ngoặc Trung Quốc / đặc biệt: 「」『』《》 -> ""
     text = text.replace('「', '"').replace('」', '"').replace('『', '"').replace('』', '"')
@@ -232,6 +232,7 @@ def split_text_into_chunks(text: str, max_chars: int = 900) -> List[str]:
     """
     Phân tách văn bản thành các chunk vừa đủ (800-1000 ký tự, mặc định 900) để Edge-TTS đọc mượt mà,
     giảm số lượng request HTTP API và tối ưu tốc độ sinh Audio tối đa.
+    ĐẢM BẢO TUẦN TỰ 100%, KHÔNG BẮT SAI QUOTE, KHÔNG ĐỔI THỨ TỰ VÀ KHÔNG TRỘN CÂU CHỮ.
     """
     if not text or not text.strip():
         return []
@@ -255,8 +256,8 @@ def split_text_into_chunks(text: str, max_chars: int = 900) -> List[str]:
                 current_chunk = []
                 current_len = 0
             
-            # Tách đoạn dài thành các câu
-            sentences = re.split(r'(?<=[.!?])\s+', para)
+            # Tách đoạn dài thành các câu (Giữ kèm dấu ngoặc kép / ngoặc ôm phía sau)
+            sentences = re.split(r'(?<=[.!?]["”’\)\}\]]?)\s+', para)
             for sent in sentences:
                 sent = sent.strip()
                 if not sent:
@@ -270,7 +271,7 @@ def split_text_into_chunks(text: str, max_chars: int = 900) -> List[str]:
                         current_chunk = []
                         current_len = 0
                     
-                    sub_parts = re.split(r'(?<=[,;:])\s+', sent)
+                    sub_parts = re.split(r'(?<=[,;:]["”’\)\}\]]?)\s+', sent)
                     for sp in sub_parts:
                         sp = sp.strip()
                         if not sp:
@@ -320,7 +321,7 @@ def split_text_into_chunks(text: str, max_chars: int = 900) -> List[str]:
         chunks.append(' '.join(current_chunk))
     
     # Lọc bỏ chunk rỗng hoặc quá ngắn vô nghĩa
-    chunks = [c.strip() for c in chunks if c.strip() and len(c.strip()) > 5]
+    chunks = [c.strip() for c in chunks if c.strip() and len(c.strip()) > 3]
     
     return chunks
 
