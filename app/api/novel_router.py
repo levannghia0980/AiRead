@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 from fastapi import APIRouter, HTTPException, Query, Path
 from pydantic import BaseModel
@@ -18,6 +19,9 @@ class UpdateNovelEntityRequest(BaseModel):
     chinese_name: str
     rough_translation: str
     entity_type: str = "NAME"
+    gender: Optional[str] = None
+    role: Optional[str] = None
+    old_vietnamese_term: Optional[str] = None
 
 @router.get("")
 async def list_novels() -> Dict[str, Any]:
@@ -124,6 +128,11 @@ async def get_novel_detail(novel_id: int = Path(...)) -> Dict[str, Any]:
             if final_status in ["FINAL_DONE", "DONE", "TRANSLATED"]:
                 final_status = "COMPLETED"
 
+            # Kiểm tra xem có Hán tự lọt lưới bị bọc gạch chân xanh không (class="swept-chinese")
+            has_swept_errors = False
+            if translated_text and 'class="swept-chinese"' in translated_text:
+                has_swept_errors = True
+
             chapters_list.append({
                 "id": c.id,
                 "novel_id": c.novel_id,
@@ -134,6 +143,7 @@ async def get_novel_detail(novel_id: int = Path(...)) -> Dict[str, Any]:
                 "translated_text": translated_text,
                 "status": final_status,
                 "error_msg": c.error_message,
+                "has_swept_errors": has_swept_errors,
                 "token_count": 0,
                 "updated_at": c.updated_at.isoformat() if c.updated_at else ""
             })
@@ -212,7 +222,8 @@ async def list_novel_entities(novel_id: int = Path(...)) -> Dict[str, Any]:
                 "chinese_name": e.chinese_name,
                 "rough_translation": e.rough_translation,
                 "entity_type": e.entity_type,
-                "description": e.description
+                "gender": getattr(e, "gender", None),
+                "role": getattr(e, "role", None)
             })
             
         return {"status": "success", "total": len(data), "data": data}
@@ -341,7 +352,9 @@ async def update_novel_entity_and_apply(
     payload: UpdateNovelEntityRequest = None
 ):
     """
-    Sửa hoặc thêm tên nhân vật/địa danh/chiêu thức cho truyện và hồi tố áp dụng lại vào mọi bản dịch GG (trong DB và file đĩa).
+    Sửa hoặc thêm tên nhân vật/địa danh/chiêu thức cho truyện và hồi tố áp dụng lại 
+    vào TẤT CẢ bản dịch (GG, LLM, FINAL) trong DB và file đĩa.
+    Khi đổi tên → tự động thay thế tên cũ → tên mới trong mọi chương đã dịch.
     """
     try:
         from app.services.unblock.unblock_pipeline import is_sensitive_text
@@ -365,6 +378,10 @@ async def update_novel_entity_and_apply(
                 old_translation = entity.rough_translation
                 entity.rough_translation = payload.rough_translation
                 entity.entity_type = payload.entity_type
+                if payload.gender is not None:
+                    entity.gender = payload.gender
+                if payload.role is not None:
+                    entity.role = payload.role
                 await session.commit()
                 saved_entity_id = entity.id
             else:
@@ -372,7 +389,9 @@ async def update_novel_entity_and_apply(
                     novel_id=novel_id,
                     chinese_name=payload.chinese_name,
                     rough_translation=payload.rough_translation,
-                    entity_type=payload.entity_type
+                    entity_type=payload.entity_type,
+                    gender=payload.gender,
+                    role=payload.role
                 )
                 session.add(new_ent)
                 await session.commit()
@@ -386,17 +405,23 @@ async def update_novel_entity_and_apply(
             search_terms.append(payload.chinese_name)
         if old_translation and old_translation != payload.rough_translation:
             search_terms.append(old_translation)
+        # Hỗ trợ old_vietnamese_term từ frontend (khi user đổi tên Việt)
+        if payload.old_vietnamese_term and payload.old_vietnamese_term != payload.rough_translation:
+            if payload.old_vietnamese_term not in search_terms:
+                search_terms.append(payload.old_vietnamese_term)
 
         if search_terms:
             async with AsyncSessionLocal() as session:
-                stmt_gg = select(ChapterVersion).join(Chapter).where(
+                # Hồi tố thay tên trong TẤT CẢ bản dịch: GG, LLM, FINAL
+                target_version_types = ["GG", "LLM", "FINAL"]
+                stmt_versions = select(ChapterVersion).join(Chapter).where(
                     Chapter.novel_id == novel_id,
-                    ChapterVersion.version_type == "GG"
+                    ChapterVersion.version_type.in_(target_version_types)
                 )
-                res_gg = await session.execute(stmt_gg)
-                gg_versions = res_gg.scalars().all()
+                res_versions = await session.execute(stmt_versions)
+                all_versions = res_versions.scalars().all()
                 
-                for ver in gg_versions:
+                for ver in all_versions:
                     content = ver.content
                     if not content and ver.file_path and os.path.exists(ver.file_path):
                         with open(ver.file_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -417,11 +442,22 @@ async def update_novel_entity_and_apply(
                                 with open(ver.file_path, "w", encoding="utf-8") as f:
                                     f.write(content)
                             updated_files += 1
+
+                await session.commit()
+
+        # Sync metadata cache sau khi thay đổi entity
+        try:
+            from app.services.storage.metadata_cache import sync_novel_metadata
+            await sync_novel_metadata(novel_id)
+        except Exception:
+            pass
                             
+        version_label = "GG/LLM/FINAL" if search_terms else "DB"
         return {
             "status": "success",
-            "message": f"Đã cập nhật tên '{payload.chinese_name}' -> '{payload.rough_translation}' vào DB và thay tên trên {updated_files} chương GG.",
-            "entity_id": saved_entity_id
+            "message": f"Đã cập nhật tên '{payload.chinese_name}' → '{payload.rough_translation}' vào DB và thay tên trên {updated_files} chương ({version_label}).",
+            "entity_id": saved_entity_id,
+            "affected_chapters": updated_files
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -450,8 +486,53 @@ async def delete_novel_entity(
         
     from app.services.preprocessing.dichhan.translator import clear_translator_caches
     clear_translator_caches()
+
+    # Sync metadata cache
+    try:
+        from app.services.storage.metadata_cache import sync_novel_metadata
+        await sync_novel_metadata(novel_id)
+    except Exception:
+        pass
     
     return {"status": "success", "message": "Đã xóa thực thể khỏi truyện."}
+
+
+@router.get("/{novel_id}/metadata")
+async def get_novel_metadata(novel_id: int = Path(...)) -> Dict[str, Any]:
+    """
+    Đọc metadata truyện từ SQLite cache riêng (nhanh hơn query DB chính).
+    Tự động sync nếu cache chưa tồn tại.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = select(Novel).where(Novel.id == novel_id)
+        res = await session.execute(stmt)
+        novel = res.scalar_one_or_none()
+        if not novel:
+            raise HTTPException(status_code=404, detail="Không tìm thấy truyện.")
+        novel_title = novel.title_rough or novel.title_raw
+
+    from app.services.storage.metadata_cache import (
+        load_novel_entities_fast,
+        load_novel_context_fast,
+        sync_novel_metadata,
+        get_metadata_entities_path
+    )
+
+    # Auto-sync nếu chưa có cache (entities.json)
+    entities_path = get_metadata_entities_path(novel_title)
+    if not entities_path.exists():
+        await sync_novel_metadata(novel_id)
+
+    entities = load_novel_entities_fast(novel_title)
+    context = load_novel_context_fast(novel_title)
+
+    return {
+        "status": "success",
+        "novel_id": novel_id,
+        "novel_title": novel_title,
+        "entities": entities,
+        "context": context
+    }
 
 
 @router.delete("/{novel_id}")
@@ -621,9 +702,16 @@ async def update_novel_genre(novel_id: int = Path(...), payload: UpdateGenreRequ
 
 class ResetChaptersRequest(BaseModel):
     chapter_nos: Optional[List[int]] = None
+    full_restart: Optional[bool] = False
 
 @router.post("/{novel_id}/chapters/reset")
 async def reset_chapters(novel_id: int = Path(...), payload: ResetChaptersRequest = ...):
+    """
+    Reset chương truyện. 
+    - Mặc định: xóa ChapterVersion, ChapterCorrection, file đĩa, đặt status = WAIT
+    - full_restart=true: Xóa THÊM NovelEntity, ChapterEntityLink, TTSChunk, metadata SQLite
+      → Dịch lại hoàn toàn từ đầu
+    """
     async with AsyncSessionLocal() as session:
         stmt_nov = select(Novel).where(Novel.id == novel_id)
         res_nov = await session.execute(stmt_nov)
@@ -638,12 +726,19 @@ async def reset_chapters(novel_id: int = Path(...), payload: ResetChaptersReques
         chap_ids = [c.id for c in chapters]
         if chap_ids:
             # Xóa sạch bảng ChapterCorrection của các chương reset
-            from app.models.schema import ChapterCorrection
+            from app.models.schema import ChapterCorrection, ChapterEntityLink, TTSChunk
             stmt_corr_del = select(ChapterCorrection).where(ChapterCorrection.chapter_id.in_(chap_ids))
             res_corr_del = await session.execute(stmt_corr_del)
             corrs = res_corr_del.scalars().all()
             for corr in corrs:
                 await session.delete(corr)
+
+            # Xóa ChapterEntityLink của các chương reset
+            stmt_link_del = select(ChapterEntityLink).where(ChapterEntityLink.chapter_id.in_(chap_ids))
+            res_link_del = await session.execute(stmt_link_del)
+            links = res_link_del.scalars().all()
+            for link in links:
+                await session.delete(link)
 
             # Lấy tất cả các phiên bản (kể cả RAW, GG, LLM, FINAL, CONTEXTT, AUDIO) để xóa tệp đĩa và DB
             stmt_ver = select(ChapterVersion).where(ChapterVersion.chapter_id.in_(chap_ids))
@@ -661,6 +756,22 @@ async def reset_chapters(novel_id: int = Path(...), payload: ResetChaptersReques
             for ch in chapters:
                 ch.status = "WAIT"
                 ch.error_message = ""
+
+        # === FULL RESTART: Xóa thêm entities, TTS chunks, metadata ===
+        if payload.full_restart and novel:
+            # Xóa toàn bộ NovelEntity của truyện
+            stmt_ent_del = select(NovelEntity).where(NovelEntity.novel_id == novel_id)
+            res_ent_del = await session.execute(stmt_ent_del)
+            entities = res_ent_del.scalars().all()
+            for ent in entities:
+                await session.delete(ent)
+
+            # Xóa toàn bộ TTSChunk của truyện
+            stmt_tts_del = select(TTSChunk).where(TTSChunk.novel_id == novel_id)
+            res_tts_del = await session.execute(stmt_tts_del)
+            tts_chunks = res_tts_del.scalars().all()
+            for chunk in tts_chunks:
+                await session.delete(chunk)
                 
         await session.commit()
 
@@ -669,8 +780,17 @@ async def reset_chapters(novel_id: int = Path(...), payload: ResetChaptersReques
             from app.services.storage.file_storage import delete_novel_disk_files
             novel_title_rough = novel.title_rough or novel.title_raw
             delete_novel_disk_files(novel_title_rough)
+
+            # Full restart: xóa thêm metadata JSON cache
+            if payload.full_restart:
+                from app.services.storage.metadata_cache import invalidate_metadata
+                invalidate_metadata(novel_title_rough)
         
-    return {"status": "success", "message": f"Đã xóa sạch tất cả phiên bản/file đĩa và đặt lại trạng thái cho {len(chapters)} chương."}
+    msg = f"Đã xóa sạch tất cả phiên bản/file đĩa và đặt lại trạng thái cho {len(chapters)} chương."
+    if payload.full_restart:
+        msg = f"🔄 RESTART TOÀN BỘ: Đã xóa sạch {len(chapters)} chương, thực thể, audio, metadata. Sẵn sàng dịch lại từ đầu."
+    return {"status": "success", "message": msg}
+
 
 @router.post("/{novel_id}/save-to-folder")
 async def save_novel_to_folder(novel_id: int = Path(...)):
@@ -795,7 +915,9 @@ async def get_novel_glossary(novel_id: int = Path(...)):
                 "chinese_term": e.chinese_name,
                 "vietnamese_term": e.rough_translation,
                 "category": type_mapping.get(e.entity_type, e.entity_type),
-                "is_active": True
+                "is_active": True,
+                "gender": getattr(e, "gender", None),
+                "role": getattr(e, "role", None)
             } for e in entities
         ]
 
@@ -956,10 +1078,11 @@ async def update_novel_glossary_term(novel_id: int = Path(...), term_id: int = P
     req = UpdateNovelEntityRequest(
         chinese_name=payload.chinese_term,
         rough_translation=payload.vietnamese_term,
-        entity_type=payload.category or "OTHER"
+        entity_type=payload.category or "OTHER",
+        old_vietnamese_term=payload.old_vietnamese_term
     )
     res = await update_novel_entity_and_apply(novel_id, req)
-    return {"success": True, "message": res.get("message")}
+    return {"success": True, "message": res.get("message"), "affected_chapters": res.get("affected_chapters", 0)}
 
 @router.post("/{novel_id}/glossary/apply-all")
 async def apply_glossary_to_all(novel_id: int = Path(...)):
@@ -1011,8 +1134,13 @@ async def quick_fix_all_yellow_sentences(novel_id: int = Path(...), payload: Qui
                 res_ver = await session.execute(stmt_ver)
                 ver = res_ver.scalar_one_or_none()
                 if ver and ver.content and 'class="fallback-word"' in ver.content:
-                    # Loại bỏ thẻ fallback-word để trả về câu thuần mượt mà
-                    cleaned_content = re.sub(r'<span class="fallback-word"[^>]*>(.*?)</span>', r'\1', ver.content)
+                    # Loại bỏ thẻ fallback-word và loại bỏ luôn các tuỳ chọn trong ngoặc đơn (ví dụ: "chữ 1 (chữ 2/chữ 3)") để trả về câu thuần mượt mà
+                    def clean_fallback(m):
+                        inner_text = m.group(1)
+                        cleaned_word = re.sub(r'\s*\([^)]+\)', '', inner_text).strip()
+                        return f'<span class="fixed-word" style="color: #10b981; font-weight: bold;">{cleaned_word}</span>'
+                        
+                    cleaned_content = re.sub(r'<span class="fallback-word"[^>]*>(.*?)</span>', clean_fallback, ver.content)
                     ver.content = cleaned_content
                     if ver.file_path and os.path.exists(ver.file_path):
                         with open(ver.file_path, "w", encoding="utf-8") as f:

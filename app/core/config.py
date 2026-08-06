@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     AIREAD_BATCH_SIZE: int = 1
     AIREAD_TRANSLATION_STYLE: str = "draft_only"
     AIREAD_CUSTOM_PROMPT: Optional[str] = ""
+    TTS_MAX_WORKERS: int = 24  # Số lượng worker tạo Audio TTS song song tối ưu tốc độ (điều tiết bởi semaphore toàn cục)
 
     class Config:
         env_file = ".env"
@@ -60,6 +61,7 @@ async def get_all_active_settings() -> dict:
         "AIREAD_BATCH_SIZE": str(settings.AIREAD_BATCH_SIZE),
         "AIREAD_TRANSLATION_STYLE": str(settings.AIREAD_TRANSLATION_STYLE),
         "AIREAD_CUSTOM_PROMPT": str(settings.AIREAD_CUSTOM_PROMPT or ""),
+        "TTS_MAX_WORKERS": str(settings.TTS_MAX_WORKERS),
     }
 
     async with AsyncSessionLocal() as session:

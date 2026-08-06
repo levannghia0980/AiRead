@@ -154,10 +154,12 @@ export const GlossaryTab: React.FC<GlossaryTabProps> = React.memo(({
         oldVietnamese,
         selectedChapterNo > 0 ? selectedChapterNo : null
       )
-      if (res && res.message) {
+      if (res && res.affected_chapters && res.affected_chapters > 0) {
+        setNotice(`✨ Đã đổi '${oldVietnamese}' → '${editVietnamese}' và cập nhật hồi tố ${res.affected_chapters} chương (GG/LLM/FINAL).`)
+      } else if (res && res.message) {
         setNotice(res.message)
       } else {
-        setNotice(`✨ Đã cập nhật từ '${editChinese}' ➔ '${editVietnamese}' và tự động áp dụng vào các chương đã dịch!`)
+        setNotice(`✨ Đã cập nhật từ '${editChinese}' → '${editVietnamese}' vào từ điển.`)
       }
       setEditingId(null)
     } catch (err: any) {

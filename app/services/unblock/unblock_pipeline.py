@@ -22,7 +22,9 @@ EXTRA_CHINESE_SENSITIVE_WORDS = [
     '乱伦', '阴道', '子宫', '肉便器', '暴奸', '性奴', '内射', '潮吹', 
     '做爱', '性交', '迷奸', '轮奸', '强奸', '奸淫', '阳具', '龟头', 
     '后庭', '肛交', '口交', '精液', '鸡巴', '大鸡巴', '阴唇', '阴毛', 
-    '阴部', '肛门', '肉棒', '花穴', '嫩穴'
+    '阴部', '肛门', '肉棒', '花穴', '嫩穴', '催眠', '调教', '凌辱', 
+    '母狗', '裸体', '发情', '淫乱', '淫水', '强暴', '迷药', '迷魂', 
+    '无惨', '中出', '触手', '恶堕', '破处', '阿威十八式'
 ]
 
 EXTRA_VIETNAMESE_SENSITIVE_WORDS = [
@@ -34,7 +36,7 @@ EXTRA_VIETNAMESE_SENSITIVE_WORDS = [
     "đùi đẹp", "mông to", "khe ngực", "ngực sữa", "hang sâu", "hoa huyệt", "ngọc hành", 
     "ngọc phong", "cự vật", "phong mãn", "tinh nang", "nội y", "quần lót", "áo ngực",
     "gậy thịt", "điểm nhạy cảm", "nơi nhạy cảm", "chỗ nhạy cảm", "khu vực nhạy cảm",
-    "thân thể trần trụi", "ngực đẹp", "bạch hổ", "chó cái",
+    "thân thể trần trụi", "ngực đẹp", "bạch hổ", "chó cái", "cơ thể trần trụi",
     
     # Hành vi tình dục & Hành động nhạy cảm (Sexual Acts)
     "hiếp dâm", "cưỡng hiếp", "làm tình", "giao cấu", "chịch", "giang dâm", "gian dâm", 
@@ -45,15 +47,17 @@ EXTRA_VIETNAMESE_SENSITIVE_WORDS = [
     "mây mưa", "nện cật lực", "nội bắn", "bắn vào trong", "phát tiết", "thông đít",
     "vuốt ve", "mơn trớn", "đút vào", "cắm vào", "ra vào", "tiến vào", "đâm vào",
     "dương vật giả", "phục tùng tình dục", "dục vọng phát tiết", "thao lồn", "thao nát",
+    "xâm phạm", "cưỡng bức", "bị cưỡng hiếp", "chiếm đoạt thân thể", "phát tiết dục vọng",
     
     # Trạng thái gợi dục / Thôi miên nhạy cảm (Erotic & Hypnosis States)
     "sung sướng", "cao trào", "lên đỉnh", "khoái cảm", "dục vọng", "dục hỏa", "dâm mỹ", 
     "dâm dục", "dâm đãng", "khoái hoạt", "mê loạn", "kích thích", "rên rỉ", "thở dốc", 
     "nóng rực", "ẩm ướt", "khát khao", "khao khát", "mê muội", "dụ dỗ", "quyến rũ",
-    "thôi miên", "nô lệ tình dục", "dâm phụ", "khống chế tinh thần", "tẩy não", 
+    "thôi miên", "nô lệ tình dục", "dâm phụ", "khống chế tinh thần", "tẩy脑", "tẩy não",
     "mất lý trí", "phục tùng", "ngoan ngoãn nghe lời", "công cụ phát tiết", "phát tình", 
     "động dục", "tiện nhân", "chống cự", "mất đi ý thức", "mất ý thức", "ngoan ngoãn phục tùng",
-    "phục tùng vô điều kiện", "làm nhục", "dâm loạn", "quyến rũ vô hạn", "khát vọng nguyên thủy"
+    "phục tùng vô điều kiện", "làm nhục", "dâm loạn", "quyến rũ vô hạn", "khát vọng nguyên thủy",
+    "điều giáo", "nô lệ dâm mỹ", "mê gian", "loạn luân", "khống chế thôi miên"
 ]
 
 # Singleton Trie initialization

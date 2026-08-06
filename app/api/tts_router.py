@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import asyncio
 from typing import Optional, List, Dict, Any
@@ -38,10 +39,54 @@ async def get_audio_volumes(
         if not novel:
             raise HTTPException(status_code=404, detail="Không tìm thấy truyện.")
             
+        # 1. Thư mục Output/04_KetQua trên đĩa
+        base_dir = r"D:\NENGHIA0980\AIREAD\Output\04_KetQua"
+        novel_folder = sanitize_filename(novel.title_rough if novel.title_rough else novel.title_raw)
+        out_dir = os.path.join(base_dir, novel_folder, "chapters")
+
+        max_completed_ch = 0
+        
+        # Quét CSDL lấy chương có số thứ tự lớn nhất
+        stmt_max = (
+            select(Chapter.chapter_no)
+            .where(Chapter.novel_id == novel_id)
+            .order_by(Chapter.chapter_no.desc())
+            .limit(1)
+        )
+        res_max = await session.execute(stmt_max)
+        db_max = res_max.scalar_one_or_none()
+        if db_max:
+            max_completed_ch = db_max
+
+        # Quét thêm thực tế các file .txt có trên đĩa ổ D:\...
+        for subfolder in ["04_KetQua", "03_DichAI_LLM", "02_DichMau_GG"]:
+            chk_dir = os.path.join(base_dir, subfolder, novel_folder, "chapters")
+            if os.path.exists(chk_dir):
+                for f in os.listdir(chk_dir):
+                    if f.endswith(".txt"):
+                        try:
+                            c_no = int(os.path.splitext(f)[0])
+                            if c_no > max_completed_ch:
+                                max_completed_ch = c_no
+                        except ValueError:
+                            pass
+
+        if max_completed_ch == 0:
+            return {
+                "novel_title": novel.title_rough or novel.title_raw,
+                "total_chapters": 0,
+                "chapters_per_volume": chapters_per_volume,
+                "created_volumes_count": 0,
+                "volumes": []
+            }
+
+        # 2. Lấy toàn bộ các chương từ chương 1 đến chương lớn nhất
         stmt_ch = (
             select(Chapter)
-            .join(ChapterVersion, Chapter.id == ChapterVersion.chapter_id)
-            .where(Chapter.novel_id == novel_id, ChapterVersion.version_type == "FINAL")
+            .where(
+                Chapter.novel_id == novel_id,
+                Chapter.chapter_no <= max_completed_ch
+            )
             .options(selectinload(Chapter.versions))
             .order_by(Chapter.chapter_no.asc())
         )
@@ -77,27 +122,53 @@ async def get_audio_volumes(
         end_chapter = vol_chapters[-1].chapter_no
         chapter_count = len(vol_chapters)
         
-        # Ước lượng số từ dựa trên độ dài nội dung dịch
+        # Ước lượng số từ dựa trên bản dịch AI (FINAL, LLM, GG trong DB hoặc đĩa cứng)
         word_count = 0
+        final_count = 0
+
         for ch in vol_chapters:
-            v_final = next((v for v in ch.versions if v.version_type == "FINAL"), None)
-            if v_final and v_final.content:
-                word_count += len(v_final.content) // 4
+            v_best = next((v for v in ch.versions if v.version_type in ["FINAL", "LLM", "GG"]), None)
+            if v_best and v_best.content:
+                word_count += len(v_best.content) // 4
+                final_count += 1
             else:
-                v_gg = next((v for v in ch.versions if v.version_type == "GG"), None)
-                if v_gg and v_gg.content:
-                    word_count += len(v_gg.content) // 4
-                else:
-                    word_count += 1500
+                for subfolder in ["04_KetQua", "03_DichAI_LLM", "02_DichMau_GG"]:
+                    disk_ch_path = os.path.join(r"D:\NENGHIA0980\AIREAD\Output", subfolder, novel_folder, "chapters", f"{ch.chapter_no:06d}.txt")
+                    if os.path.exists(disk_ch_path) and os.path.getsize(disk_ch_path) > 0:
+                        try:
+                            with open(disk_ch_path, "r", encoding="utf-8", errors="ignore") as f:
+                                c_text = f.read()
+                                if c_text:
+                                    word_count += len(c_text) // 4
+                                    final_count += 1
+                                    break
+                        except Exception:
+                            pass
                     
         estimated_hours = round(word_count / 10000, 1)
-        if estimated_hours < 0.1:
+        if estimated_hours < 0.1 and word_count > 0:
             estimated_hours = 0.1
             
+        # Đếm số chương đã có cache mp3 riêng lẻ
+        chapters_cache_dir = os.path.join(out_dir, "chapters")
+        vol_cached_count = 0
+        vol_ch_nos = [ch.chapter_no for ch in vol_chapters]
+        if os.path.exists(chapters_cache_dir):
+            for c_no in vol_ch_nos:
+                c_path = os.path.join(chapters_cache_dir, f"{c_no:06d}.mp3")
+                if os.path.exists(c_path) and os.path.getsize(c_path) > 0:
+                    vol_cached_count += 1
+
         filename = f"{novel_folder}_Vol{vol_no:03d}.mp3"
         file_path = os.path.join(out_dir, filename)
         is_created = os.path.exists(file_path) and os.path.getsize(file_path) > 0
         
+        # Tự động gộp file tập nếu tất cả các chương trong tập đã được cache
+        if not is_created and vol_cached_count == chapter_count and chapter_count > 0:
+            from app.services.tts.pipeline import generate_range_mp3
+            if generate_range_mp3(chapters_cache_dir, vol_ch_nos, file_path):
+                is_created = True
+
         file_size = ""
         duration = ""
         download_url = ""
@@ -116,6 +187,7 @@ async def get_audio_volumes(
             "start_chapter": start_chapter,
             "end_chapter": end_chapter,
             "chapter_count": chapter_count,
+            "cached_chapters_count": vol_cached_count,
             "word_count": word_count,
             "estimated_hours": estimated_hours,
             "is_created": is_created,
@@ -126,12 +198,28 @@ async def get_audio_volumes(
             "duration": duration
         })
         
+    # Thăm dò các chương đã cache để tự động gộp file khoảng tùy chỉnh nếu có
+    chapters_cache_dir = os.path.join(out_dir, "chapters")
+    if os.path.exists(chapters_cache_dir):
+        cached_nos = sorted([
+            int(os.path.splitext(f)[0])
+            for f in os.listdir(chapters_cache_dir)
+            if f.endswith(".mp3") and re.match(r"^\d{6}\.mp3$", f) and os.path.getsize(os.path.join(chapters_cache_dir, f)) > 0
+        ])
+        if cached_nos:
+            min_ch = cached_nos[0]
+            max_ch = cached_nos[-1]
+            cust_filename = f"{novel_folder}_Ch{min_ch}_to_Ch{max_ch}.mp3"
+            cust_file_path = os.path.join(out_dir, cust_filename)
+            if not os.path.exists(cust_file_path):
+                from app.services.tts.pipeline import generate_range_mp3
+                generate_range_mp3(chapters_cache_dir, cached_nos, cust_file_path)
+
     # Thăm dò và bổ sung các tệp audio khoảng tùy chỉnh (Custom Range) có trên đĩa
-    import re
     if os.path.exists(out_dir):
         for f in os.listdir(out_dir):
             if f.endswith(".mp3") and "_Ch" in f and "_to_Ch" in f:
-                match = re.search(r"_Ch(\d+)_to_Ch(\d+)\.mp3$", f)
+                match = re.search(r"_Ch(\d+)_to_Ch(\d+)(?:_norm)?\.mp3$", f)
                 if match:
                     start_ch = int(match.group(1))
                     end_ch = int(match.group(2))
@@ -149,7 +237,7 @@ async def get_audio_volumes(
                     download_url = f"/api/novels/{novel_id}/audio/download/{f}"
                     
                     vol_chapters = [ch for ch in chapters if start_ch <= ch.chapter_no <= end_ch]
-                    chapter_count = len(vol_chapters)
+                    chapter_count = len(vol_chapters) or (end_ch - start_ch + 1)
                     
                     word_count = 0
                     for ch in vol_chapters:
@@ -173,6 +261,7 @@ async def get_audio_volumes(
                         "start_chapter": start_ch,
                         "end_chapter": end_ch,
                         "chapter_count": chapter_count,
+                        "cached_chapters_count": chapter_count,
                         "word_count": word_count,
                         "estimated_hours": estimated_hours,
                         "is_created": True,
@@ -195,49 +284,76 @@ async def get_audio_volumes(
 @router.get("/status")
 async def get_audio_status(novel_id: int = Path(...)):
     """Kiểm tra trạng thái hàng đợi và tiến độ tác vụ sinh audio cho truyện"""
+    from app.models.schema import TTSChunk
+
     for key, job in ACTIVE_TTS_JOBS.items():
-        if key.startswith(f"{novel_id}_") and job.get("is_running", False):
-            # Cập nhật thông số tính toán phần trăm
-            done = job.get("done_chunks", 0)
+        if key.startswith(f"{novel_id}_"):
+            is_running = job.get("is_running", False)
+            status = job.get("status", "processing")
+            status_msg = job.get("status_msg")
+
             total = job.get("total_chunks", 0)
-            percent = round((done / total) * 100, 1) if total > 0 else 0
             vol_no = job.get("volume_no", 1)
+            worker_count = job.get("worker_count") or 6
+            done = job.get("done_chunks", 0)
+
+            percent = round((done / total) * 100, 1) if total > 0 else 0.0
+            job["percent"] = percent
+
             speed = job.get("speed_chunks_per_min", 0.0)
             eta_sec = job.get("eta_seconds", 0)
             
-            status_msg = job.get("status_msg")
+            if total > 0 and done > 0 and eta_sec > 0:
+                eta_m = int(eta_sec // 60)
+                eta_s = int(eta_sec % 60)
+                eta_display = f"{eta_m} phút {eta_s} giây" if eta_m > 0 else f"{eta_s} giây"
+            else:
+                eta_display = "Đang tính toán..."
+            
+            vol_label = f"Tập {vol_no}" if vol_no < 1000000 else "Khoảng chương tùy chỉnh"
             if status_msg:
                 msg = status_msg
             elif done == 0 and total > 0:
-                msg = f"🚀 Đang khởi động 24 Workers tổng hợp Tập {vol_no}..."
+                msg = f"🚀 Đang khởi động {worker_count} Workers tổng hợp audio {vol_label}..."
             elif done > 0 and total > 0:
-                msg = f"Đang tổng hợp Tập {vol_no}: {done}/{total} chunk ({percent}%)"
+                msg = f"Đang tổng hợp audio {vol_label}: {done}/{total} chương ({percent}%)"
             else:
-                msg = "Đang chuẩn bị dữ liệu chunk..."
+                msg = "Đang quét cache chương..."
 
-            return {
-                "is_running": True,
-                "novel_id": novel_id,
-                "volume_no": vol_no,
-                "progress_pct": percent,
-                "msg": msg,
-                "eta_display": eta_display if total > 0 and done > 0 else "Đang tính toán...",
-                "progress": {
-                    "total_chunks": total,
-                    "done_chunks": done,
-                    "failed_chunks": job.get("failed_chunks", 0),
-                    "status": job.get("status", "processing"),
-                    "eta_seconds": eta_sec,
-                    "percent": percent,
-                    "worker_count": job.get("worker_count", 0),
-                    "ram_usage_percent": job.get("ram_usage_percent", 0.0),
-                    "speed_chunks_per_min": speed
-                },
-                "stats": {
-                    "speed_chapters_per_min": round(speed / 5, 1) if speed > 0 else 0
+            if is_running:
+                return {
+                    "is_running": True,
+                    "novel_id": novel_id,
+                    "volume_no": vol_no,
+                    "progress_pct": percent,
+                    "msg": msg,
+                    "eta_display": eta_display,
+                    "progress": {
+                        "total_chunks": total,
+                        "done_chunks": done,
+                        "failed_chunks": job.get("failed_chunks", 0),
+                        "status": status,
+                        "eta_seconds": eta_sec,
+                        "percent": percent,
+                        "worker_count": worker_count,
+                        "ram_usage_percent": job.get("ram_usage_percent", 0.0),
+                        "speed_chunks_per_min": speed
+                    },
+                    "stats": {
+                        "speed_chapters_per_min": round(speed / 5, 1) if speed > 0 else 0
+                    }
                 }
-            }
-            
+            elif status == "failed" or status_msg:
+                return {
+                    "is_running": False,
+                    "status": "failed",
+                    "novel_id": novel_id,
+                    "volume_no": vol_no,
+                    "progress_pct": percent,
+                    "msg": status_msg or "❌ Tạo audio thất bại.",
+                    "error": status_msg or "❌ Tạo audio thất bại."
+                }
+
     return {"is_running": False}
 
 @router.post("/generate_volume/{volume_no}")

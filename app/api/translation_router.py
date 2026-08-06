@@ -128,9 +128,9 @@ async def _bg_translation_worker(payload: StartTranslationRequest):
             delay_sec=delay_s,
             start_chapter=start_ch,
             end_chapter=end_ch,
-            enable_llm_extract=True,
-            enable_names_dict=True,
-            enable_gg_corrections=True,
+            enable_llm_extract=payload.enable_llm_extract if payload.enable_llm_extract is not None else True,
+            enable_names_dict=payload.enable_names_dict if payload.enable_names_dict is not None else True,
+            enable_gg_corrections=payload.enable_gg_corrections if payload.enable_gg_corrections is not None else True,
             enable_unblock=payload.enable_unblock if payload.enable_unblock is not None else True
         )
 
@@ -295,4 +295,27 @@ async def start_translation_pipeline(novel_id: int, payload: PipelineRunRequest)
         )
         return result
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/novel/{novel_id}/batch-fix-swept-errors")
+async def batch_fix_swept_errors(novel_id: int):
+    """
+    Quét tìm lỗi Hán tự bị gạch chân xanh (<span class='swept-chinese'>) trong các chương dịch
+    và gửi 1 request LLM duy nhất để dịch chuẩn lại toàn bộ, sau đó tự động chèn lại vào file.
+    """
+    from app.services.postprocessing.translation_auditor import batch_fix_swept_errors_llm
+    try:
+        add_system_log(f"🔍 Đang quét và sửa lỗi Hán tự gạch chân xanh cho truyện ID {novel_id}...", "info")
+        result = await batch_fix_swept_errors_llm(novel_id)
+        if result.get("status") == "success":
+            fixed_count = result.get("fixed_count", 0)
+            if fixed_count > 0:
+                add_system_log(f"✅ Sửa thành công {fixed_count} lỗi Hán tự gạch chân xanh!", "success")
+            else:
+                add_system_log(f"ℹ️ Không tìm thấy lỗi gạch chân xanh nào cần sửa.", "info")
+        else:
+            add_system_log(f"⚠️ Sửa lỗi Hán tự thất bại: {result.get('message')}", "danger")
+        return result
+    except Exception as e:
+        add_system_log(f"❌ Lỗi hệ thống khi sửa lỗi Hán tự: {str(e)}", "danger")
         raise HTTPException(status_code=500, detail=str(e))

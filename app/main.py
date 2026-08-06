@@ -58,13 +58,20 @@ app.include_router(translation_router)
 app.include_router(novel_router)
 app.include_router(tts_router)
 
-@app.get("/")
-async def root():
-    return {
-        "status": "online",
-        "service": "AIREAD FastAPI Backend",
-        "docs_url": "/docs"
-    }
+from fastapi.staticfiles import StaticFiles
+
+# Phục vụ giao diện tĩnh Frontend (React build) nếu thư mục frontend/dist tồn tại
+frontend_dist = os.path.join(PROJECT_ROOT, "frontend", "dist")
+if os.path.exists(frontend_dist):
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="static")
+else:
+    @app.get("/")
+    async def root():
+        return {
+            "status": "online",
+            "service": "AIREAD FastAPI Backend",
+            "docs_url": "/docs"
+        }
 
 def ensure_virtualenv():
     in_venv = (sys.prefix != sys.base_prefix) or hasattr(sys, 'real_prefix')

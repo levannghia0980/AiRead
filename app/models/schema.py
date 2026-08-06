@@ -134,6 +134,11 @@ class NovelEntity(Base):
     
     # Phân loại: 'NAME', 'PLACE', 'SECT', 'ITEM', 'SKILL', 'OTHER' (Cũ: 'PERSON', 'LOCATION', 'SECT_SKILL')
     entity_type: Mapped[str] = mapped_column(String(50), default="NAME")
+    
+    # Coreference Resolution Info
+    gender: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    role: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    
     frequency_count: Mapped[int] = mapped_column(Integer, default=1)
     
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

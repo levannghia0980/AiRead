@@ -36,6 +36,8 @@ export interface Glossary {
   vietnamese_term: string
   category: string
   is_active: boolean
+  gender?: string | null
+  role?: string | null
 }
 
 export interface LogEntry {
@@ -128,8 +130,8 @@ interface NovelStore {
 
 
   fetchGlossary: (novelId: number, chapterNo?: number | null) => Promise<void>
-  addGlossaryTerm: (novelId: number, chinese: string, vietnamese: string, category: string, chapterNo?: number | null) => Promise<{ success: boolean; message?: string; affected_chapters?: number }>
-  updateGlossaryTerm: (novelId: number, termId: number, chinese: string, vietnamese: string, category: string, oldVietnamese?: string, chapterNo?: number | null) => Promise<{ success: boolean; message?: string; affected_chapters?: number }>
+  addGlossaryTerm: (novelId: number, chinese: string, vietnamese: string, category: string, chapterNo?: number | null, gender?: string | null, role?: string | null) => Promise<{ success: boolean; message?: string; affected_chapters?: number }>
+  updateGlossaryTerm: (novelId: number, termId: number, chinese: string, vietnamese: string, category: string, oldVietnamese?: string, chapterNo?: number | null, gender?: string | null, role?: string | null) => Promise<{ success: boolean; message?: string; affected_chapters?: number }>
   applyGlossaryToAllChapters: (novelId: number) => Promise<{ success: boolean; message?: string; affected_chapters?: number }>
   deleteGlossaryTerm: (novelId: number, termId: number, chapterNo?: number | null) => Promise<void>
   fetchCorrections: (novelId: number, chapterNo: number) => Promise<void>
@@ -142,6 +144,7 @@ interface NovelStore {
   clearJob: () => Promise<void>
   manualExport: (novelId: number) => Promise<void>
   resetChapters: (novelId: number, chapterNos?: number[]) => Promise<void>
+  restartNovel: (novelId: number) => Promise<{ success: boolean; message: string }>
   saveToFolder: (novelId: number) => Promise<{ success: boolean; folder?: string; total_files?: number; folder_path?: string; message?: string }>
   fetchChapterText: (novelId: number, chapterNo: number) => Promise<{ chapter_no: number; title: string; translated_text: string; raw_text: string } | null>
   updateChapterText: (novelId: number, chapterNo: number, text: string) => Promise<boolean>
@@ -359,7 +362,7 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
     }
   },
 
-  addGlossaryTerm: async (novelId, chinese, vietnamese, category, chapterNo) => {
+  addGlossaryTerm: async (novelId, chinese, vietnamese, category, chapterNo, gender, role) => {
     try {
       const res = await fetch(`/api/novels/${novelId}/glossary`, {
         method: 'POST',
@@ -368,7 +371,9 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
           chinese_term: chinese, 
           vietnamese_term: vietnamese, 
           category,
-          chapter_no: chapterNo || undefined
+          chapter_no: chapterNo || undefined,
+          gender: gender || null,
+          role: role || null
         })
       })
       const data = await res.json()
@@ -382,7 +387,7 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
     }
   },
 
-  updateGlossaryTerm: async (novelId, termId, chinese, vietnamese, category, oldVietnamese, chapterNo) => {
+  updateGlossaryTerm: async (novelId, termId, chinese, vietnamese, category, oldVietnamese, chapterNo, gender, role) => {
     try {
       const res = await fetch(`/api/novels/${novelId}/glossary/${termId}`, {
         method: 'PUT',
@@ -391,15 +396,17 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
           chinese_term: chinese,
           vietnamese_term: vietnamese,
           category,
-          old_vietnamese_term: oldVietnamese,
-          apply_to_all_chapters: true
+          old_vietnamese_term: oldVietnamese || null,
+          apply_to_all_chapters: true,
+          gender: gender || null,
+          role: role || null
         })
       })
       const data = await res.json()
       if (res.ok) {
         get().fetchGlossary(novelId, chapterNo)
       }
-      return data
+      return { ...data, affected_chapters: data.affected_chapters || 0 }
     } catch (e: any) {
       console.error("Failed to update glossary term", e)
       return { success: false, message: e.message }
@@ -563,9 +570,9 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
         end_chapter: endChapter,
         translation_style: translationStyle,
         enable_unblock: enableUnblock,
-        enable_llm_extract: true,
-        enable_names_dict: true,
-        enable_gg_corrections: true
+        enable_llm_extract: get().enableLlmExtract !== false,
+        enable_names_dict: get().enableNamesDict !== false,
+        enable_gg_corrections: get().enableGgCorrections !== false
       })
     })
     if (!res.ok) {
@@ -616,6 +623,27 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
     } catch (e) {
       console.error("Failed to reset chapters", e)
       throw e
+    }
+  },
+
+  restartNovel: async (novelId) => {
+    try {
+      const res = await fetch(`/api/novels/${novelId}/chapters/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ full_restart: true })
+      })
+      const data = await res.json()
+      if (res.ok) {
+        await get().fetchNovelDetails(novelId)
+        await get().fetchNovels()
+        return { success: true, message: data.message || 'Restart thành công' }
+      } else {
+        return { success: false, message: data.detail || 'Lỗi restart' }
+      }
+    } catch (e: any) {
+      console.error("Failed to restart novel", e)
+      return { success: false, message: e.message }
     }
   },
 

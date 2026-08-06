@@ -97,3 +97,5 @@ async def extract_gg_clean_branch(
                 existing_pos.append(pos_dict)
 
     return list(grouped_errors.values())
+
+

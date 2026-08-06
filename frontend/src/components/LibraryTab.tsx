@@ -89,7 +89,11 @@ export interface LibraryTabProps {
   saveResult: any
   handleQuickFixAll: (novelId: number) => void
   isFixingAll: boolean
+  handleBatchFixRed: (novelId: number) => void
+  isFixingRed: boolean
   handleReadChapter: (novelId: number, chapterNo: number) => void
+  handleRestartNovel: (novelId: number) => void
+  isRestarting: boolean
 }
 
 export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
@@ -115,11 +119,17 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
   saveResult,
   handleQuickFixAll,
   isFixingAll,
-  handleReadChapter
+  handleBatchFixRed,
+  isFixingRed,
+  handleReadChapter,
+  handleRestartNovel,
+  isRestarting
 }) => {
   const [viewMode, setViewMode] = useState<'bookshelf' | 'details'>(
     selectedNovel ? 'details' : 'bookshelf'
   )
+  const [showRestartConfirm, setShowRestartConfirm] = useState(false)
+  const [restartConfirmText, setRestartConfirmText] = useState('')
 
   React.useEffect(() => {
     if (selectedNovel) {
@@ -133,6 +143,13 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
     if (!selectedNovel?.chapters) return 0
     return selectedNovel.chapters.filter((ch: any) => 
       (ch.status === 'COMPLETED' || ch.status === 'RESCUED') && ch.translated_text && ch.translated_text.includes('class="fallback-word"')
+    ).length
+  }, [selectedNovel?.chapters])
+
+  const redChaptersCount = useMemo(() => {
+    if (!selectedNovel?.chapters) return 0
+    return selectedNovel.chapters.filter((ch: any) => 
+      (ch.status === 'COMPLETED' || ch.status === 'RESCUED') && ch.has_swept_errors
     ).length
   }, [selectedNovel?.chapters])
 
@@ -347,6 +364,7 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
   const completedCount = selectedNovel.chapters.filter((c: any) => c.status === 'COMPLETED' || c.status === 'RESCUED').length
 
   return (
+    <>
     <div className="flex flex-col h-full overflow-hidden">
       {/* Novel Header Bar */}
       <div className="flex-shrink-0 bg-[#070A13] border-b border-cyber-border px-5 py-4 flex flex-col gap-3 z-20">
@@ -398,12 +416,25 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
             {yellowChaptersCount > 0 && (
               <button
                 onClick={() => handleQuickFixAll(selectedNovel.novel.id)}
-                disabled={isFixingAll}
+                disabled={isFixingAll || isFixingRed}
                 className="bg-amber-500/20 border border-amber-500/50 hover:bg-amber-500/30 text-amber-300 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg disabled:opacity-40 animate-pulse"
                 title="Gom tất cả các câu chứa chữ vàng gửi AI biên tập mượt mà 1 lượt duy nhất"
               >
                 {isFixingAll ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
-                ⚡ Sửa Nhanh Tất Cả Chữ Vàng ({yellowChaptersCount} chương)
+                ⚡ Sửa Chữ Vàng ({yellowChaptersCount})
+              </button>
+            )}
+
+            {/* Quick Fix All Red Sentences Button */}
+            {redChaptersCount > 0 && (
+              <button
+                onClick={() => handleBatchFixRed(selectedNovel.novel.id)}
+                disabled={isFixingAll || isFixingRed}
+                className="bg-rose-500/20 border border-rose-500/50 hover:bg-rose-500/30 text-rose-300 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg disabled:opacity-40 animate-pulse"
+                title="Gom tất cả lỗi Hán tự dịch sai gửi AI sửa mượt mà 1 lượt duy nhất"
+              >
+                {isFixingRed ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
+                ⚡ Sửa Hán Tự ({redChaptersCount})
               </button>
             )}
 
@@ -436,6 +467,17 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
             >
               {isResetting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
               Reset Tất Cả
+            </button>
+
+            {/* Nút Restart Toàn Bộ - Xóa sạch entities, audio, corrections */}
+            <button
+              onClick={() => { setShowRestartConfirm(true); setRestartConfirmText('') }}
+              disabled={isRestarting}
+              className="border-2 border-red-500/50 hover:bg-red-500/20 text-red-400 font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg shadow-red-500/10 disabled:opacity-40"
+              title="Xóa SẠCH tất cả: bản dịch, audio, thực thể, lỗi — dịch lại từ đầu"
+            >
+              {isRestarting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <span>🔄</span>}
+              Restart Toàn Bộ
             </button>
           </div>
         </div>
@@ -492,14 +534,17 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
               const isCompleted = ch.status === 'COMPLETED' || isRescued
               const isFailed = ch.status === 'FAILED'
               const hasYellowText = isCompleted && ch.translated_text && ch.translated_text.includes('class="fallback-word"')
+              const hasRedText = isCompleted && ch.has_swept_errors
 
               return (
                 <div
                   key={ch.id}
                   className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl text-xs border transition-all duration-150 group ${
-                    hasYellowText
-                      ? 'border-amber-500/50 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 font-medium'
-                      : isFailed
+                    hasRedText
+                      ? 'border-rose-500/50 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 font-medium'
+                      : hasYellowText
+                        ? 'border-amber-500/50 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 font-medium'
+                        : isFailed
                         ? 'border-cyber-danger/40 bg-cyber-danger/10 hover:bg-cyber-danger/20 text-cyber-danger'
                         : isRescued
                           ? 'border-purple-500/30 bg-purple-950/20 hover:bg-purple-950/30 text-purple-300'
@@ -514,8 +559,10 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
                     className={`flex-1 text-left flex items-center gap-3 min-w-0 ${isCompleted ? 'cursor-pointer' : 'cursor-default'}`}
                   >
                     <span className={`w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold flex-shrink-0 ${
-                      hasYellowText
-                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                      hasRedText
+                        ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                        : hasYellowText
+                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
                         : isFailed
                           ? 'bg-cyber-danger/15 text-cyber-danger border border-cyber-danger/30'
                           : isRescued
@@ -528,10 +575,10 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
                     </span>
                     <div className="min-w-0">
                       <p className={`font-medium truncate ${
-                        hasYellowText ? 'text-amber-300 font-bold' : isFailed ? 'text-cyber-danger font-bold' : isRescued ? 'text-purple-300 font-bold' : isCompleted ? 'text-slate-200' : 'text-slate-500'
+                        hasRedText ? 'text-rose-300 font-bold' : hasYellowText ? 'text-amber-300 font-bold' : isFailed ? 'text-cyber-danger font-bold' : isRescued ? 'text-purple-300 font-bold' : isCompleted ? 'text-slate-200' : 'text-slate-500'
                       }`}>{ch.title}</p>
-                      <p className={`text-[10px] mt-0.5 ${hasYellowText ? 'text-amber-400 font-bold' : isFailed ? 'text-cyber-danger/80' : isRescued ? 'text-purple-400' : 'text-cyber-muted'}`}>
-                        {hasYellowText ? '🟡 Cần sửa chữ vàng' : isFailed ? '❌ Lỗi dịch' : isRescued ? '💜 Dịch cứu hộ' : isCompleted ? '✅ Đã dịch' : '⏳ Chờ dịch'}
+                      <p className={`text-[10px] mt-0.5 ${hasRedText ? 'text-rose-400 font-bold' : hasYellowText ? 'text-amber-400 font-bold' : isFailed ? 'text-cyber-danger/80' : isRescued ? 'text-purple-400' : 'text-cyber-muted'}`}>
+                        {hasRedText ? '🔴 Cần sửa Hán tự' : hasYellowText ? '🟡 Cần sửa chữ vàng' : isFailed ? '❌ Lỗi dịch' : isRescued ? '💜 Dịch cứu hộ' : isCompleted ? '✅ Đã dịch' : '⏳ Chờ dịch'}
                       </p>
                     </div>
                   </button>
@@ -565,6 +612,60 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
         </div>
       )}
     </div>
+
+      {/* === RESTART CONFIRMATION DIALOG === */}
+      {showRestartConfirm && selectedNovel && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-slate-900 border-2 border-red-500/50 rounded-2xl p-6 max-w-md w-full mx-4 shadow-2xl shadow-red-500/20">
+            <div className="text-center mb-4">
+              <span className="text-4xl">⚠️</span>
+              <h3 className="text-lg font-bold text-red-400 mt-2">Restart Toàn Bộ Truyện</h3>
+              <p className="text-slate-400 text-sm mt-2">
+                Hành động này sẽ <strong className="text-red-400">XÓA SẠCH</strong> tất cả:
+              </p>
+              <ul className="text-xs text-slate-500 mt-2 space-y-1 text-left pl-6 list-disc">
+                <li>Tất cả bản dịch (GG, LLM, FINAL)</li>
+                <li>Tất cả file Audio TTS</li>
+                <li>Tất cả thực thể nhân vật, địa danh</li>
+                <li>Tất cả bản sửa lỗi (corrections)</li>
+                <li>Metadata cache</li>
+              </ul>
+            </div>
+            <div className="mb-4">
+              <label className="text-xs text-slate-500 block mb-1.5">
+                Nhập <strong className="text-red-400">"{selectedNovel.novel.title || selectedNovel.novel.title_rough || selectedNovel.novel.title_raw}"</strong> để xác nhận:
+              </label>
+              <input
+                type="text"
+                value={restartConfirmText}
+                onChange={(e) => setRestartConfirmText(e.target.value)}
+                className="w-full bg-slate-800 border border-red-500/30 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500"
+                placeholder="Nhập tên truyện..."
+                autoFocus
+              />
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowRestartConfirm(false)}
+                className="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-bold py-2.5 rounded-xl text-sm transition-all"
+              >
+                Hủy
+              </button>
+              <button
+                onClick={async () => {
+                  setShowRestartConfirm(false)
+                  handleRestartNovel(selectedNovel.novel.id)
+                }}
+                disabled={restartConfirmText !== (selectedNovel.novel.title || selectedNovel.novel.title_rough || selectedNovel.novel.title_raw)}
+                className="flex-1 bg-red-600 hover:bg-red-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold py-2.5 rounded-xl text-sm transition-all disabled:cursor-not-allowed"
+              >
+                🔄 Xác Nhận Restart
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   )
 })
 

@@ -36,6 +36,7 @@ interface VolumeInfo {
   start_chapter: number
   end_chapter: number
   chapter_count: number
+  cached_chapters_count?: number
   word_count: number
   estimated_hours: number
   is_created: boolean
@@ -632,13 +633,15 @@ export default function AudioStudio({ novels }: AudioStudioProps) {
           const pct = jobStatus.progress_pct ?? jobStatus.progress?.percent ?? 0
           const done = jobStatus.progress?.done_chunks ?? 0
           const total = jobStatus.progress?.total_chunks ?? 0
-          const workers = jobStatus.progress?.worker_count ?? 24
-          const msg = done === 0 
-            ? `🚀 Đang khởi động ${workers || 24} Workers tổng hợp audio Tập ${jobStatus.volume_no || ''}...`
-            : (jobStatus.msg || `Đang tổng hợp audio Tập ${jobStatus.volume_no || ''}...`)
-          const eta = done === 0 
+          const workers = jobStatus.progress?.worker_count || 6
+          const speed = jobStatus.progress?.speed_chunks_per_min ?? 0
+          const volLabel = (jobStatus.volume_no && jobStatus.volume_no >= 1000000) ? "khoảng chương tùy chỉnh" : `Tập ${jobStatus.volume_no || ''}`
+          const msg = jobStatus.msg || (done === 0 
+            ? `🚀 Đang khởi động ${workers} Workers tổng hợp audio ${volLabel}...`
+            : `Đang tổng hợp audio ${volLabel}: ${done}/${total} chương (${pct}%)`)
+          const eta = (done === 0 || !jobStatus.eta_display)
             ? "Đang tính toán..."
-            : (jobStatus.eta_display || (jobStatus.progress?.eta_seconds ? `${jobStatus.progress.eta_seconds}s` : null))
+            : jobStatus.eta_display
           
           return (
             <div className="mx-6 mt-4 p-3 rounded-xl bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 text-xs flex flex-col gap-2 flex-shrink-0 shadow-lg shadow-emerald-950/20">
@@ -650,14 +653,14 @@ export default function AudioStudio({ novels }: AudioStudioProps) {
                 <div className="flex items-center gap-3 font-mono text-[11px]">
                   {total > 0 && (
                     <span className="text-emerald-400 bg-emerald-900/40 px-2 py-0.5 rounded-md border border-emerald-500/20">
-                      🧩 {done}/{total} chunk ({workers} workers)
+                      📚 {done}/{total} chương ({workers > 0 ? `${workers} workers` : 'FFmpeg mode'})
                     </span>
                   )}
                   {eta && (
                     <span className="text-slate-300">⏱️ Còn: <strong className="text-emerald-300 font-bold">{eta}</strong></span>
                   )}
-                  {jobStatus.stats?.speed_chapters_per_min > 0 && (
-                    <span className="text-teal-300">⚡ {jobStatus.stats.speed_chapters_per_min} ch/phút</span>
+                  {speed > 0 && (
+                    <span className="text-teal-300">⚡ {(speed).toFixed(1)} chương/phút</span>
                   )}
                   <span className="font-bold text-emerald-400 text-sm bg-emerald-500/10 px-2 py-0.5 rounded-lg border border-emerald-500/30">{pct}%</span>
                 </div>
@@ -826,6 +829,10 @@ export default function AudioStudio({ novels }: AudioStudioProps) {
                             {vol.is_created ? (
                               <span className="text-[9px] font-bold text-emerald-400 flex items-center gap-0.5">
                                 <CheckCircle className="w-3 h-3" /> Audio OK
+                              </span>
+                            ) : (vol.cached_chapters_count || 0) > 0 ? (
+                              <span className="text-[9px] font-bold text-teal-300 flex items-center gap-0.5 bg-teal-500/10 px-1.5 py-0.5 rounded border border-teal-500/20 font-mono">
+                                <Zap className="w-2.5 h-2.5" /> Đã cache {vol.cached_chapters_count}/{vol.chapter_count} ch
                               </span>
                             ) : (
                               <span className="text-[9px] font-bold text-amber-500 flex items-center gap-0.5">

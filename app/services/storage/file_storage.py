@@ -14,7 +14,8 @@ VERSION_FOLDER_MAP: Dict[str, str] = {
     "GG": "02_DichMau_GG",
     "LLM": "03_DichAI_LLM",
     "FINAL": "04_KetQua",
-    "AUDIO": "05_Audio_TTS"
+    "AUDIO": "05_Audio_TTS",
+    "METADATA": "06_Metadata"
 }
 
 def sanitize_filename(name: str) -> str:

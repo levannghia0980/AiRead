@@ -8,6 +8,10 @@ interface NovelGlossarySidebarProps {
   setQuickZh: (v: string) => void
   quickVi: string
   setQuickVi: (v: string) => void
+  quickGender: string
+  setQuickGender: (v: string) => void
+  quickRole: string
+  setQuickRole: (v: string) => void
   isAddingQuickGlossary: boolean
   handleAddQuickGlossary: (e: React.FormEvent) => void
   handleDeleteGlossaryTerm: (termId: number) => void
@@ -20,6 +24,10 @@ export const NovelGlossarySidebar: React.FC<NovelGlossarySidebarProps> = ({
   setQuickZh,
   quickVi,
   setQuickVi,
+  quickGender,
+  setQuickGender,
+  quickRole,
+  setQuickRole,
   isAddingQuickGlossary,
   handleAddQuickGlossary,
   handleDeleteGlossaryTerm
@@ -55,6 +63,25 @@ export const NovelGlossarySidebar: React.FC<NovelGlossarySidebarProps> = ({
             className="glass-input rounded-lg px-2.5 py-1.5 text-xs"
           />
         </div>
+        <div className="grid grid-cols-2 gap-2">
+          <select
+            value={quickGender}
+            onChange={(e) => setQuickGender(e.target.value)}
+            className="glass-input rounded-lg px-2.5 py-1.5 text-xs"
+          >
+            <option value="">Giới tính (tự động)</option>
+            <option value="male">Nam</option>
+            <option value="female">Nữ</option>
+            <option value="other">Khác</option>
+          </select>
+          <input
+            type="text"
+            placeholder="Vai trò/Quan hệ (vd: sư phụ)"
+            value={quickRole}
+            onChange={(e) => setQuickRole(e.target.value)}
+            className="glass-input rounded-lg px-2.5 py-1.5 text-xs"
+          />
+        </div>
         <button
           type="submit"
           disabled={isAddingQuickGlossary || !quickZh.trim() || !quickVi.trim()}
@@ -73,10 +100,19 @@ export const NovelGlossarySidebar: React.FC<NovelGlossarySidebarProps> = ({
               key={item.id}
               className="flex items-center justify-between bg-slate-900/60 p-2 rounded-lg border border-cyber-border/30 text-xs"
             >
-              <div className="flex items-center gap-2 truncate">
-                <span className="font-bold text-amber-300">{item.chinese_term}</span>
-                <span className="text-slate-500">➔</span>
-                <span className="font-bold text-emerald-400">{item.vietnamese_term}</span>
+              <div className="flex flex-col gap-1 truncate w-full">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-amber-300 truncate">{item.chinese_term}</span>
+                  <span className="text-slate-500">➔</span>
+                  <span className="font-bold text-emerald-400 truncate">{item.vietnamese_term}</span>
+                </div>
+                {(item.gender || item.role) && (
+                  <div className="text-[10px] text-cyber-muted flex items-center gap-1.5">
+                    {item.gender && <span>{item.gender === 'male' ? 'Nam' : item.gender === 'female' ? 'Nữ' : item.gender}</span>}
+                    {item.gender && item.role && <span>•</span>}
+                    {item.role && <span>{item.role}</span>}
+                  </div>
+                )}
               </div>
               <button
                 onClick={() => handleDeleteGlossaryTerm(item.id)}

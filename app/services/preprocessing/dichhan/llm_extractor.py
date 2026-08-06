@@ -3,9 +3,10 @@ import httpx
 import re
 from typing import List, Dict, Any
 from app.core.config import get_active_setting
-from app.core.llm_client import post_gemini_with_retry
+from app.core.llm_client import post_gemini_with_retry, safe_json_loads
 
 async def _remove_sensitive_words_for_extraction(text: str) -> str:
+
     """
     Xóa các từ nhạy cảm và ngữ cảnh nhạy cảm (như thông tin tuổi tác, từ ngữ loạn luân, tình dục)
     CHỈ DÀNH RIÊNG cho tác vụ bóc tách danh từ riêng / dịch tên nhằm tránh bị bộ lọc an toàn của LLM
@@ -87,7 +88,7 @@ Yêu cầu trả về kết quả định dạng JSON Array chứa các object c
         ]
     }
 
-    async with httpx.AsyncClient(timeout=45.0) as client:
+    async with httpx.AsyncClient(timeout=180.0) as client:
         resp = await post_gemini_with_retry(client, url, headers, body)
         if resp.status_code != 200:
             raise Exception(f"Lỗi gọi Gemini API (HTTP {resp.status_code}): {resp.text}")
@@ -95,7 +96,7 @@ Yêu cầu trả về kết quả định dạng JSON Array chứa các object c
         res_json = resp.json()
         try:
             text_response = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
-            entities = json.loads(text_response)
+            entities = safe_json_loads(text_response)
             if isinstance(entities, list):
                 return entities
             elif isinstance(entities, dict) and "entities" in entities:
@@ -119,24 +120,38 @@ async def process_2branch_evidence_via_llm(evidence_data: Dict[str, Any]) -> Dic
         raise Exception("Không tìm thấy Gemini API Key. Vui lòng thiết lập cấu hình trong Settings.")
 
     instruction = evidence_data.get("system_prompt_instruction", "")
+    existing_entities = evidence_data.get("existing_db_entities", {})
     ner_candidates = evidence_data.get("branch_1_ner_candidates", [])
     gg_errors = evidence_data.get("branch_2_gg_errors_to_clean", [])
 
     prompt = f"""
-Bạn là chuyên gia dịch thuật và chuẩn hóa tên nhân vật tiểu thuyết Trung - Việt.
+Bạn là chuyên gia dịch thuật và chuẩn hóa tên nhân vật, chiêu thức, tên kiếm, bảo vật, địa danh, cùng các thuộc tính và bối phận nhân vật trong tiểu thuyết Trung - Việt.
 
 {instruction}
 
-Dữ liệu bằng chứng Nhánh 1 (NER - Tên nghi vấn từ bản gốc kèm ngữ cảnh):
+=== TỪ ĐIỂN THỰC THỂ ĐÃ TỒN TẠI TỪ CÁC CHƯƠNG TRƯỚC (QUY TẮC ĐỒNG BỘ BẮT BUỘC) ===
+⚠️ NGUYÊN TẮC VÀNG — TUYỆT ĐỐI KHÔNG ĐƯỢC VI PHẠM:
+Nếu một từ Hán gốc (chinese_name) ĐÃ CÓ TRONG TỪ ĐIỂN bên dưới, bạn BẮT BUỘC PHẢI:
+1. Sao chép Y NGUYÊN bản dịch vietnamese_name từ từ điển vào output — KHÔNG ĐƯỢC sửa dù chỉ 1 ký tự
+2. Giữ nguyên entity_type từ từ điển
+3. KHÔNG ĐƯỢC "cải thiện", "sửa lỗi", hay "dịch lại" tên đã có — dù bạn cho rằng bản dịch cũ chưa chuẩn
+CHỈ ĐƯỢC tạo bản dịch MỚI cho các từ Hán CHƯA CÓ trong từ điển.
+{json.dumps(existing_entities, ensure_ascii=False, indent=2)}
+
+=== DỮ LIỆU BẰNG CHỨNG NHÁNH 1 (NER - Tên/Chiêu thức/Tên kiếm/Địa danh nghi vấn từ bản gốc kèm ngữ cảnh) ===
 {json.dumps(ner_candidates, ensure_ascii=False, indent=2)}
 
-Dữ liệu bằng chứng Nhánh 2 (Các lỗi Google Translate cần sửa như Pinyin tiếng Anh hoặc dịch sai âm Hán-Việt đồng âm/gần âm kèm ngữ cảnh Hán gốc):
+=== DỮ LIỆU BẰNG CHỨNG NHÁNH 2 (Các lỗi Google Translate cần sửa như Pinyin tiếng Anh hoặc dịch sai âm Hán-Việt đồng âm/gần âm kèm ngữ cảnh Hán gốc) ===
 {json.dumps(gg_errors, ensure_ascii=False, indent=2)}
 
 Yêu cầu trả về kết quả dưới dạng JSON object chứa 2 danh sách 'entities' và 'corrections':
+- Với các thực thể tên nhân vật (entity_type: "NAME" hoặc "PERSON"), hãy cố gắng phân tích ngữ cảnh để suy ra `gender` ("male" hoặc "female") và `role` (mối quan hệ/bối phận, ví dụ: "Mẹ của Nam chính", "Nữ chính", "Sư phụ", "Đại sư huynh", "Chị gái", v.v.).
 {{
   "entities": [
-    {{"chinese_name": "莫雅依", "vietnamese_name": "Mạc Nhã Nghi", "entity_type": "PERSON"}}
+    {{"chinese_name": "莫雅仪", "vietnamese_name": "Mạc Nhã Nghi", "entity_type": "NAME", "gender": "female", "role": "Mẹ của Nam chính"}},
+    {{"chinese_name": "雷神之息", "vietnamese_name": "Lôi Thần Chi Sức", "entity_type": "SKILL"}},
+    {{"chinese_name": "紫光雷翼", "vietnamese_name": "Tử Quang Lôi Dực", "entity_type": "ITEM"}},
+    {{"chinese_name": "天桑灵宫", "vietnamese_name": "Thiên Tang Linh Cung", "entity_type": "PLACE"}}
   ],
   "corrections": [
     {{"gg_error": "Mo Yayi", "correct_vietnamese": "Mạc Nhã Nghi"}}
@@ -159,7 +174,7 @@ Yêu cầu trả về kết quả dưới dạng JSON object chứa 2 danh sách
         ]
     }
 
-    async with httpx.AsyncClient(timeout=45.0) as client:
+    async with httpx.AsyncClient(timeout=180.0) as client:
         resp = await post_gemini_with_retry(client, url, headers, body)
         if resp.status_code != 200:
             raise Exception(f"Lỗi gọi Gemini API (HTTP {resp.status_code}): {resp.text}")
@@ -167,10 +182,11 @@ Yêu cầu trả về kết quả dưới dạng JSON object chứa 2 danh sách
         res_json = resp.json()
         try:
             text_response = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
-            parsed = json.loads(text_response)
+            parsed = safe_json_loads(text_response)
             return {
-                "entities": parsed.get("entities", []),
-                "corrections": parsed.get("corrections", [])
+                "entities": parsed.get("entities", []) if isinstance(parsed, dict) else [],
+                "corrections": parsed.get("corrections", []) if isinstance(parsed, dict) else []
             }
         except Exception as e:
             raise Exception(f"Thất bại khi phân tích JSON phản hồi 2 nhánh từ Gemini: {str(e)}. Response: {resp.text}")
+

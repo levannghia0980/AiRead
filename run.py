@@ -2,6 +2,13 @@ import os
 import sys
 import time
 import subprocess
+import webbrowser
+
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")
@@ -71,27 +78,42 @@ def run_services():
     # Command khởi chạy Backend FastAPI trên cổng 8001 (Nội bộ / Proxied)
     be_cmd = [venv_py, "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
     
-    # Command khởi chạy Frontend Vite trên CỔNG 8000 (Cống cho phép điện thoại vào trực tiếp)
-    fe_cmd = ["npx.cmd", "vite", "--host", "0.0.0.0", "--port", "8000"] if os.name == "nt" else ["npx", "vite", "--host", "0.0.0.0", "--port", "8000"]
+    # Command khởi chạy Frontend Vite trên CỔNG 8000
+    import shutil
+    npx_cmd = shutil.which("npx.cmd") or shutil.which("npx") or r"C:\Users\ADMIN\AppData\Local\Programs\nodejs\npx.cmd"
+    fe_cmd = [npx_cmd, "vite", "--host", "0.0.0.0", "--port", "8000"]
 
     be_process = None
     fe_process = None
 
+    be_env = os.environ.copy()
+    be_env["PYTHONUNBUFFERED"] = "1"
+    node_dir = r"C:\Users\ADMIN\AppData\Local\Programs\nodejs"
+    py_dir = r"C:\Users\ADMIN\AppData\Local\Programs\Python\Python311"
+    if node_dir not in be_env.get("PATH", ""):
+        be_env["PATH"] = f"{node_dir};{py_dir};{be_env.get('PATH', '')}"
+
     try:
         # 1. Khởi chạy Backend
         print("[1/2] 🐍 Đang khởi chạy Backend FastAPI (Uvicorn 0.0.0.0:8001)...")
-        be_process = subprocess.Popen(be_cmd, cwd=PROJECT_ROOT)
+        be_process = subprocess.Popen(be_cmd, cwd=PROJECT_ROOT, env=be_env)
 
         time.sleep(1.5)
 
         # 2. Khởi chạy Frontend
         print("[2/2] ⚛️ Đang khởi chạy Frontend React (Vite 0.0.0.0:8000)...")
-        fe_process = subprocess.Popen(fe_cmd, cwd=FRONTEND_DIR)
+        fe_process = subprocess.Popen(fe_cmd, cwd=FRONTEND_DIR, env=be_env)
 
         print("\n✅ Cả Backend và Frontend đã sẵn sàng!")
         print(f"💡 Mở trên máy tính  : http://localhost:8000  hoặc  http://nghianeaudio0980.net:8000")
         print(f"📱 Mở trên Điện thoại: http://{local_ip}:8000")
-        print("Nhấn Ctrl+C để dừng tất cả dịch vụ.\n")
+        print("Nhấn Ctrl+C hoặc đóng cửa sở terminal để dừng tất cả dịch vụ.\n")
+
+        # Tự động mở trình duyệt web
+        try:
+            webbrowser.open("http://localhost:8000")
+        except Exception:
+            pass
 
         # Giữ tiến trình và chờ tín hiệu tắt
         while True:

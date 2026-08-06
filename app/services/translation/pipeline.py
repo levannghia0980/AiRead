@@ -150,6 +150,24 @@ async def _process_evidence_and_save(
             entities = llm_res.get("entities", [])
             corrections = llm_res.get("corrections", [])
             
+            # Validate: Ép tên đã có trong DB → bỏ qua, chỉ chấp nhận tên MỚI từ LLM
+            existing_db = evidence_payload.get("existing_db_entities", {})
+            validated_entities = []
+            for ent in entities:
+                ch_name = ent.get("chinese_name")
+                if ch_name and ch_name in existing_db:
+                    # Entity ĐÃ CÓ trong DB → skip, không ghi đè
+                    print(f"[PREPROCESS] ⏭️ Bỏ qua entity đã có trong DB: {ch_name} = {existing_db[ch_name].get('vietnamese_name', '?')}")
+                    continue
+                validated_entities.append(ent)
+            
+            skipped_count = len(entities) - len(validated_entities)
+            if skipped_count > 0:
+                msg_skip_ent = f"[PREPROCESS] 🛡️ Đã bảo vệ {skipped_count} entity đã có trong DB, chỉ chấp nhận {len(validated_entities)} entity MỚI từ LLM."
+                print(msg_skip_ent)
+                add_system_log(msg_skip_ent, "pre")
+            entities = validated_entities
+            
             # Áp dụng Entities nếu bật Từ điển Thực thể
             if enable_names_dict and entities:
                 from app.models.schema import ChapterEntityLink
@@ -157,13 +175,15 @@ async def _process_evidence_and_save(
                     ch_name = ent.get("chinese_name")
                     vi_trans = ent.get("vietnamese_name", ent.get("rough_translation", ""))
                     e_type = ent.get("entity_type", "NAME")
-                    if not ch_name or not vi_trans:
-                        continue
+                    gender = ent.get("gender")
+                    role = ent.get("role")
                         
                     req = UpdateNovelEntityRequest(
                         chinese_name=ch_name,
                         rough_translation=vi_trans,
-                        entity_type=e_type
+                        entity_type=e_type,
+                        gender=gender,
+                        role=role
                     )
                     try:
                         res_save = await update_novel_entity_and_apply(novel_id, req)
@@ -183,17 +203,37 @@ async def _process_evidence_and_save(
                     except Exception as e:
                         print(f"[PREPROCESS] Lỗi update entity {ent}: {e}")
                     
-            # Áp dụng Corrections nếu bật Sửa lỗi GG (Lưu riêng vào ChapterCorrection theo từng chương trong batch)
+            # Áp dụng Corrections — CHỈ lưu vào chương nào thực sự có lỗi đó trong văn bản GG
             if enable_gg_corrections and corrections:
-                from app.models.schema import ChapterCorrection
+                import os as _os
+                from app.models.schema import ChapterCorrection, ChapterVersion as _CV
                 async with AsyncSessionLocal() as session:
+                    # Tải trước nội dung GG của từng chương để kiểm tra
+                    chapter_gg_texts: Dict[int, str] = {}
+                    for cid in batch:
+                        stmt_gg_pre = select(_CV).where(
+                            _CV.chapter_id == cid, _CV.version_type == "GG"
+                        )
+                        res_gg_pre = await session.execute(stmt_gg_pre)
+                        ver_pre = res_gg_pre.scalar_one_or_none()
+                        if ver_pre:
+                            txt = ""
+                            if ver_pre.content:
+                                txt = ver_pre.content
+                            elif ver_pre.file_path and _os.path.exists(ver_pre.file_path):
+                                with open(ver_pre.file_path, "r", encoding="utf-8", errors="ignore") as _f:
+                                    txt = _f.read()
+                            chapter_gg_texts[cid] = txt
+
                     for corr in corrections:
                         gg_err = corr.get("gg_error")
                         corr_vi = corr.get("correct_vietnamese")
                         if not gg_err or not corr_vi:
                             continue
                         for cid in batch:
-                            # Tránh lưu trùng
+                            # Chỉ lưu nếu lỗi thực sự xuất hiện trong GG text của chương đó
+                            if gg_err not in chapter_gg_texts.get(cid, ""):
+                                continue
                             stmt_exist = select(ChapterCorrection).where(
                                 ChapterCorrection.chapter_id == cid,
                                 ChapterCorrection.wrong_text == gg_err
@@ -206,6 +246,64 @@ async def _process_evidence_and_save(
                                     correct_text=corr_vi
                                 ))
                     await session.commit()
+                    
+            # Cập nhật và làm sạch file GG Text trực tiếp bằng các Correction vừa trích xuất
+            if enable_gg_corrections and corrections:
+                import os
+                from app.models.schema import ChapterVersion
+                async with AsyncSessionLocal() as session:
+                    for cid in batch:
+                        stmt_gg = select(ChapterVersion).where(
+                            ChapterVersion.chapter_id == cid,
+                            ChapterVersion.version_type == "GG"
+                        )
+                        res_gg = await session.execute(stmt_gg)
+                        ver_gg = res_gg.scalar_one_or_none()
+                        
+                        if ver_gg:
+                            gg_text = ""
+                            if ver_gg.content:
+                                gg_text = ver_gg.content
+                            elif ver_gg.file_path and os.path.exists(ver_gg.file_path):
+                                with open(ver_gg.file_path, "r", encoding="utf-8", errors="ignore") as f:
+                                    gg_text = f.read()
+                                    
+                            if gg_text:
+                                original_text = gg_text
+                                # Sắp xếp từ khóa dài thay trước, ngắn thay sau (Vd: "Mo Yayi" trước, "Yayi" sau)
+                                sorted_corrections = sorted(
+                                    corrections, 
+                                    key=lambda x: len(x.get("gg_error", "") or ""), 
+                                    reverse=True
+                                )
+                                import re as re_mod
+                                for corr in sorted_corrections:
+                                    gg_err = corr.get("gg_error")
+                                    corr_vi = corr.get("correct_vietnamese")
+                                    if gg_err and corr_vi:
+                                        # Dùng regex word boundary thay vì str.replace() thô
+                                        # để tránh thay thế giữa từ gây dính chữ
+                                        pattern = re_mod.compile(
+                                            r'(?<![a-zA-Z0-9\u00C0-\u024F\u1E00-\u1EFF])'
+                                            + re_mod.escape(gg_err)
+                                            + r'(?![a-zA-Z0-9\u00C0-\u024F\u1E00-\u1EFF])'
+                                        )
+                                        gg_text = pattern.sub(corr_vi, gg_text)
+                                
+                                if gg_text != original_text:
+                                    ver_gg.content = gg_text
+                                    if ver_gg.file_path:
+                                        with open(ver_gg.file_path, "w", encoding="utf-8") as f:
+                                            f.write(gg_text)
+                    await session.commit()
+
+            # Sync lại metadata JSON cache sau khi lưu entities + corrections
+            try:
+                from app.services.storage.metadata_cache import sync_novel_metadata
+                await sync_novel_metadata(novel_id)
+                print(f"[PREPROCESS] 💾 Đã sync metadata cache cho truyện ID {novel_id}")
+            except Exception as _cache_err:
+                print(f"[PREPROCESS] ⚠️ Không thể sync metadata cache: {_cache_err}")
 
             msg_done = f"✨ [1/3 TIỀN XỬ LÝ] Đã trích xuất {len(entities)} tên & {len(corrections)} lỗi GG cho lô {batch}. Đã làm sạch & lưu CSDL!"
             print(msg_done)

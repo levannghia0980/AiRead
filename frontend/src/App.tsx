@@ -54,6 +54,7 @@ export default function App() {
     pauseTranslation,
     clearJob,
     resetChapters,
+    restartNovel,
     fetchChapterText,
     updateChapterText,
     downloadNovel,
@@ -103,6 +104,8 @@ export default function App() {
   const [novelGlossary, setNovelGlossary] = useState<any[]>([])
   const [quickZh, setQuickZh] = useState('')
   const [quickVi, setQuickVi] = useState('')
+  const [quickGender, setQuickGender] = useState('')
+  const [quickRole, setQuickRole] = useState('')
   const [isAddingQuickGlossary, setIsAddingQuickGlossary] = useState(false)
 
   useEffect(() => {
@@ -134,14 +137,16 @@ export default function App() {
     if (!selectedNovel || !quickZh.trim() || !quickVi.trim()) return
     setIsAddingQuickGlossary(true)
     try {
-      await addGlossaryTerm(selectedNovel.novel.id, quickZh.trim(), quickVi.trim(), 'NAME')
+      await addGlossaryTerm(selectedNovel.novel.id, quickZh.trim(), quickVi.trim(), 'NAME', null, quickGender, quickRole)
       await fetchNovelGlossary(selectedNovel.novel.id)
       setQuickZh('')
       setQuickVi('')
+      setQuickGender('')
+      setQuickRole('')
     } finally {
       setIsAddingQuickGlossary(false)
     }
-  }, [selectedNovel, quickZh, quickVi, addGlossaryTerm, fetchNovelGlossary])
+  }, [selectedNovel, quickZh, quickVi, quickGender, quickRole, addGlossaryTerm, fetchNovelGlossary])
 
   const handleDeleteGlossaryTerm = useCallback(async (termId: number) => {
     if (!selectedNovel) return
@@ -293,6 +298,23 @@ export default function App() {
     }
   }, [resetChapters, fetchNovelDetails])
 
+  const [isRestarting, setIsRestarting] = useState(false)
+  const handleRestartNovel = useCallback(async (novelId: number) => {
+    setIsRestarting(true)
+    try {
+      const result = await restartNovel(novelId)
+      if (result.success) {
+        alert(result.message)
+      } else {
+        alert(`Lỗi: ${result.message}`)
+      }
+    } catch (e: any) {
+      alert(`Lỗi restart: ${e.message}`)
+    } finally {
+      setIsRestarting(false)
+    }
+  }, [restartNovel])
+
   const [isFixingAll, setIsFixingAll] = useState(false)
   const handleQuickFixAll = useCallback(async (novelId: number) => {
     if (!apiKeys || !apiKeys.trim()) {
@@ -321,6 +343,29 @@ export default function App() {
       setIsFixingAll(false)
     }
   }, [apiKeys, provider, model, customPrompt, fetchNovelDetails])
+
+  const [isFixingRed, setIsFixingRed] = useState(false)
+  const handleBatchFixRed = useCallback(async (novelId: number) => {
+    if (!window.confirm("Bạn có chắc muốn gom tất cả lỗi Hán tự dịch sai để gửi AI xử lý 1 lượt duy nhất không?")) return
+
+    setIsFixingRed(true)
+    try {
+      const response = await fetch(`/api/translation/novel/${novelId}/batch-fix-swept-errors`, {
+        method: 'POST',
+      })
+      const result = await response.json()
+      if (response.ok && result.status === 'success') {
+        alert(`✅ ${result.message}`)
+        await fetchNovelDetails(novelId)
+      } else {
+        alert(`Sửa lỗi Hán tự thất bại: ${result.detail || result.message || 'Lỗi không xác định'}`)
+      }
+    } catch (e: any) {
+      alert(`Lỗi hệ thống: ${e.message}`)
+    } finally {
+      setIsFixingRed(false)
+    }
+  }, [fetchNovelDetails])
 
   const handleDownloadNovel = useCallback(async (novelId: number, fmt: 'txt' | 'docx') => {
     setIsDownloading(true)
@@ -370,7 +415,11 @@ export default function App() {
             saveResult={saveResult}
             handleQuickFixAll={handleQuickFixAll}
             isFixingAll={isFixingAll}
+            handleBatchFixRed={handleBatchFixRed}
+            isFixingRed={isFixingRed}
             handleReadChapter={handleReadChapter}
+            handleRestartNovel={handleRestartNovel}
+            isRestarting={isRestarting}
           />
         )}
 
@@ -451,6 +500,10 @@ export default function App() {
                 setQuickZh={setQuickZh}
                 quickVi={quickVi}
                 setQuickVi={setQuickVi}
+                quickGender={quickGender}
+                setQuickGender={setQuickGender}
+                quickRole={quickRole}
+                setQuickRole={setQuickRole}
                 isAddingQuickGlossary={isAddingQuickGlossary}
                 handleAddQuickGlossary={handleAddQuickGlossary}
                 handleDeleteGlossaryTerm={handleDeleteGlossaryTerm}
