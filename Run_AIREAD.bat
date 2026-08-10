@@ -1,5 +1,5 @@
 @echo off
-title AIREAD - He Thong Dich & Doc Truyên
+title AIREAD - He Thong Dich ^& Doc Truyên
 cd /d "d:\NENGHIA0980\AIREAD"
 echo =========================================================================
 echo               🚀 DANG KHOI CHAY UNG DUNG AIREAD...

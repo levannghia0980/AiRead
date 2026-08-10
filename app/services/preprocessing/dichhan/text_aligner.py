@@ -105,7 +105,7 @@ async def align_candidate_to_chinese(
             if not conn:
                 import sqlite3
                 if os.path.exists("database.db"):
-                    local_conn = sqlite3.connect("database.db")
+                    local_conn = sqlite3.connect("database.db", timeout=60.0)
                     conn = local_conn
             try:
                 if conn:

@@ -1,9 +1,17 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 
 export const useAudioStudio = () => {
   const [isGeneratingAudio, setIsGeneratingAudio] = useState(false)
   const [audioStatus, setAudioStatus] = useState<any>(null)
   const [audioFiles, setAudioFiles] = useState<any[]>([])
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const stopPolling = useCallback(() => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current)
+      pollIntervalRef.current = null
+    }
+  }, [])
 
   const fetchAudioFiles = useCallback(async (novelId: number) => {
     try {
@@ -18,7 +26,9 @@ export const useAudioStudio = () => {
   }, [])
 
   const pollAudioStatus = useCallback((novelId: number) => {
-    const interval = setInterval(async () => {
+    stopPolling()
+
+    pollIntervalRef.current = setInterval(async () => {
       try {
         const res = await fetch(`/api/novels/${novelId}/audio/status`)
         if (res.ok) {
@@ -26,16 +36,22 @@ export const useAudioStudio = () => {
           setAudioStatus(status)
           if (!status.is_running) {
             setIsGeneratingAudio(false)
-            clearInterval(interval)
+            stopPolling()
             fetchAudioFiles(novelId)
           }
         }
       } catch (e) {
-        clearInterval(interval)
+        stopPolling()
         setIsGeneratingAudio(false)
       }
     }, 3000)
-  }, [fetchAudioFiles])
+  }, [fetchAudioFiles, stopPolling])
+
+  useEffect(() => {
+    return () => {
+      stopPolling()
+    }
+  }, [stopPolling])
 
   const handleGenerateAudio = useCallback(async (novelId: number) => {
     setIsGeneratingAudio(true)

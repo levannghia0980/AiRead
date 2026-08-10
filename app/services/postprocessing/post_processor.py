@@ -24,14 +24,18 @@ async def sweep_chinese_characters(text: str) -> str:
         print(f"[POST-PROCESS] Cảnh báo: Tìm thấy {len(matches)} cụm Hán tự (>50), bỏ qua tự động dịch để tránh treo hệ thống.")
         return text
         
-    for chunk in matches:
+    # Sắp xếp chuỗi Hán tự dài trước, ngắn sau để tránh thay thế nhầm cụm con trước cụm cha
+    sorted_matches = sorted(matches, key=len, reverse=True)
+
+    for chunk in sorted_matches:
         try:
             # Dịch online
             translated = await translate_text_via_google(chunk)
             if translated and translated != chunk:
                 # Bọc thẻ gạch chân xanh kèm data-raw để phục vụ LLM batch fix sau này
                 highlighted = f'<span style="text-decoration: underline; text-decoration-color: blue;" class="swept-chinese" data-raw="{chunk}">{translated}</span>'
-                text = text.replace(chunk, highlighted)
+                # Chỉ thay thế chunk khi không nằm trong thuộc tính HTML data-raw hay style
+                text = re.sub(rf'(?<!data-raw=")(?<!style=")(?<!class="){re.escape(chunk)}', highlighted, text)
         except Exception as e:
             print(f"[POST-PROCESS] Lỗi dịch Hán tự '{chunk}': {e}")
             
@@ -46,51 +50,60 @@ def sweep_pinyin_english(text: str) -> str:
     return text
 
 
-def fix_broken_words(text: str) -> str:
+
+def fix_broken_words(text: str, protected_names: list = None) -> str:
     """
     Phát hiện và sửa lỗi dính chữ từ LLM output (Gemini):
+    - Tách đại từ 'y' dính chữ (VD: yđang → y đang, ngươiy → ngươi y, củay → của y, biếty → biết y)
     - Chữ thường dính chữ HOA giữa câu (VD: nhìnKhiếu → nhìn Khiếu)
     - Dấu câu dính chữ liền sau (VD: rồi.Hắn → rồi. Hắn)
     - Chuẩn hóa khoảng trắng thừa
+    - BẢO VỆ tên thực thể (protected_names) không bị tách nhầm
     """
     if not text:
         return text
     
     original_text = text
     
-    # Tập ký tự tiếng Việt thường và HOA chuẩn xác (tránh lỗi range 'z-à' trong regex)
-    vn_lower = r'a-zàáảãạâấầẩẫậăắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựỳýỷỹỵ'
-    vn_upper = r'A-ZÀÁẢÃẠẤẦẨẪẬẮẰẲẴẶÉÈẺẼẸẾỀỂỄỆÍÌỈĨỊÓÒỎÕỌỐỒỔỖỘỚỜỞỠỢÚÙỦŨỤỨỪỬỮỰỲÝỶỸỴ'
+    # === BẢO VỆ TÊN THỰC THỂ: Che giấu trước khi xử lý ===
+    name_placeholders = {}
+    if protected_names:
+        # Sắp xếp dài trước ngắn sau để tránh thay thế con trước cha
+        sorted_names = sorted(set(protected_names), key=len, reverse=True)
+        for idx, name in enumerate(sorted_names):
+            if name and name in text:
+                placeholder = f"§PROT_{idx:04d}§"
+                text = text.replace(name, placeholder)
+                name_placeholders[placeholder] = name
     
-    # Rule 0a: Sửa lỗi tiêu đề chương bị Gemini dịch nhầm "NO.1章" / "第1章" thành "KHÔNG.1chương" hoặc "KHÔNG.1"
-    text = re.sub(r'(?i)\bKHÔNG\.?\s*(\d+)\s*chương\b', r'Chương \1', text)
-    text = re.sub(r'(?i)\bKHÔNG\.?\s*(\d+)\b', r'Chương \1', text)
-
+    # Tập ký tự tiếng Việt đầy đủ (bao gồm ơƠ, ưƯ, đĐ)
+    vn_lower = r'a-zàáảãạâấầẩẫậăắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộơớờởỡợúùủũụưứừửữựỳýỷỹỵđ'
+    vn_upper = r'A-ZÀÁẢÃẠẤẦẨẪẬẮẰẲẴẶÉÈẺẼẸẾỀỂỄỆÍÌỈĨỊÓÒỎÕỌỐỒỔỖỘƠỚỜỞỠỢÚÙỦŨỤƯỨỪỬỮỰỲÝỶỸỴĐ'
+    vn_all = rf'{vn_lower}{vn_upper}'
     
+    # Rule 0a: Sửa triệt để rác tiêu đề chương bị dịch nhầm
+    text = re.sub(r'(?i)(?:KHÔNG|NO)\s*\.?\s*(\d+)\s*(?:chương|Chương|章)?\s*[:.:-]?\s*', r'Chương \1: ', text)
+    text = re.sub(r'第\s*(\d+)\s*章\s*[:.:-]?\s*', r'Chương \1: ', text)
+    text = re.sub(r'(?i)(?:Chương\s*(\d+)\s*:\s*){2,}', r'Chương \1: ', text)
 
-    # Rule 1a: Chữ thường tiếng Việt dính chữ HOA giữa từ → tách ra
-    # "nhìnKhiếu" → "nhìn Khiếu", "độcSữa" → "độc Sữa", "nảyMật" → "nảy Mật"
-    text = re.sub(
-        f'([{vn_lower}])([{vn_upper}])',
-        r'\1 \2',
-        text
-    )
+    # Rule 0b: Sửa triệt để lỗi tách rời chữ 'y' (VD: vẫ y -> vẫy, lấ y -> lấy, đâ y -> đây, giâ y -> giây)
+    text = re.sub(rf'(?<=[{vn_all}])\s+(y)\b', r'\1', text)
+
+
+
+    # Rule 1a: Chữ thường tiếng Việt dính chữ HOA giữa từ → tách ra (VD: nhìnKhiếu → nhìn Khiếu)
+    text = re.sub(f'([{vn_lower}])([{vn_upper}])', r'\1 \2', text)
     
     # Rule 1b: Tách khoảng trắng bị dính xung quanh thẻ HTML <span>
-    text = re.sub(f'([{vn_lower}{vn_upper}])<span', r'\1 <span', text)
-    text = re.sub(f'</span>([{vn_lower}{vn_upper}])', r'</span> \1', text)
+    text = re.sub(f'([{vn_all}])<span', r'\1 <span', text)
+    text = re.sub(f'</span>([{vn_all}])', r'</span> \1', text)
 
-    # Rule 1c: Sửa lỗi lặp chữ HOA đầu từ do LLM/Trans ghép lỗi (VD: CCác → Các, TTrang → Trang, SựCCác → Sự Các)
+    # Rule 1c: Sửa lỗi lặp chữ HOA đầu từ
     text = re.sub(rf'\b([{vn_upper}])\1+([{vn_upper}][{vn_lower}]+)', r'\1\2', text)
     text = re.sub(rf'\b([{vn_upper}])\1+([{vn_lower}]+)', r'\1\2', text)
 
     # Rule 2: Dấu câu dính chữ HOA (thiếu khoảng trắng sau dấu câu)
-    # "rồi.Hắn" → "rồi. Hắn", "đi!Ngươi" → "đi! Ngươi"
-    text = re.sub(
-        f'([.!?;:,])([{vn_upper}])',
-        r'\1 \2',
-        text
-    )
+    text = re.sub(f'([.!?;:,])([{vn_upper}])', r'\1 \2', text)
     
     # Rule 3: Chuẩn hóa khoảng trắng thừa (2+ spaces → 1 space)
     text = re.sub(r' {2,}', ' ', text)
@@ -98,9 +111,12 @@ def fix_broken_words(text: str) -> str:
     # Rule 4: Loại bỏ khoảng trắng thừa trước dấu câu
     text = re.sub(r' +([.!?;:,])', r'\1', text)
     
+    # === KHÔI PHỤC TÊN THỰC THỂ ĐÃ BẢO VỆ ===
+    for placeholder, original_name in name_placeholders.items():
+        text = text.replace(placeholder, original_name)
+    
     if text != original_text:
-        fixes = sum(1 for a, b in zip(original_text, text) if a != b)
-        print(f"[POST-PROCESS] 🔧 fix_broken_words: Đã tự động sửa ~{fixes} ký tự dính/thừa/rác.")
+        print("[POST-PROCESS] 🔧 fix_broken_words: Đã tự động chuẩn hóa dính chữ & khoảng trắng.")
     
     return text
 
@@ -146,18 +162,19 @@ async def enforce_entity_names(text: str, novel_id: int) -> str:
 
 def extract_chapter_text(full_text: str, cid: int, next_cid: int = None, chap_no: int = None, next_chap_no: int = None) -> Optional[str]:
     """
-    Trích xuất nội dung chương cực kỳ bền bỉ (robust), chịu lỗi tốt:
-    Thử lần lượt với cả Chapter ID (cid) lẫn Chapter No (chap_no)
+    Trích xuất nội dung chương cực kỳ bền bỉ (robust), chịu lỗi tốt.
+    CHỈ dùng chapter_no (số chương) để tìm thẻ phân tách — KHÔNG dùng cid (DB ID)
+    vì LLM chỉ biết số chương, không biết ID trong database.
     """
     if not full_text or not full_text.strip():
         return None
 
-    ids_to_try = [str(cid)]
+    ids_to_try = []
     if chap_no is not None:
-        ids_to_try.append(str(chap_no))
-        ids_to_try.append(f"{chap_no:02d}")
-        ids_to_try.append(f"{chap_no:03d}")
-        ids_to_try.append(f"{chap_no:04d}")
+        ids_to_try.extend([str(chap_no), f"{chap_no:02d}", f"{chap_no:03d}", f"{chap_no:04d}"])
+    if not ids_to_try:
+        # Fallback cuối: chỉ khi không có chap_no mới dùng cid
+        ids_to_try.append(str(cid))
 
     def clean_extracted(t: str) -> str:
         if not t: return t
@@ -167,19 +184,19 @@ def extract_chapter_text(full_text: str, cid: int, next_cid: int = None, chap_no
             t = t[:rmatch.start()]
         # Loại bỏ các thẻ tag BEGIN/END sót lại ở đầu hoặc cuối
         t = re.sub(
-            r"^(?:===\s*)?(?:\[|\()? \s*(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|END_CHAPTER|END\s+CHAPTER|BẮT\s+ĐẦU|KẾT\s+THÚC)[^\n\]\)]*(?:\]|\))?(?:\s*===)?",
+            r"^\s*(?:===\s*)?(?:\[|\()? *(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|END_CHAPTER|END\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU|KẾT\s+THÚC\s+CHƯƠNG|KẾT\s+THÚC)[^\n\]\)]*(?:\]|\))?(?:\s*===)?",
             "", t, flags=re.IGNORECASE
         ).strip()
         t = re.sub(
-            r"(?:===\s*)?(?:\[|\()? \s*(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|END_CHAPTER|END\s+CHAPTER|BẮT\s+ĐẦU|KẾT\s+THÚC)[^\n\]\)]*(?:\]|\))?(?:\s*===)?$",
+            r"(?:===\s*)?(?:\[|\()? *(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|END_CHAPTER|END\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU|KẾT\s+THÚC\s+CHƯƠNG|KẾT\s+THÚC)[^\n\]\)]*(?:\]|\))?(?:\s*===)?\s*$",
             "", t, flags=re.IGNORECASE
         ).strip()
         return t.strip()
 
     for target_id in ids_to_try:
-        # 1. Matching BEGIN tag và END tag mềm dẻo
+        # 1. Matching BEGIN tag và END tag mềm dẻo (BẮT BUỘC có target_id ở cả 2 thẻ để tránh khớp nhầm chữ 'kết thúc' trong lời thoại/văn bản)
         pattern_pair = re.compile(
-            rf"(?:===\s*)?(?:\[|\(|\b)?\s*(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU|CHƯƠNG|CHAPTER)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{target_id}\b[^\n\]\)]*(?:\]|\)|\b)?(?:\s*===)?(.*?)(?:===\s*)?(?:\[|\(|\b)?\s*(?:END_CHAPTER|END\s+CHAPTER|KẾT\s+THÚC\s+CHƯƠNG|KẾT\s+THÚC)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*(?:{target_id})?\b[^\n\]\)]*(?:\]|\)|\b)?(?:\s*===)?",
+            rf"(?:===\s*)?(?:\[|\()? \s*(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU|CHƯƠNG|CHAPTER)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{target_id}\b[^\n\]\)]*(?:\]|\))?(?:\s*===)?(.*?)(?:===\s*)?(?:\[|\()? \s*(?:END_CHAPTER|END\s+CHAPTER|KẾT\s+THÚC\s+CHƯƠNG|KẾT\s+THÚC)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{target_id}\b[^\n\]\)]*(?:\]|\))?(?:\s*===)?",
             re.DOTALL | re.IGNORECASE
         )
         match = pattern_pair.search(full_text)
@@ -188,13 +205,11 @@ def extract_chapter_text(full_text: str, cid: int, next_cid: int = None, chap_no
 
         # 2. Match từ BEGIN tag của target_id tới BEGIN tag của chương kế tiếp
         next_ids_to_try = []
-        if next_cid is not None:
-            next_ids_to_try.append(str(next_cid))
         if next_chap_no is not None:
             next_ids_to_try.extend([str(next_chap_no), f"{next_chap_no:02d}", f"{next_chap_no:03d}"])
 
         begin_pattern = re.compile(
-            rf"(?:===\s*)?(?:\[|\(|\b)?\s*(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU|CHƯƠNG|CHAPTER)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{target_id}\b[^\n\]\)]*(?:\]|\)|\b)?(?:\s*===)?",
+            rf"(?:===\s*)?(?:\[|\()? \s*(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU|CHƯƠNG|CHAPTER)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{target_id}\b[^\n\]\)]*(?:\]|\))?(?:\s*===)?",
             re.IGNORECASE
         )
         begin_match = begin_pattern.search(full_text)
@@ -202,7 +217,7 @@ def extract_chapter_text(full_text: str, cid: int, next_cid: int = None, chap_no
             start_idx = begin_match.end()
             for nid in next_ids_to_try:
                 next_pattern = re.compile(
-                    rf"(?:===\s*)?(?:\[|\(|\b)?\s*(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU|CHƯƠNG|CHAPTER)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{nid}\b[^\n\]\)]*(?:\]|\)|\b)?(?:\s*===)?",
+                    rf"(?:===\s*)?(?:\[|\()? \s*(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU|CHƯƠNG|CHAPTER)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{nid}\b[^\n\]\)]*(?:\]|\))?(?:\s*===)?",
                     re.IGNORECASE
                 )
                 next_match = next_pattern.search(full_text, pos=start_idx)
@@ -212,10 +227,10 @@ def extract_chapter_text(full_text: str, cid: int, next_cid: int = None, chap_no
                     if len(extracted) > 20:
                         return extracted
 
-            # Nếu là chương cuối lô, lấy đến hết text
+            # Nếu là chương cuối lô, lấy đến thẻ KẾT THÚC CHƯƠNG {target_id} hoặc hết text
             remaining = full_text[start_idx:]
             end_tag_pattern = re.compile(
-                rf"(?:===\s*)?(?:\[|\()? \s*(?:END_CHAPTER|END\s+CHAPTER|KẾT\s+THÚC\s+CHƯƠNG|KẾT\s+THÚC)[^\n\]\)]*(?:\]|\))?(?:\s*===)?.*",
+                rf"(?:===\s*)?(?:\[|\()? \s*(?:END_CHAPTER|END\s+CHAPTER|KẾT\s+THÚC\s+CHƯƠNG|KẾT\s+THÚC)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{target_id}\b[^\n\]\)]*(?:\]|\))?(?:\s*===)?.*",
                 re.IGNORECASE | re.DOTALL
             )
             remaining = end_tag_pattern.sub("", remaining)
@@ -283,12 +298,29 @@ async def process_and_split_batch(
     out_dir = os.path.join(base_dir, novel_folder, "chapters")
     os.makedirs(out_dir, exist_ok=True)
     
+    # Lưu output LLM gốc ra file debug để kiểm tra khi có lỗi
+    debug_dir = os.path.join(r"D:\NENGHIA0980\AIREAD\Output\03_DichAI_LLM", novel_folder)
+    os.makedirs(debug_dir, exist_ok=True)
+    batch_label = "_".join([str(v) for v in chapter_map.values()])
+    debug_file = os.path.join(debug_dir, f"batch_ch{batch_label}.txt")
+    try:
+        with open(debug_file, "w", encoding="utf-8") as df:
+            df.write(f"=== LLM OUTPUT (sau unmask) — Chương {list(chapter_map.values())} ===\n\n")
+            df.write(full_text)
+        print(f"[POST-PROCESS] 💾 Đã lưu LLM output debug: {debug_file}")
+    except Exception as dbg_err:
+        print(f"[POST-PROCESS] ⚠️ Không lưu được debug file: {dbg_err}")
+    
     saved_files = []
     
     try:
         async with AsyncSessionLocal() as session:
             cids = list(chapter_map.keys())
             extracted_map: Dict[int, str] = {}
+            
+            # Tạo map ngược để log: cid -> chap_no
+            chap_nos_in_batch = [chapter_map[c] for c in cids]
+            print(f"[POST-PROCESS] 📋 Bắt đầu tách {len(cids)} chương: {chap_nos_in_batch}")
             
             # Bước 2a: Thử bóc tách chuẩn / mềm dẻo cho từng chương
             for idx, cid in enumerate(cids):
@@ -298,12 +330,16 @@ async def process_and_split_batch(
                 chap_text = extract_chapter_text(full_text, cid, next_cid, chap_no, next_chap_no)
                 if chap_text:
                     extracted_map[cid] = chap_text
+                    print(f"[POST-PROCESS] ✅ Tách thành công Chương {chap_no} ({len(chap_text)} ký tự)")
+                else:
+                    print(f"[POST-PROCESS] ⚠️ Không tìm thấy thẻ phân tách cho Chương {chap_no}")
 
-            # Bước 2b: Fallback khôi phục các chương bị thiếu tag (Multi-tier Fallbacks)
+            # Bước 2b: Fallback khôi phục các chương bị thiếu tag
             missing_cids = [cid for cid in cids if cid not in extracted_map]
             
             if missing_cids:
-                print(f"[POST-PROCESS] ⚠️ Phát hiện {len(missing_cids)} chương bị thiếu/lỗi thẻ phân tách: {[chapter_map[c] for c in missing_cids]}. Đang tiến hành khôi phục đa tầng...")
+                missing_nos = [chapter_map[c] for c in missing_cids]
+                print(f"[POST-PROCESS] ⚠️ Phát hiện {len(missing_cids)} chương bị thiếu thẻ phân tách: Chương {missing_nos}. Đang khôi phục...")
                 
                 # Fallback Tier 1: Nếu lô 1 chương mà không thấy tag
                 if len(cids) == 1 and full_text and len(full_text.strip()) > 20:
@@ -314,20 +350,18 @@ async def process_and_split_batch(
                     clean_t = re.sub(r"(?:===\s*)?(?:\[|\()? \s*(?:BEGIN_CHAPTER|END_CHAPTER)[^\n\]\)]*(?:\]|\))?(?:\s*===)?$", "", clean_t, flags=re.IGNORECASE).strip()
                     extracted_map[cid] = clean_t
                 
-                # Fallback Tier 2: Gap Extraction (Khoảng trống giữa chương trước và chương sau đã được xác định)
+                # Fallback Tier 2: Gap Extraction
                 for idx, cid in enumerate(cids):
                     if cid in extracted_map:
                         continue
                     chap_no = chapter_map[cid]
                     
-                    # Tìm chương liền trước đã trích xuất thành công
                     prev_cid = None
                     for p_idx in range(idx - 1, -1, -1):
                         if cids[p_idx] in extracted_map:
                             prev_cid = cids[p_idx]
                             break
                             
-                    # Tìm chương liền sau đã trích xuất thành công
                     next_cid_idx = None
                     for n_idx in range(idx + 1, len(cids)):
                         if cids[n_idx] in extracted_map:
@@ -351,30 +385,146 @@ async def process_and_split_batch(
                             gap_content = re.sub(r"(?:===\s*)?(?:\[|\()? \s*(?:BEGIN_CHAPTER|END_CHAPTER|BEGIN|END)[^\n\]\)]*(?:\]|\))?(?:\s*===)?$", "", gap_content, flags=re.IGNORECASE).strip()
                             
                             if len(gap_content) > 20:
-                                print(f"[POST-PROCESS] 💡 Khôi phục thành công chương {chap_no} (ID {cid}) từ khoảng trống giữa các chương trong lô.")
+                                print(f"[POST-PROCESS] 💡 Khôi phục thành công Chương {chap_no} từ khoảng trống giữa các chương trong lô.")
                                 extracted_map[cid] = gap_content
-                
-                # Fallback Tier 3: Tách theo các khối văn bản bất kỳ trong full_text
-                still_missing = [cid for cid in cids if cid not in extracted_map]
-                if still_missing:
-                    blocks = re.split(r"(?:===\s*)?(?:\[|\()? \s*(?:BEGIN_CHAPTER|END_CHAPTER|BẮT\s+ĐẦU|KẾT\s+THÚC)[^\n\]\)]*(?:\]|\))?(?:\s*===)?", full_text, flags=re.IGNORECASE)
-                    clean_blocks = [b.strip() for b in blocks if b and len(b.strip()) > 30]
-                    
-                    for idx, cid in enumerate(cids):
-                        if cid not in extracted_map and idx < len(clean_blocks):
-                            chap_no = chapter_map[cid]
-                            print(f"[POST-PROCESS] 💡 Tự động gán khối văn bản {idx + 1} cho chương {chap_no} (ID {cid}).")
-                            extracted_map[cid] = clean_blocks[idx]
-                
-                # Fallback Tier 4 (Cực hạn): Gán toàn bộ hoặc 1 phần full_text cho bất kỳ chương nào vẫn rỗng
-                still_missing_final = [cid for cid in cids if cid not in extracted_map or not extracted_map[cid].strip()]
-                for cid in still_missing_final:
-                    chap_no = chapter_map[cid]
-                    print(f"[POST-PROCESS] 🛡️ Cảnh báo: Tự động gán nội dung toàn bộ văn bản cho chương {chap_no} (ID {cid}) để đảm bảo tiến trình dịch không bị ngắt quãng.")
-                    clean_full = re.sub(r"(?:===\s*)?(?:\[|\()? \s*(?:BEGIN_CHAPTER|END_CHAPTER)[^\n\]\)]*(?:\]|\))?(?:\s*===)?", "", full_text, flags=re.IGNORECASE).strip()
-                    extracted_map[cid] = clean_full if len(clean_full) > 10 else f"Chương {chap_no}"
 
-            # Bước 3: Hậu xử lý từng nội dung và Lưu DB
+            # Fallback Tier 4: Dịch lẻ chương bị thiếu HOẶC bị xén ngắn bất thường
+            # ĐẶT NGOÀI if missing_cids để bắt cả chương đã tách nhưng output quá ngắn
+            async with AsyncSessionLocal() as raw_session:
+                short_cids = []
+                for cid in cids:
+                    chap_no = chapter_map[cid]
+                    chap_text = extracted_map.get(cid, "").strip()
+                    
+                    # Kiểm tra: thiếu hoàn toàn hoặc quá ngắn so với RAW
+                    if not chap_text or len(chap_text) < 100:
+                        short_cids.append(cid)
+                        continue
+                    
+                    # So sánh với RAW để phát hiện bị xén
+                    stmt_raw = select(ChapterVersion).where(
+                        ChapterVersion.chapter_id == cid,
+                        ChapterVersion.version_type == "RAW"
+                    )
+                    res_raw = await raw_session.execute(stmt_raw)
+                    ver_raw = res_raw.scalar_one_or_none()
+                    if ver_raw:
+                        raw_len = len((ver_raw.content or "").strip()) if ver_raw.content else 0
+                        if not raw_len and ver_raw.file_path and os.path.exists(ver_raw.file_path):
+                            try:
+                                with open(ver_raw.file_path, "r", encoding="utf-8", errors="ignore") as f:
+                                    raw_len = len(f.read().strip())
+                            except Exception:
+                                pass
+                        if raw_len > 800 and len(chap_text) < raw_len * 0.3:
+                            short_cids.append(cid)
+                            print(f"[POST-PROCESS] ⚠️ Chương {chap_no} bị xén ngắn bất thường (RAW={raw_len}, Output={len(chap_text)})")
+                
+                for cid in short_cids:
+                    chap_no = chapter_map[cid]
+                    print(f"[POST-PROCESS] 🔄 Chương {chap_no} bị thiếu/xén chữ. Tự động dịch lẻ để đảm bảo đầy đủ...")
+                    try:
+                        if version_type == "LLM":
+                            from app.services.translation.rawt.llm_translator import translate_batch_llm
+                            single_res = await translate_batch_llm([cid])
+                        else:
+                            from app.services.translation.contextt.llm_context_editor import edit_context_batch_llm
+                            single_res = await edit_context_batch_llm([cid])
+                            
+                        if single_res and single_res.get("status") == "success":
+                            single_masked = single_res["translated_text_masked"]
+                            single_table = single_res.get("mapping_table", {})
+                            single_full = unmask_text_with_dictionary(single_masked, single_table) if single_table else single_masked
+                            clean_single = re.sub(r"(?:===\s*)?(?:\[|\()?\s*(?:BEGIN_CHAPTER|END_CHAPTER|BEGIN|END)[^\n\]\)]*(?:\]|\))?(?:\s*===)?", "", single_full, flags=re.IGNORECASE).strip()
+                            if len(clean_single) > 50:
+                                extracted_map[cid] = clean_single
+                                full_text = full_text + "\n" + single_full
+                                print(f"[POST-PROCESS] ✅ Cứu hộ dịch lẻ thành công Chương {chap_no}! ({len(clean_single)} ký tự)")
+                            else:
+                                print(f"[POST-PROCESS] ⚠️ Dịch lẻ Chương {chap_no} vẫn quá ngắn ({len(clean_single)} ký tự)")
+                    except Exception as ex_single:
+                        print(f"[POST-PROCESS] ❌ Lỗi cứu hộ dịch Chương {chap_no}: {ex_single}")
+
+            # Bước 3: Kiểm tra NGHIÊM NGẶT — Mỗi chương PHẢI có CẢ thẻ BẮT ĐẦU lẫn KẾT THÚC
+            # Một chương hoàn chỉnh = có thẻ BẮT ĐẦU + nội dung + thẻ KẾT THÚC
+            async with AsyncSessionLocal() as session:
+                for idx, cid in enumerate(cids):
+                    chap_no = chapter_map[cid]
+                    chap_text = extracted_map.get(cid, "").strip()
+                    
+                    # 3a. Kiểm tra thẻ BẮT ĐẦU CHƯƠNG trong LLM output
+                    begin_tag_pattern = re.compile(
+                        rf"(?:===\s*)?\[\s*(?:BEGIN_CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG)\s+{chap_no}\s*\](?:\s*===)?",
+                        re.IGNORECASE
+                    )
+                    has_begin_tag = bool(begin_tag_pattern.search(full_text))
+                    
+                    # 3b. Kiểm tra thẻ KẾT THÚC CHƯƠNG trong LLM output
+                    end_tag_pattern = re.compile(
+                        rf"(?:===\s*)?\[\s*(?:END_CHAPTER|KẾT\s+THÚC\s+CHƯƠNG)\s+{chap_no}\s*\](?:\s*===)?",
+                        re.IGNORECASE
+                    )
+                    has_end_tag = bool(end_tag_pattern.search(full_text))
+
+                    # 3c. Lấy độ dài RAW đầu vào để so sánh tỷ lệ
+                    stmt_raw = select(ChapterVersion).where(
+                        ChapterVersion.chapter_id == cid,
+                        ChapterVersion.version_type == "RAW"
+                    )
+                    res_raw = await session.execute(stmt_raw)
+                    ver_raw = res_raw.scalar_one_or_none()
+                    raw_len = 0
+                    if ver_raw:
+                        if ver_raw.content:
+                            raw_len = len(ver_raw.content.strip())
+                        elif ver_raw.file_path and os.path.exists(ver_raw.file_path):
+                            try:
+                                with open(ver_raw.file_path, "r", encoding="utf-8", errors="ignore") as f:
+                                    raw_len = len(f.read().strip())
+                            except Exception:
+                                pass
+
+                    out_len = len(chap_text)
+                    
+                    # 3d. Kiểm tra tỷ lệ đầu ra / đầu vào bất thường (< 30% so với RAW)
+                    is_too_short = (raw_len > 800 and out_len < raw_len * 0.3)
+                    
+                    # Log trạng thái kiểm tra từng chương
+                    tag_status = f"BEGIN={'✅' if has_begin_tag else '❌'} END={'✅' if has_end_tag else '❌'}"
+                    len_status = f"RAW={raw_len} → Output={out_len}"
+                    print(f"[POST-PROCESS] 🔍 Kiểm tra Chương {chap_no}: {tag_status} | {len_status}")
+                    
+                    # NGHIÊM NGẶT: Phải có CẢ 2 thẻ BẮT ĐẦU + KẾT THÚC, không bị xén ngắn
+                    if not chap_text or not has_begin_tag or not has_end_tag or is_too_short:
+                        reason = []
+                        if not has_begin_tag:
+                            reason.append("thiếu thẻ BẮT ĐẦU CHƯƠNG")
+                        if not has_end_tag:
+                            reason.append("thiếu thẻ KẾT THÚC CHƯƠNG")
+                        if is_too_short:
+                            reason.append(f"đầu ra bị xén ngắn (RAW: {raw_len} ký tự, Output: {out_len} ký tự)")
+                        if not chap_text:
+                            reason.append("không trích xuất được nội dung")
+                            
+                        reason_str = ", ".join(reason)
+                        err_msg = (
+                            f"❌ [CHƯƠNG KHÔNG HOÀN CHỈNH] Chương {chap_no} vi phạm: {reason_str}. "
+                            f"HỦY BỎ TOÀN BỘ LÔ (Chương {chap_nos_in_batch}), XÓA SẠCH DỮ LIỆU DỞ DANG VÀ DỊCH LẠI!"
+                        )
+                        print(err_msg)
+                        raise ValueError(err_msg)
+
+            # Bước 4: Hậu xử lý từng nội dung và Lưu DB
+            # Lấy danh sách tên thực thể Tiếng Việt để bảo vệ không bị tách nhầm
+            protected_names = []
+            async with AsyncSessionLocal() as name_session:
+                stmt_ents = select(NovelEntity).where(NovelEntity.novel_id == novel_id)
+                res_ents = await name_session.execute(stmt_ents)
+                all_entities = res_ents.scalars().all()
+                for ent in all_entities:
+                    if ent.rough_translation:
+                        protected_names.append(ent.rough_translation)
+
             for cid in cids:
                 chap_no = chapter_map[cid]
                 print(f"[POST-PROCESS] Đang xử lý hoàn thiện chương {chap_no}...")
@@ -383,8 +533,8 @@ async def process_and_split_batch(
                 # 3a. Sweep Chinese
                 chap_text = await sweep_chinese_characters(chap_text)
                 
-                # 3b. Fix broken words (dính chữ từ LLM output)
-                chap_text = fix_broken_words(chap_text)
+                # 3b. Fix broken words (dính chữ từ LLM output) — có bảo vệ tên thực thể
+                chap_text = fix_broken_words(chap_text, protected_names=protected_names)
                 
                 # 3c. Enforce entity names (lưới an toàn cuối cùng)
                 chap_text = await enforce_entity_names(chap_text, novel_id)
@@ -426,7 +576,15 @@ async def process_and_split_batch(
                 if chap:
                     chap.status = "FINAL_DONE"
 
-                    
+                # Xóa cache tệp Audio cũ của chương (nếu có) để ép lần tạo Audio tới phải đọc văn bản mới
+                try:
+                    mp3_cache_path = os.path.join(r"D:\NENGHIA0980\AIREAD\Output\05_Audio_TTS", novel_folder, "chapters", f"{chap_no:06d}.mp3")
+                    if os.path.exists(mp3_cache_path):
+                        os.remove(mp3_cache_path)
+                        print(f"[POST-PROCESS] 🧹 Đã xóa cache Audio cũ của chương {chap_no}.")
+                except Exception:
+                    pass
+
             await session.commit()
     except Exception as e:
         for fp in saved_files:

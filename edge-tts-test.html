@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Coc Coc TTS Test - Vietnamese</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 24px;
+      background: #f5f7fb;
+      color: #1f2937;
+    }
+    .container {
+      max-width: 900px;
+      margin: auto;
+      background: white;
+      padding: 24px;
+      border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+    }
+    textarea {
+      width: 100%;
+      min-height: 140px;
+      font-size: 16px;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid #cbd5e1;
+      margin-top: 12px;
+    }
+    button {
+      margin-right: 10px;
+      margin-top: 12px;
+      padding: 10px 16px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      background: #2563eb;
+      color: white;
+      font-weight: 600;
+    }
+    button.secondary {
+      background: #475569;
+    }
+    #voiceList {
+      margin-top: 20px;
+      display: grid;
+      gap: 10px;
+    }
+    .voice-card {
+      padding: 12px;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      background: #f8fafc;
+    }
+    .voice-card button {
+      margin-top: 6px;
+      background: #0f766e;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Test tạo văn bản thành giọng nói trên Cốc Cốc</h1>
+    <p>Trang này dùng Web Speech API của trình duyệt Chromium để đọc văn bản tiếng Việt bằng các giọng có sẵn trên máy bạn.</p>
+
+    <label for="textInput"><strong>Văn bản tiếng Việt:</strong></label>
+    <textarea id="textInput">Xin chào! Đây là đoạn văn bản tiếng Việt dùng để kiểm tra giọng nói trên Microsoft Edge. Mỗi giọng sẽ được phát thử lần lượt để bạn nghe độ rõ, tốc độ và âm sắc của từng giọng.</textarea>
+
+    <button id="loadVoicesBtn">Tải danh sách giọng</button>
+    <button id="speakAllBtn" class="secondary">Phát bằng tất cả giọng</button>
+    <button id="stopBtn">Dừng phát</button>
+
+    <div id="voiceList"></div>
+  </div>
+
+  <script>
+    const textInput = document.getElementById('textInput');
+    const voiceList = document.getElementById('voiceList');
+    const loadVoicesBtn = document.getElementById('loadVoicesBtn');
+    const speakAllBtn = document.getElementById('speakAllBtn');
+    const stopBtn = document.getElementById('stopBtn');
+
+    let voices = [];
+
+    function populateVoices() {
+      voices = window.speechSynthesis.getVoices();
+      voiceList.innerHTML = '';
+
+      voices.forEach((voice, index) => {
+        const card = document.createElement('div');
+        card.className = 'voice-card';
+        card.innerHTML = `
+          <div><strong>${index + 1}. ${voice.name}</strong></div>
+          <div>Lang: ${voice.lang}</div>
+          <div>Default: ${voice.default ? 'Có' : 'Không'}</div>
+          <button type="button">Phát thử giọng này</button>
+        `;
+
+        const testBtn = card.querySelector('button');
+        testBtn.addEventListener('click', () => speakText(textInput.value, voice));
+        voiceList.appendChild(card);
+      });
+    }
+
+    function speakText(text, selectedVoice) {
+      if (!text.trim()) {
+        alert('Vui lòng nhập văn bản tiếng Việt trước khi phát.');
+        return;
+      }
+
+      if (!('speechSynthesis' in window)) {
+        alert('Trình duyệt của bạn không hỗ trợ Speech Synthesis.');
+        return;
+      }
+
+      window.speechSynthesis.cancel();
+
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.voice = selectedVoice;
+      utterance.lang = selectedVoice?.lang || 'vi-VN';
+      utterance.rate = 1;
+      utterance.pitch = 1;
+      utterance.volume = 1;
+      window.speechSynthesis.speak(utterance);
+    }
+
+    async function speakAllVoices() {
+      if (!voices.length) {
+        populateVoices();
+      }
+
+      const text = textInput.value.trim();
+      if (!text) {
+        alert('Vui lòng nhập văn bản tiếng Việt trước khi phát tất cả giọng.');
+        return;
+      }
+
+      for (const voice of voices) {
+        await new Promise((resolve) => {
+          const utterance = new SpeechSynthesisUtterance(text);
+          utterance.voice = voice;
+          utterance.lang = voice.lang || 'vi-VN';
+          utterance.rate = 1;
+          utterance.pitch = 1;
+          utterance.volume = 1;
+          utterance.onend = resolve;
+          window.speechSynthesis.cancel();
+          window.speechSynthesis.speak(utterance);
+        });
+      }
+    }
+
+    loadVoicesBtn.addEventListener('click', populateVoices);
+    speakAllBtn.addEventListener('click', speakAllVoices);
+    stopBtn.addEventListener('click', () => window.speechSynthesis.cancel());
+
+    if (window.speechSynthesis) {
+      window.speechSynthesis.onvoiceschanged = populateVoices;
+      populateVoices();
+    }
+  </script>
+</body>
+</html>

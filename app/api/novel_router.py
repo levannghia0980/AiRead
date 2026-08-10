@@ -8,12 +8,17 @@ from sqlalchemy import select, func, case
 from app.core.database import AsyncSessionLocal
 from app.models.schema import Novel, Chapter, ChapterVersion, NovelEntity
 from app.services.postprocessing.post_processor import export_full_novel_txt
+from app.services.storage.file_storage import sanitize_filename
 
 router = APIRouter(prefix="/novels", tags=["Novels & Chapters Management"])
 
 class UpdateChapterContentRequest(BaseModel):
     version_type: str = "FINAL"
     content: str
+
+class ResetChaptersRequest(BaseModel):
+    chapter_nos: Optional[List[int]] = None
+    full_restart: Optional[bool] = False
 
 class UpdateNovelEntityRequest(BaseModel):
     chinese_name: str
@@ -1154,5 +1159,139 @@ async def quick_fix_all_yellow_sentences(novel_id: int = Path(...), payload: Qui
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{novel_id}/chapters/reset")
+async def reset_chapters(
+    novel_id: int = Path(...),
+    payload: Optional[ResetChaptersRequest] = None
+):
+    """
+    Xóa toàn bộ bản dịch (RAW, GG, LLM, FINAL, AUDIO), cache và reset trạng thái của các chương (hoặc toàn bộ truyện)
+    về trạng thái WAIT để cào dữ liệu và dịch lại từ đầu.
+    """
+    try:
+        chapter_nos = payload.chapter_nos if payload else None
+        full_restart = payload.full_restart if payload else False
+        
+        async with AsyncSessionLocal() as session:
+            stmt_novel = select(Novel).where(Novel.id == novel_id)
+            res_novel = await session.execute(stmt_novel)
+            novel = res_novel.scalar_one_or_none()
+            if not novel:
+                raise HTTPException(status_code=404, detail="Không tìm thấy tiểu thuyết.")
+                
+            novel_title = novel.title_rough or novel.title_raw or "Novel"
+            folder_novel = sanitize_filename(novel_title)
+
+            # Lấy danh sách chương cần reset
+            if full_restart or not chapter_nos:
+                stmt_ch = select(Chapter).where(Chapter.novel_id == novel_id)
+            else:
+                stmt_ch = select(Chapter).where(
+                    Chapter.novel_id == novel_id,
+                    Chapter.chapter_no.in_(chapter_nos)
+                )
+            res_ch = await session.execute(stmt_ch)
+            chapters = res_ch.scalars().all()
+            
+            if not chapters:
+                return {"status": "success", "message": "Không tìm thấy chương nào cần reset.", "reset_count": 0}
+
+            target_chapter_ids = [c.id for c in chapters]
+            target_chapter_nos = [c.chapter_no for c in chapters]
+
+            # 1. Lấy tất cả ChapterVersion để xóa file vật lý
+            stmt_ver = select(ChapterVersion).where(ChapterVersion.chapter_id.in_(target_chapter_ids))
+            res_ver = await session.execute(stmt_ver)
+            versions = res_ver.scalars().all()
+
+            for ver in versions:
+                if ver.file_path and os.path.exists(ver.file_path):
+                    try:
+                        os.remove(ver.file_path)
+                    except Exception as e:
+                        print(f"⚠️ Lỗi xóa file version {ver.file_path}: {e}")
+
+            # 2. Xóa các file đĩa tương ứng trong các thư mục Output (bao gồm 04b_VanBanTTS, 05_Audio_TTS...)
+            from app.services.storage.file_storage import OUTPUT_ROOT, VERSION_FOLDER_MAP
+            for folder_type in VERSION_FOLDER_MAP.values():
+                for c_no in target_chapter_nos:
+                    # File text .txt (trực tiếp hoặc trong subfolder chapters)
+                    txt_path = OUTPUT_ROOT / folder_type / folder_novel / f"{c_no:06d}.txt"
+                    if txt_path.exists():
+                        try:
+                            txt_path.unlink()
+                        except Exception:
+                            pass
+                    txt_sub_path = OUTPUT_ROOT / folder_type / folder_novel / "chapters" / f"{c_no:06d}.txt"
+                    if txt_sub_path.exists():
+                        try:
+                            txt_sub_path.unlink()
+                        except Exception:
+                            pass
+                    # File audio .mp3 (trực tiếp hoặc trong subfolder chapters)
+                    mp3_path = OUTPUT_ROOT / folder_type / folder_novel / f"{c_no:06d}.mp3"
+                    if mp3_path.exists():
+                        try:
+                            mp3_path.unlink()
+                        except Exception:
+                            pass
+                    mp3_sub_path = OUTPUT_ROOT / folder_type / folder_novel / "chapters" / f"{c_no:06d}.mp3"
+                    if mp3_sub_path.exists():
+                        try:
+                            mp3_sub_path.unlink()
+                        except Exception:
+                            pass
+                    # File metadata chapter .json
+                    json_path = OUTPUT_ROOT / "06_Metadata" / folder_novel / "chapters" / f"{c_no:06d}.json"
+                    if json_path.exists():
+                        try:
+                            json_path.unlink()
+                        except Exception:
+                            pass
+
+            # 3. Xóa dữ liệu DB liên quan của các chương này
+            from sqlalchemy import delete as sql_delete
+            from app.models.schema import ChapterCorrection, ChapterEntityLink
+
+            await session.execute(sql_delete(ChapterVersion).where(ChapterVersion.chapter_id.in_(target_chapter_ids)))
+            await session.execute(sql_delete(ChapterCorrection).where(ChapterCorrection.chapter_id.in_(target_chapter_ids)))
+            await session.execute(sql_delete(ChapterEntityLink).where(ChapterEntityLink.chapter_id.in_(target_chapter_ids)))
+
+            # 4. Reset trạng thái Chapter về "WAIT" để cào và dịch lại từ đầu
+            for chap in chapters:
+                chap.status = "WAIT"
+                chap.title_rough = chap.title_raw
+                chap.error_msg = None
+
+            # 5. Nếu là full_restart → xóa sạch cả entities, corrections và metadata cache toàn bộ
+            if full_restart:
+                await session.execute(sql_delete(NovelEntity).where(NovelEntity.novel_id == novel_id))
+                from app.services.storage.file_storage import delete_novel_disk_files
+                delete_novel_disk_files(novel_title)
+                meta_dir = OUTPUT_ROOT / "06_Metadata" / folder_novel
+                if meta_dir.exists():
+                    shutil.rmtree(meta_dir, ignore_errors=True)
+
+            await session.commit()
+
+        # 6. Đồng bộ lại metadata cache
+        try:
+            from app.services.storage.metadata_cache import sync_novel_metadata
+            await sync_novel_metadata(novel_id)
+        except Exception:
+            pass
+
+        return {
+            "status": "success",
+            "message": f"Đã xóa toàn bộ dữ liệu & cache của {len(chapters)} chương, sẵn sàng cào & dịch lại từ đầu.",
+            "reset_count": len(chapters)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi khi reset chương: {str(e)}")
+
 
 

@@ -114,7 +114,7 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
                 continue
                 
             raw_text = sanitize_chinese_raw_text(raw_text)
-            combined_text += f"\n=== [BEGIN_CHAPTER_{cid}] ===\n{raw_text}\n=== [END_CHAPTER_{cid}] ===\n"
+            combined_text += f"\n=== [BẮT ĐẦU CHƯƠNG {chap.chapter_no}] ===\n{raw_text}\n=== [KẾT THÚC CHƯƠNG {chap.chapter_no}] ===\n"
 
         dict_mapping = {}
         if enable_names_dict:
@@ -197,40 +197,18 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
 ========================================================================================
 """
     
-    system_prompt = f"""
-Bạn là một dịch giả đại sư chuyên dịch thuật tiểu thuyết văn học mạng Trung - Việt.
-Nhiệm vụ của bạn là dịch văn bản Hán văn sau đây sang tiếng Việt một cách ĐẬM CHẤT VIỆT, NGỮ PHÁP TIẾNG VIỆT THUẦN THỤC, MƯỢT MÀ VÀ TRUYỀN CẢM KHI NÓI/ĐỌC AUDIOBOOK.
+    system_prompt = f"""Bạn là một dịch giả đại sư chuyên dịch tiểu thuyết Trung - Việt.
+Dịch Hán văn sang tiếng Việt mượt mà, thuần Việt, chuẩn phong cách audiobook.
 
 {context_profile_prompt}
-
-=== YÊU CẦU DỊCH VĂN PHONG VÀ NGỮ CẢNH CHI TIẾT ===
-1. 💡 VĂN PHONG THUẦN VIỆT VỀ CẤU TRÚC CÂU & MẠCH VĂN:
-   - Dịch thoát ý Hán-Việt gượng ép ở cấu trúc câu. Chuyển đổi các câu trúc tiếng Trung bị cứng (như 'đem...', 'đối với... mà nói', 'trong lòng có chút...', 'dưới một cái...', 'sau khi...') thành lối diễn đạt tiếng Việt mượt mà, tự nhiên và giàu hình tượng.
-   - Ưu tiên các từ ngữ thuần Việt đắt giá trong các đoạn tả cảnh, cử chỉ, tâm trạng nhân vật để khi phát Audio TTS nghe vô cùng ÊM TAI và HẤP DẪN.
-2. ⚔️ BẢO TỒN NGUYÊN BẢN THUẬT NGỮ & SỐ ĐẾM HÁN-VIỆT CHUẨN (CẤM VIỆT HÓA BÌNH DÂN):
-   - CẢNH GIỚI TU LUYỆN & TRỌNG/TẦNG: BẮT BUỘC DÙNG SỐ HÁN-VIỆT (Nhất, Nhị, Tam, Tứ, Ngũ, Lục, Thất, Bát, Cửu, Thập...).
-   - TUYỆT ĐỐI KHÔNG dùng số đếm thuần Việt / bình dân ('thứ ba', 'thứ 4', 'thứ tư', 'tầng thứ 4', 'tầng thứ ba').
-     + Dịch 'cảnh giới thứ ba' / 'Luyện Linh cảnh thứ ba' → 'Tam Cảnh' hoặc 'Luyện Linh Tam Cảnh' / 'Tam Trọng'.
-     + Dịch 'Luyện Linh tầng thứ 4' / 'Luyện Linh tầng thứ tư' → 'Luyện Linh Tứ Cảnh' hoặc 'Luyện Linh Tứ Trọng' / 'Luyện Linh Tầng Tứ'.
-     + Dịch 'Luyện Linh cảnh mười tầng' → 'Luyện Linh Cảnh Thập Trọng' hoặc 'Luyện Linh Thập Cảnh'.
-   - Các thuật ngữ Hán-Việt quen thuộc khác (Càn Khôn, Khí Hải, Thần Thức, Pháp Bảo, Linh Dược, Thần Thông, Công Pháp, Tâm Pháp, Thân Pháp, Khí Tràng, Linh Trận, Trận Pháp, Sát Khí, Ma Khí, Yêu Thú, Tùy Thân Không Gian...) BẮT BUỘC BẢO TỒN NGUYÊN BẢN HÁN-VIỆT CHUẨN TRANG TRỌNG.
-3. 🎯 PHÂN TÍCH NGỮ CẢNH PHÂN CẢNH & THÁI ĐỘ NHÂN VẬT:
-   - Đọc hiểu BẦU KHÔNG KHÍ phân cảnh (giao tranh uy lực dồn dập, thương lượng ngầm căng thẳng, hội thoại trêu đùa hay độc thoại nội tâm) để điều chỉnh nhịp câu và giọng điệu (Tone & Mood) phù hợp.
-   - Thể hiện chính xác vị thế xã hội, bối phận và thái độ tình cảm giữa các nhân vật trong từng câu thoại (giận dữ, kính trọng, khiêu khích, thân mật).
-4. ⚠️ QUY TẮC VÀNG — ĐỒNG BỘ TÊN VÀ TRẬT TỰ DANH XƯNG TUYỆT ĐỐI (VI PHẠM = LỖI NGHIÊM TRỌNG):
-   - Mọi từ Hán gốc có trong Từ điển Thực thể bên dưới, bạn BẮT BUỘC dịch ĐÚNG Y NGUYÊN bản dịch trong từ điển.
-   - GIỮ NGUYÊN SẮC THÁI HÁN-VIỆT CỔ PHONG TRUYỆN TRUNG: Dịch đúng trật tự từ điển [Tên/Họ] + [Danh xưng/Chức danh/Lão/Huynh/Tỷ] (Ví dụ: 徐小受 = "Từ Tiểu Thụ", 乔长老 = "Kiều trưởng lão", 桑老 = "Tang lão", 徐兄 = "Từ huynh").
-   - TUYỆT ĐỐI KHÔNG tự ý đảo trật tự từ của từ điển (NGHIÊM CẤM đảo "Kiều trưởng lão" thành "Trưởng lão Kiều", NGHIÊM CẤM đảo "Tang lão" thành "Lão Tang", NGHIÊM CẤM đảo "Từ huynh" thành "Huynh Từ").
-5. 🔗 NỐI MẠCH TRUYỆN XUYÊN SUỐT:
-   - Đọc phần NGỮ CẢNH ĐOẠN KẾT CHƯƠNG TRƯỚC (nếu có) để giữ đúng xưng hô, cảm xúc và mạch diễn biến liền kề từ câu mở đầu của chương mới.
 {prev_context_block}
-=== TỪ ĐIỂN THỰC THỂ BẮT BUỘC ĐỒNG BỘ (TÊN/CHIÊU THỨC/KIẾM/BẢO VẬT/ĐỊA DANH/TÔNG MÔN) ===
+=== TỪ ĐIỂN THỰC THỂ ===
 {dict_json}
 
 === YÊU CẦU ĐẦU RA ===
-Văn bản đầu vào chứa nhiều chương được ngăn cách bởi thẻ === [BEGIN_CHAPTER_X] === và === [END_CHAPTER_X] ===.
-Bạn BẮT BUỘC PHẢI giữ nguyên y hệt các thẻ này ở đầu ra để hệ thống có thể cắt file. Không được dịch hoặc bỏ sót các thẻ này.
-Chỉ trả về nội dung bản dịch tiếng Việt, không giải thích. Giữ nguyên định dạng xuống dòng.
+- Giữ nguyên cặp thẻ phân chương ở đầu ra: === [BẮT ĐẦU CHƯƠNG X] === và === [KẾT THÚC CHƯƠNG X] ===.
+- Dịch đầy đủ 100% nội dung từng chương đến tận CÂU CUỐI CÙNG, không bỏ câu, không tóm tắt, không ngắt giữa chừng.
+- BẢO TỒN DÒNG KẾT CHƯƠNG: Đảm bảo dịch đầy đủ đoạn kết. Nếu văn bản gốc có dòng "(Hết chương / 本章完)" hoặc ghi chú kết thúc chương, BẮT BUỘC giữ trọn vẹn ở cuối mỗi chương.
 """
 
     enable_unblock = kwargs.get("enable_unblock", True)
@@ -248,7 +226,11 @@ Chỉ trả về nội dung bản dịch tiếng Việt, không giải thích. G
     
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
-    full_prompt = system_prompt + enforcer_prompt + "\n\n=== VĂN BẢN CẦN DỊCH ===\n" + masked_text
+    full_prompt = (
+        system_prompt + enforcer_prompt +
+        "\n\n=== VĂN BẢN CẦN DỊCH ===\n" + masked_text +
+        "\n\n=== NHẮC LẠI: Dịch đủ 100% các chương, bọc đúng thẻ === [BẮT ĐẦU CHƯƠNG X] === và === [KẾT THÚC CHƯƠNG X] === cho từng chương! ==="
+    )
     
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -258,7 +240,12 @@ Chỉ trả về nội dung bản dịch tiếng Việt, không giải thích. G
     ]
     payload = {
         "contents": [{"role": "user", "parts": [{"text": full_prompt}]}],
-        "generationConfig": {"temperature": 0.4, "topK": 40, "topP": 0.95},
+        "generationConfig": {
+            "temperature": 0.4, 
+            "topK": 40, 
+            "topP": 0.95,
+            "maxOutputTokens": 65536
+        },
         "safetySettings": safety_settings
     }
 

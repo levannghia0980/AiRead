@@ -127,12 +127,12 @@ async def get_audio_volumes(
         final_count = 0
 
         for ch in vol_chapters:
-            v_best = next((v for v in ch.versions if v.version_type in ["FINAL", "LLM", "GG"]), None)
+            v_best = next((v for v in ch.versions if v.version_type in ["FINAL", "LLM"]), None)
             if v_best and v_best.content:
                 word_count += len(v_best.content) // 4
                 final_count += 1
             else:
-                for subfolder in ["04_KetQua", "03_DichAI_LLM", "02_DichMau_GG"]:
+                for subfolder in ["04_KetQua", "03_DichAI_LLM"]:
                     disk_ch_path = os.path.join(r"D:\NENGHIA0980\AIREAD\Output", subfolder, novel_folder, "chapters", f"{ch.chapter_no:06d}.txt")
                     if os.path.exists(disk_ch_path) and os.path.getsize(disk_ch_path) > 0:
                         try:
@@ -241,15 +241,11 @@ async def get_audio_volumes(
                     
                     word_count = 0
                     for ch in vol_chapters:
-                        v_final = next((v for v in ch.versions if v.version_type == "FINAL"), None)
+                        v_final = next((v for v in ch.versions if v.version_type in ["FINAL", "LLM"]), None)
                         if v_final and v_final.content:
                             word_count += len(v_final.content) // 4
                         else:
-                            v_gg = next((v for v in ch.versions if v.version_type == "GG"), None)
-                            if v_gg and v_gg.content:
-                                word_count += len(v_gg.content) // 4
-                            else:
-                                word_count += 1500
+                            word_count += 1500
                                 
                     estimated_hours = round(word_count / 10000, 1)
                     if estimated_hours < 0.1:
@@ -502,7 +498,7 @@ async def delete_audio_file(
     novel_id: int = Path(...),
     filename: str = Path(...)
 ):
-    """Xóa một tệp âm thanh cụ thể trên đĩa"""
+    """Xóa một tệp âm thanh cụ thể trên đĩa + dọn dẹp bộ nhớ đệm chương để ép đọc bản dịch mới"""
     async with AsyncSessionLocal() as session:
         stmt = select(Novel).where(Novel.id == novel_id)
         res = await session.execute(stmt)
@@ -511,13 +507,22 @@ async def delete_audio_file(
             raise HTTPException(status_code=404, detail="Không tìm thấy truyện.")
             
     base_audio_dir = r"D:\NENGHIA0980\AIREAD\Output\05_Audio_TTS"
+    base_tts_text_dir = r"D:\NENGHIA0980\AIREAD\Output\04b_VanBanTTS"
     novel_folder = sanitize_filename(novel.title_rough if novel.title_rough else novel.title_raw)
     file_path = os.path.join(base_audio_dir, novel_folder, filename)
+    chapters_cache_dir = os.path.join(base_audio_dir, novel_folder, "chapters")
+    tts_text_novel_dir = os.path.join(base_tts_text_dir, novel_folder)
     
     if os.path.exists(file_path):
         try:
             os.remove(file_path)
-            return {"status": "success", "message": f"Đã xóa thành công tệp {filename}."}
+            # Dọn dẹp sạch cache chương để khi tạo lại Audio bắt buộc phải đọc bản dịch mới nhất
+            if os.path.exists(chapters_cache_dir):
+                shutil.rmtree(chapters_cache_dir, ignore_errors=True)
+                os.makedirs(chapters_cache_dir, exist_ok=True)
+            if os.path.exists(tts_text_novel_dir):
+                shutil.rmtree(tts_text_novel_dir, ignore_errors=True)
+            return {"status": "success", "message": f"Đã xóa thành công tệp {filename} và làm sạch bộ nhớ đệm audio."}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Lỗi khi xóa tệp: {str(e)}")
             
@@ -526,7 +531,7 @@ async def delete_audio_file(
 @router.delete("/files")
 @router.post("/delete_all")
 async def delete_all_audio_files(novel_id: int = Path(...)):
-    """Xóa toàn bộ các tệp âm thanh của truyện"""
+    """Xóa toàn bộ các tệp âm thanh + cache chương của truyện"""
     async with AsyncSessionLocal() as session:
         stmt = select(Novel).where(Novel.id == novel_id)
         res = await session.execute(stmt)
@@ -535,13 +540,18 @@ async def delete_all_audio_files(novel_id: int = Path(...)):
             raise HTTPException(status_code=404, detail="Không tìm thấy truyện.")
             
     base_audio_dir = r"D:\NENGHIA0980\AIREAD\Output\05_Audio_TTS"
+    base_tts_text_dir = r"D:\NENGHIA0980\AIREAD\Output\04b_VanBanTTS"
     novel_folder = sanitize_filename(novel.title_rough if novel.title_rough else novel.title_raw)
     novel_audio_dir = os.path.join(base_audio_dir, novel_folder)
+    tts_text_novel_dir = os.path.join(base_tts_text_dir, novel_folder)
     
-    if os.path.exists(novel_audio_dir):
+    if os.path.exists(novel_audio_dir) or os.path.exists(tts_text_novel_dir):
         try:
-            shutil.rmtree(novel_audio_dir)
-            return {"status": "success", "message": "Đã xóa toàn bộ thư mục âm thanh của truyện thành công."}
+            if os.path.exists(novel_audio_dir):
+                shutil.rmtree(novel_audio_dir)
+            if os.path.exists(tts_text_novel_dir):
+                shutil.rmtree(tts_text_novel_dir, ignore_errors=True)
+            return {"status": "success", "message": "Đã xóa toàn bộ thư mục âm thanh và bộ nhớ đệm của truyện thành công."}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Lỗi khi xóa toàn bộ thư mục: {str(e)}")
             

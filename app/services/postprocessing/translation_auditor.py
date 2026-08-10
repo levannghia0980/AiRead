@@ -83,8 +83,8 @@ def extract_swept_errors(content: str, chapter_no: int) -> List[Dict[str, Any]]:
 
 def apply_swept_corrections(content: str, corrections_map: Dict[str, str], chapter_errors: List[Dict[str, Any]]) -> str:
     """
-    Thay thế siêu chính xác: Tìm đúng thẻ span html đã lưu trong lỗi để đổi bằng từ sửa đúng (corrected_term)
-    và gỡ bỏ hoàn toàn thẻ span đó ra khỏi đoạn text.
+    Thay thế siêu chính xác: Tìm đúng thẻ span html đã lưu trong lỗi để đổi bằng cụm từ sửa đúng (corrected_term)
+    hoặc xóa bỏ từ đó nếu corrected_term là chuỗi rỗng "", gỡ bỏ hoàn toàn thẻ span và từ lặp/mở ngoặc giải thích thừa.
     """
     if not content:
         return content
@@ -92,35 +92,41 @@ def apply_swept_corrections(content: str, corrections_map: Dict[str, str], chapt
     lines = content.split('\n')
     for err in chapter_errors:
         err_id = err["error_id"]
-        corrected_term = corrections_map.get(err_id)
-        if not corrected_term:
+        if err_id not in corrections_map:
+            continue
+        corrected_term = corrections_map[err_id]
+        if corrected_term is None:
             continue
             
-        # Strip bất kỳ giải thích trong ngoặc nào do LLM tự sinh (ví dụ: "chữ chuẩn (nghĩa 1/nghĩa 2)")
         corrected_term = re.sub(r'\s*\([^)]+\)', '', corrected_term).strip()
         corrected_term = re.sub(r'\s*\[[^\]]+\]', '', corrected_term).strip()
             
         line_idx = err["line_idx"]
         span_html = err["span_html"]
         
-        # Thay thế span_html và tuỳ chọn CẢ CÁC NGOẶC ĐƠN theo sau nó (ví dụ: <span...>mở rộng</span> (kéo dài/mở rộng))
         if 0 <= line_idx < len(lines):
-            # Wrap the corrected term in a styled span (Màu xanh lá mạ - emerald-500)
-            highlighted_term = f'<span class="fixed-word" style="color: #10b981; font-weight: bold;">{corrected_term}</span>'
-            # Pattern bao gồm span gốc và tuỳ chọn ngoặc đơn giải thích theo sau
-            pattern = r'([a-zA-ZàáảãạâấầẩẫậăắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựỳýỷỹỵA-ZÀÁẢÃẠẤẦẨẪẬẮẰẲẴẶÉÈẺẼẸẾỀỂỄỆÍÌỈĨỊÓÒỎÕỌỐỒỔỖỘỚỜỞỠỢÚÙỦŨỤỨỪỬỮỰỲÝỶỸỴ]?)' + re.escape(span_html) + r'(?:\s*\([^)]+\))?([a-zA-ZàáảãạâấầẩẫậăắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựỳýỷỹỵA-ZÀÁẢÃẠẤẦẨẪẬẮẰẲẴẶÉÈẺẼẸẾỀỂỄỆÍÌỈĨỊÓÒỎÕỌỐỒỔỖỘỚỜỞỠỢÚÙỦŨỤỨỪỬỮỰỲÝỶỸỴ]?)'
+            line = lines[line_idx]
+            corr_words = corrected_term.split()
+            last_corr_word = corr_words[-1] if corr_words else ""
+            first_corr_word = corr_words[0] if corr_words else ""
             
-            def _replace_with_space(match):
-                before = match.group(1) or ""
-                after = match.group(2) or ""
-                res = highlighted_term
-                if before:
-                    res = before + " " + res
-                if after:
-                    res = res + " " + after
-                return res
-
-            lines[line_idx] = re.sub(pattern, _replace_with_space, lines[line_idx], count=1)
+            # Pattern khớp từ lặp dính liền ngay sau span_html
+            extra_word_pattern = ""
+            if last_corr_word and len(last_corr_word) >= 2 and re.match(r'^[a-zA-ZàáảãạâấầẩẫậăắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựỳýỷỹỵA-ZÀÁẢÃẠẤẦẨẪẬẮẰẲẴẶÉÈẺẼẸẾỀỂỄỆÍÌỈĨỊÓÒỎÕỌỐỒỔỖỘỚỜỞỠỢÚÙỦŨỤỨỪỬỮỰỲÝỶỸỴđĐ]+$', last_corr_word):
+                extra_word_pattern = rf'(?:\s+{re.escape(last_corr_word)})?'
+            elif first_corr_word and len(first_corr_word) >= 2 and re.match(r'^[a-zA-ZàáảãạâấầẩẫậăắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựỳýỷỹỵA-ZÀÁẢÃẠẤẦẨẪẬẮẰẲẴẶÉÈẺẼẸẾỀỂỄỆÍÌỈĨỊÓÒỎÕỌỐỒỔỖỘỚỜỞỠỢÚÙỦŨỤỨỪỬỮỰỲÝỶỸỴđĐ]+$', first_corr_word):
+                extra_word_pattern = rf'(?:\s+{re.escape(first_corr_word)})?'
+            
+            if corrected_term == "":
+                # XÓA BỎ HOÀN TOÀN: Xóa thẻ span và dọn dẹp khoảng trắng/từ lặp/ngoặc đơn thừa
+                pattern = r'\s*' + re.escape(span_html) + extra_word_pattern + r'(?:\s*\([^)]+\))?\s*'
+                lines[line_idx] = re.sub(pattern, ' ', line, count=1)
+                lines[line_idx] = re.sub(r'[ \t]{2,}', ' ', lines[line_idx]).strip()
+            else:
+                # Wrap the corrected term in a styled span (Màu xanh lá mạ - emerald-500)
+                highlighted_term = f'<span class="fixed-word" style="color: #10b981; font-weight: bold;">{corrected_term}</span>'
+                pattern = re.escape(span_html) + extra_word_pattern + r'(?:\s*\([^)]+\))?'
+                lines[line_idx] = re.sub(pattern, highlighted_term, line, count=1)
             
     # Chạy lại fix_broken_words cho an toàn lỡ dính dấu câu
     from app.services.postprocessing.post_processor import fix_broken_words
@@ -192,21 +198,34 @@ Mỗi mục lỗi chứa mã [error_id], từ gốc tiếng Trung [raw_chinese],
 === DANH SÁCH LỖI BẮT BUỘC SỬA ===
 {json.dumps(all_errors, ensure_ascii=False, indent=2)}
 
-=== YÊU CẦU BẮT BUỘC (LÀM SẠCH VĂN BẢN CUỐI CÙNG) ===
-1. Hãy phân tích ngữ cảnh câu văn và thể loại truyện để đưa ra TỪ THAY THẾ CHUẨN XÁC NGHĨA VÀ MƯỢT MÀ NHẤT cho từ bị lỗi đó.
-2. NẾU CÂU VĂN BỊ LẶP CHỮ RÁC (ví dụ: "ChTranh" -> "Tranh", "SựCCác" -> "Sự Các", "ThThứ" -> "Thứ"), hãy tự động lọc bỏ chữ rác lặp đầu và trả về từ đã sửa sạch sẽ.
-3. NẾU CÂU VĂN BỊ DÍNH CHỮ THIẾU KHOẢNG TRẮNG (ví dụ: "đượckéo" -> "được kéo"), hãy tự động sửa từ thay thế để khi đắp vào câu văn sẽ cách chữ rõ ràng, chuẩn xác.
-4. Ví dụ: Nếu [raw_chinese] là "灌透" hoặc "灌注", công cụ dịch là "tưới tiêu", bạn BẮT BUỘC phải sửa thành "quán thấu" hoặc "rót vào". Không được dùng "tưới tiêu" trong truyện tiên hiệp!
+=== YÊU CẦU BẮT BUỘC (SỬA TRỌN VẸN CỤM TỪ MƯỢT MÀ - LÀM SẠCH VĂN BẢN CUỐI CÙNG) ===
+1. NGUYÊN TẮC QUAN TRỌNG NHẤT — SỬA CẢ CỤM TỪ (KHÔNG DỊCH MỘT TỪ ĐƠN ĐỘC):
+   - Công cụ dịch tự động thường ngắt sai cụm từ Hán (ví dụ: Hán gốc là "佩剑" = bội kiếm/thanh kiếm, nhưng Google dịch chỉ gắn lỗi vào từ "佩" thành "[LỖI: mặc] kiếm (kiếm đeo bên mình)").
+   - Bạn BẮT BUỘC phải phân tích CẢ CỤM TỪ đằng sau lỗi (bao gồm từ bị dính liền sau đó và các phần mở ngoặc giải thích thừa của Google Translate).
+   - Trả về CỤM TỪ THAY THẾ HOÀN CHỈNH CHO CẢ CỤM (ví dụ: trả về "bội kiếm" hoặc "thanh kiếm"), sao cho khi đắp vào câu văn, câu sẽ mượt mà, chuẩn nghĩa và gãy gọn 100%, KHÔNG bị lặp từ (như "bội kiếm kiếm") và tự động XÓA BỎ hoàn toàn các mở ngoặc giải thích thừa.
+
+2. ĐÁNH GIÁ KHẢ NĂNG LƯỢC BỎ (XÓA BỎ TỪ RÁC):
+   - Nếu việc thiếu từ bị lỗi KHÔNG ảnh hưởng tới ngữ nghĩa và ngữ pháp của câu (ví dụ: "Đây là cái cảm giác [LỖI: thao tác] gì thế này!" -> xóa [LỖI: thao tác] thành "Đây là cái cảm giác gì thế này!"), hãy trả về "corrected_term": "" (chuỗi rỗng) để XÓA BỎ từ đó.
+   - Không gượng ép cố đoán từ thay thế nếu câu văn khi bỏ từ đó đi vẫn hoàn hảo và mượt mà.
+
+3. NẾU CÂU VĂN BỊ LẶP CHỮ RÁC HOẶC DÍNH KHOẢNG TRẮNG:
+   - Tự động lọc bỏ chữ rác lặp đầu (ví dụ: "ChTranh" -> "Tranh", "ThThứ" -> "Thứ") hoặc dính chữ ("đượckéo" -> "được kéo").
+
+4. VÍ DỤ CỤ THỂ BẮT BUỘC MẪU:
+   - [raw_chinese]: "佩", [faulty_term]: "mặc", sentence: "Tiếng này là tất cả [LỖI: mặc] kiếm (kiếm đeo bên mình) của mọi người đều rung lên..." -> corrected_term: "bội kiếm" hoặc "thanh kiếm".
+   - [raw_chinese]: "灌透", [faulty_term]: "tưới tiêu", sentence: "Linh khí [LỖI: tưới tiêu] (thấm đượm) vào cơ thể..." -> corrected_term: "quán thấu" hoặc "rót vào".
+   - [raw_chinese]: "操作", [faulty_term]: "thao tác", sentence: "Đây là cái cảm giác [LỖI: thao tác] gì thế này!" -> corrected_term: "" (chuỗi rỗng).
+
 5. CHỈ TRẢ VỀ JSON array chứa các sửa đổi, cấu trúc bắt buộc:
 {{
   "corrections": [
     {{
       "error_id": "ERR_CHX_Y",
-      "corrected_term": "từ_đã_sửa_chuẩn"
+      "corrected_term": "cụm_từ_đã_sửa_chuẩn HOẶC chuỗi rỗng \"\" nếu chọn xóa bỏ"
     }}
   ]
 }}
-4. Chỉ trả về JSON thuần hợp lệ, không bọc thẻ markdown ```json.
+6. Chỉ trả về JSON thuần hợp lệ, không bọc thẻ markdown ```json.
 """
         
         # 3. Call LLM

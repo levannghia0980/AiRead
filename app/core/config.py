@@ -11,7 +11,11 @@ class Settings(BaseSettings):
     AIREAD_BATCH_SIZE: int = 1
     AIREAD_TRANSLATION_STYLE: str = "draft_only"
     AIREAD_CUSTOM_PROMPT: Optional[str] = ""
-    TTS_MAX_WORKERS: int = 24  # Số lượng worker tạo Audio TTS song song tối ưu tốc độ (điều tiết bởi semaphore toàn cục)
+    TTS_MAX_WORKERS: int = 8  # Số lượng worker tạo Audio TTS song song an toàn tránh bị bóp IP
+    TTS_RATE: str = "-4%"      # Tốc độ đọc Neural (phát âm rõ chữ, nhẹ nhàng, tự nhiên)
+    TTS_PITCH: str = "+0Hz"    # Cao độ mặc định từ mô hình Neural Microsoft
+    TTS_SILENCE_MS: int = 250  # Khoảng nghỉ (milliseconds) ngắt câu giữa các phân đoạn
+    TTS_PROXY_LIST: str = ""   # Danh sách proxy HTTP/SOCKS5 xoay vòng (phân cách bằng dấu phẩy)
 
     class Config:
         env_file = ".env"
@@ -62,6 +66,10 @@ async def get_all_active_settings() -> dict:
         "AIREAD_TRANSLATION_STYLE": str(settings.AIREAD_TRANSLATION_STYLE),
         "AIREAD_CUSTOM_PROMPT": str(settings.AIREAD_CUSTOM_PROMPT or ""),
         "TTS_MAX_WORKERS": str(settings.TTS_MAX_WORKERS),
+        "TTS_RATE": str(settings.TTS_RATE),
+        "TTS_PITCH": str(settings.TTS_PITCH),
+        "TTS_SILENCE_MS": str(settings.TTS_SILENCE_MS),
+        "TTS_PROXY_LIST": str(settings.TTS_PROXY_LIST),
     }
 
     async with AsyncSessionLocal() as session:

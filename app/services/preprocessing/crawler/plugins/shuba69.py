@@ -250,11 +250,15 @@ class Shuba69Scraper(BaseScraper):
             raise Exception(f"Could not find chapter content element at {url}")
 
         unwanted_selectors = [
-            "script", "style", "iframe", ".ad", ".ads", "a", "button", 
+            "script", "style", "iframe", ".ad", ".ads", "button", 
             ".txtinfo", "#txtright", ".contentadv", ".bottom-ad", ".bottom-ad2", "h1"
         ]
         for item in content_el.select(", ".join(unwanted_selectors)):
             item.decompose()
+
+        # Unwrap <a> tags để giữ lại câu chữ nằm trong liên kết cuối chương/bài viết
+        for a_tag in content_el.select("a"):
+            a_tag.unwrap()
 
         text_lines = []
         for text in content_el.stripped_strings:
@@ -268,3 +272,4 @@ class Shuba69Scraper(BaseScraper):
             cleaned_lines.append(line)
 
         return "\n".join(cleaned_lines)
+

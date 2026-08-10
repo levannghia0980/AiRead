@@ -90,7 +90,7 @@ def import_to_sqlite(phrases: dict, names: dict):
     logger.info("💾 Đang chuẩn bị ghi dữ liệu vào SQLite...")
     
     # Kết nối trực tiếp qua SQLite3 để có hiệu năng bulk-insert cao nhất
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=60.0)
     cursor = conn.cursor()
 
     try:

@@ -298,8 +298,11 @@ class GenericScraper(BaseScraper):
         if not content_el:
             return ""
 
-        for tag in content_el.select("script, style, iframe, .ad, .ads, a, button"):
+        for tag in content_el.select("script, style, iframe, .ad, .ads, button"):
             tag.decompose()
+
+        for a_tag in content_el.select("a"):
+            a_tag.unwrap()
 
         lines = []
         for text in content_el.stripped_strings:

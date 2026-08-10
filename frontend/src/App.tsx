@@ -36,6 +36,7 @@ export default function App() {
     enableLlmExtract,
     enableNamesDict,
     enableGgCorrections,
+    forceRetranslate,
     setSettings,
     testApiKey,
     fetchNovels,
@@ -484,6 +485,7 @@ export default function App() {
                 enableLlmExtract={enableLlmExtract}
                 enableNamesDict={enableNamesDict}
                 enableGgCorrections={enableGgCorrections}
+                forceRetranslate={forceRetranslate}
                 setSettings={setSettings}
                 handleTestKey={handleTestKey}
                 isTestingKey={isTestingKey}

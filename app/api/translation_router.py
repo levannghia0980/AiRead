@@ -90,6 +90,7 @@ class StartTranslationRequest(BaseModel):
     enable_llm_extract: Optional[bool] = True
     enable_names_dict: Optional[bool] = True
     enable_gg_corrections: Optional[bool] = True
+    force_retranslate: Optional[bool] = False
 
 async def _bg_translation_worker(payload: StartTranslationRequest):
     global _CURRENT_PROGRESS, _PAUSE_EVENT
@@ -131,7 +132,8 @@ async def _bg_translation_worker(payload: StartTranslationRequest):
             enable_llm_extract=payload.enable_llm_extract if payload.enable_llm_extract is not None else True,
             enable_names_dict=payload.enable_names_dict if payload.enable_names_dict is not None else True,
             enable_gg_corrections=payload.enable_gg_corrections if payload.enable_gg_corrections is not None else True,
-            enable_unblock=payload.enable_unblock if payload.enable_unblock is not None else True
+            enable_unblock=payload.enable_unblock if payload.enable_unblock is not None else True,
+            force_retranslate=bool(payload.force_retranslate)
         )
 
         if res.get("status") == "completed":
@@ -155,6 +157,8 @@ async def _bg_translation_worker(payload: StartTranslationRequest):
     except Exception as e:
         add_system_log(f"❌ Lỗi tiến trình dịch: {str(e)}", "error")
     finally:
+        global _CURRENT_TASK
+        _CURRENT_TASK = None
         broadcast_sse("progress", {
             "isRunning": False,
             "novelId": payload.novel_id,
@@ -180,7 +184,12 @@ async def pause_translation():
     """
     global _CURRENT_TASK
     if _CURRENT_TASK and not _CURRENT_TASK.done():
-        _CURRENT_TASK.cancel()
+        task = _CURRENT_TASK
+        task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+            pass
         _CURRENT_TASK = None
     add_system_log("⏸️ Đã nhận lệnh tạm dừng dịch.", "warning")
     broadcast_sse("progress", {"isRunning": False, "stage": "PAUSED"})
@@ -193,7 +202,12 @@ async def clear_job():
     """
     global _LOG_HISTORY, _CURRENT_PROGRESS, _CURRENT_TASK
     if _CURRENT_TASK and not _CURRENT_TASK.done():
-        _CURRENT_TASK.cancel()
+        task = _CURRENT_TASK
+        task.cancel()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+            pass
         _CURRENT_TASK = None
     _LOG_HISTORY.clear()
     _CURRENT_PROGRESS = {"isRunning": False, "stage": "IDLE"}

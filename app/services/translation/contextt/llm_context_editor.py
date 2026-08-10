@@ -133,7 +133,7 @@ async def edit_context_batch_llm(chapter_ids: List[int], enable_names_dict: bool
                     with open(ver_raw.file_path, "r", encoding="utf-8", errors="ignore") as f:
                         raw_text = f.read()
                         
-            combined_text += f"\n=== [BEGIN_CHAPTER_{cid}] ===\n{gg_text}\n=== [END_CHAPTER_{cid}] ===\n"
+            combined_text += f"\n=== [BEGIN_CHAPTER_{chap.chapter_no}] ===\n{gg_text}\n=== [END_CHAPTER_{chap.chapter_no}] ===\n"
             if raw_text:
                 combined_raw_text += f"\n=== [RAW_CHAPTER_{cid}] ===\n{raw_text}\n=== [END_RAW_CHAPTER_{cid}] ===\n"
 
@@ -275,8 +275,9 @@ Nhiệm vụ của bạn KHÔNG PHẢI là dịch, mà là BIÊN TẬP LẠI b�
 1. Dựa vào ngữ cảnh câu chuyện để xác định ai đang nói chuyện với ai, qua đó điều chỉnh đại từ nhân xưng cho chuẩn xác và mượt mà (ví dụ: hắn -> cậu, cô ta -> bà, anh ta -> hắn...).
 2. CẢNH BÁO: TUYỆT ĐỐI KHÔNG sử dụng văn phong Hán Việt (VietPhrase).
 3. TUYỆT ĐỐI KHÔNG giữ lại bất kỳ ký tự tiếng Trung nào trong bản dịch. Bạn phải trả về 100% tiếng Việt tự nhiên.
-4. BẮT BUỘC GIỮ NGUYÊN các thẻ phân cách chương (=== [BEGIN_CHAPTER_X] === và === [END_CHAPTER_X] ===) như bản gốc. Hệ thống sẽ bị LỖI NGHIÊM TRỌNG nếu bạn vứt bỏ các thẻ này khỏi đầu ra!
-5. Nối tiếp mạch truyện: Đọc phần NGỮ CẢNH ĐOẠN KẾT CHƯƠNG TRƯỚC (nếu có) để nắm bắt xưng hô.
+4. BẮT BUỘC GIỮ NGUYÊN các thẻ phân cách chương Tiếng Việt (=== [BẮT ĐẦU CHƯƠNG X] === và === [KẾT THÚC CHƯƠNG X] ===) như bản gốc. Hệ thống sẽ bị LỖI NGHIÊM TRỌNG nếu bạn vứt bỏ các thẻ này khỏi đầu ra!
+5. BẢO TỒN 100% ĐOẠN KẾT VÀ DÒNG (HẾT CHƯƠNG): Đảm bảo biên tập đến tận câu cuối cùng của chương. Nếu đoạn kết có dòng "(Hết chương / 本章完)" hoặc câu kết thúc, BẮT BUỘC giữ trọn vẹn ở cuối chương.
+6. Nối tiếp mạch truyện: Đọc phần NGỮ CẢNH ĐOẠN KẾT CHƯƠNG TRƯỚC (nếu có) để nắm bắt xưng hô.
 {prev_context_block}
 === TỪ ĐIỂN THỰC THỂ BẮT BUỘC ĐỒNG BỘ ===
 {entities_json}
@@ -298,8 +299,13 @@ Nhiệm vụ của bạn KHÔNG PHẢI là dịch, mà là BIÊN TẬP LẠI b�
         {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
     ]
     payload = {
-        "contents": [{"role": "user", "parts": [{"text": system_prompt + enforcer_prompt + f"\n\n<ban_dich_tho_can_sua>\n{masked_text}\n</ban_dich_tho_can_sua>\n\nLỜI NHẮC CUỐI CÙNG BẮT BUỘC: Bạn PHẢI trả về nội dung được bọc trong các thẻ === [BEGIN_CHAPTER_X] === và === [END_CHAPTER_X] === y như đầu vào. Nếu thiếu các thẻ này, hệ thống sẽ sập!"}]}],
-        "generationConfig": {"temperature": 0.3, "topK": 40, "topP": 0.95},
+        "contents": [{"role": "user", "parts": [{"text": system_prompt + enforcer_prompt + f"\n\n<ban_dich_tho_can_sua>\n{masked_text}\n</ban_dich_tho_can_sua>\n\nLỜI NHẮC CUỐI CÙNG BẮT BUỘC: Bạn PHẢI trả về nội dung được bọc trong các thẻ === [BẮT ĐẦU CHƯƠNG X] === và === [KẾT THÚC CHƯƠNG X] === y như đầu vào. Nếu thiếu các thẻ này, hệ thống sẽ sập!"}]}],
+        "generationConfig": {
+            "temperature": 0.3, 
+            "topK": 40, 
+            "topP": 0.95,
+            "maxOutputTokens": 8192
+        },
         "safetySettings": safety_settings
     }
 
@@ -322,8 +328,13 @@ Nhiệm vụ của bạn KHÔNG PHẢI là dịch, mà là BIÊN TẬP LẠI b�
         mapping_table.update(extra_mapping)
         
         retry_payload = {
-            "contents": [{"role": "user", "parts": [{"text": system_prompt + enforcer_prompt + f"\n\n<ban_dich_tho_can_sua>\n{re_masked_text}\n</ban_dich_tho_can_sua>\n\nLỜI NHẮC CUỐI CÙNG BẮT BUỘC: Giữ nguyên các thẻ === [BEGIN_CHAPTER_X] === và === [END_CHAPTER_X] ==="}]}],
-            "generationConfig": {"temperature": 0.3, "topK": 40, "topP": 0.95},
+            "contents": [{"role": "user", "parts": [{"text": system_prompt + enforcer_prompt + f"\n\n<ban_dich_tho_can_sua>\n{re_masked_text}\n</ban_dich_tho_can_sua>\n\nLỜI NHẮC CUỐI CÙNG BẮT BUỘC: Giữ nguyên các thẻ === [BẮT ĐẦU CHƯƠNG X] === và === [KẾT THÚC CHƯƠNG X] ==="}]}],
+            "generationConfig": {
+                "temperature": 0.3, 
+                "topK": 40, 
+                "topP": 0.95,
+                "maxOutputTokens": 8192
+            },
             "safetySettings": safety_settings
         }
         

@@ -103,6 +103,7 @@ interface NovelStore {
   enableLlmExtract: boolean
   enableNamesDict: boolean
   enableGgCorrections: boolean
+  forceRetranslate: boolean
 
   setSettings: (settings: {
     provider?: string;
@@ -118,6 +119,7 @@ interface NovelStore {
     enableLlmExtract?: boolean;
     enableNamesDict?: boolean;
     enableGgCorrections?: boolean;
+    forceRetranslate?: boolean;
   }) => void
   saveSettingsToEnv: (settings?: { provider?: string; model?: string; apiKeys?: string; customPrompt?: string; delay?: number; batchSize?: number; translationStyle?: string }) => Promise<void>
   loadSettingsFromEnv: () => Promise<void>
@@ -195,6 +197,7 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
   enableLlmExtract: true,
   enableNamesDict: true,
   enableGgCorrections: true,
+  forceRetranslate: false,
 
   setSettings: (settings) => {
     set((state) => {
@@ -572,7 +575,8 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
         enable_unblock: enableUnblock,
         enable_llm_extract: get().enableLlmExtract !== false,
         enable_names_dict: get().enableNamesDict !== false,
-        enable_gg_corrections: get().enableGgCorrections !== false
+        enable_gg_corrections: get().enableGgCorrections !== false,
+        force_retranslate: get().forceRetranslate || false
       })
     })
     if (!res.ok) {

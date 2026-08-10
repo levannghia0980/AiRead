@@ -119,10 +119,11 @@ class AliceswScraper(BaseScraper):
         if not content_el:
             raise Exception(f"Không tìm thấy thẻ chứa nội dung chương tại {url}")
 
-        paragraphs = [p.text.strip() for p in content_el.select("p") if p.text.strip()]
-        if not paragraphs:
-            raw_text = content_el.text.strip()
-            lines = [l.strip() for l in raw_text.split("\n") if l.strip()]
-            return "\n\n".join(lines)
+        for tag in content_el.select("script, style, iframe, .ad, .ads, button"):
+            tag.decompose()
 
-        return "\n\n".join(paragraphs)
+        for a_tag in content_el.select("a"):
+            a_tag.unwrap()
+
+        lines = [text.strip() for text in content_el.stripped_strings if text and text.strip()]
+        return "\n\n".join(lines)

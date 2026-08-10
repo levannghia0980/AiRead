@@ -15,6 +15,7 @@ interface ModelSettingsPanelProps {
   enableLlmExtract?: boolean
   enableNamesDict?: boolean
   enableGgCorrections?: boolean
+  forceRetranslate?: boolean
   setSettings: (s: any) => void
   handleTestKey: () => void
   isTestingKey: boolean
@@ -72,6 +73,7 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
   endChapter,
   translationStyle = 'original_only',
   enableUnblock = true,
+  forceRetranslate = false,
   setSettings,
   handleTestKey,
   isTestingKey,
@@ -299,28 +301,42 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
       </div>
 
       {/* Start / End Chapter Range */}
-      <div className="grid grid-cols-2 gap-2">
-        <div>
-          <label className="text-[10px] text-cyber-muted block mb-1">Từ Chương Số</label>
-          <input
-            type="number"
-            placeholder="Tất cả"
-            value={startChapter ?? ''}
-            onChange={(e) => setSettings({ startChapter: e.target.value ? parseInt(e.target.value) : null })}
-            className="w-full glass-input rounded-xl px-2.5 py-1.5 text-xs"
-          />
+      <div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[10px] text-cyber-muted block mb-1">Từ Chương Số</label>
+            <input
+              type="number"
+              placeholder="Tự động tiếp tục"
+              value={startChapter ?? ''}
+              onChange={(e) => setSettings({ startChapter: e.target.value ? parseInt(e.target.value) : null })}
+              className="w-full glass-input rounded-xl px-2.5 py-1.5 text-xs"
+            />
+          </div>
+          <div>
+            <label className="text-[10px] text-cyber-muted block mb-1">Đến Chương Số</label>
+            <input
+              type="number"
+              placeholder="Đến cuối"
+              value={endChapter ?? ''}
+              onChange={(e) => setSettings({ endChapter: e.target.value ? parseInt(e.target.value) : null })}
+              className="w-full glass-input rounded-xl px-2.5 py-1.5 text-xs"
+            />
+          </div>
         </div>
-        <div>
-          <label className="text-[10px] text-cyber-muted block mb-1">Đến Chương Số</label>
-          <input
-            type="number"
-            placeholder="Tất cả"
-            value={endChapter ?? ''}
-            onChange={(e) => setSettings({ endChapter: e.target.value ? parseInt(e.target.value) : null })}
-            className="w-full glass-input rounded-xl px-2.5 py-1.5 text-xs"
-          />
-        </div>
+        <span className="text-[9px] text-slate-500 italic block mt-1">
+          * Để trống Từ Chương = Tự động tiếp tục từ chương chưa dịch
+        </span>
       </div>
+
+      {/* Force Retranslate Toggle */}
+      <ToggleSwitch
+        label="Dịch lại / Ghi đè chương đã dịch"
+        sublabel="Mặc định tắt (tự động bỏ qua các chương đã hoàn tất)"
+        checked={forceRetranslate}
+        onChange={(val) => setSettings({ forceRetranslate: val })}
+        icon="🔄"
+      />
 
       {/* Custom Prompt Input */}
       <div>

@@ -8,12 +8,13 @@ from typing import Dict, Any, Optional
 # Root Output Directory: d:\NENGHIA0980\AIREAD\Output
 OUTPUT_ROOT = Path("d:/NENGHIA0980/AIREAD/Output")
 
-# 5 Thư mục chuẩn duy nhất theo yêu cầu
+# Các thư mục chuẩn lưu trữ dữ liệu Output
 VERSION_FOLDER_MAP: Dict[str, str] = {
     "RAW": "01_BanGoc",
     "GG": "02_DichMau_GG",
     "LLM": "03_DichAI_LLM",
     "FINAL": "04_KetQua",
+    "TTS_TEXT": "04b_VanBanTTS",
     "AUDIO": "05_Audio_TTS",
     "METADATA": "06_Metadata"
 }
@@ -23,7 +24,7 @@ def sanitize_filename(name: str) -> str:
     return re.sub(r'[\\/*?:"<>|]', '_', name).strip()
 
 def init_output_directories():
-    """Tạo đúng 5 thư mục chuẩn duy nhất trong Output"""
+    """Tạo đúng các thư mục chuẩn trong Output"""
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     
     # Xóa các thư mục dư thừa cũ nếu có
@@ -35,7 +36,7 @@ def init_output_directories():
         (OUTPUT_ROOT / folder_name).mkdir(parents=True, exist_ok=True)
 
 def get_version_dir(version_type: str, novel_title_rough: str) -> Path:
-    """Lấy đường dẫn thư mục lưu trữ phân loại cho 5 loại duy nhất"""
+    """Lấy đường dẫn thư mục lưu trữ phân loại cho các phiên bản"""
     v_type = version_type.upper()
     folder_type = VERSION_FOLDER_MAP.get(v_type, "03_DichAI_LLM")
     folder_novel = sanitize_filename(novel_title_rough or "Unknown_Novel")
@@ -53,25 +54,40 @@ def save_chapter_version_file(
     content_text: str
 ) -> str:
     """
-    Ghi 1 chương phiên bản ra đĩa TXT theo đúng 5 thư mục chuẩn:
-    Output/[01_BanGoc | 02_DichMau_GG | 03_DichAI_LLM | 04_KetQua | 05_Audio_TTS]/[Tên_Truyện]/000001.txt
+    Ghi 1 chương phiên bản ra đĩa TXT theo đúng thư mục chuẩn
     """
     version_dir = get_version_dir(version_type, novel_title_rough or novel_title_raw)
     filename = f"{chapter_no:06d}.txt"
     file_path = version_dir / filename
 
-    # Làm sạch nội dung dịch thô khỏi tiền tố dịch lỗi "KHÔNG.Xchương"
-    cleaned_content = content_text.strip()
-    cleaned_content = re.sub(r'^KHÔNG\s*\.\s*(\d+)\s*chương\s*', r'Chương \1: ', cleaned_content, flags=re.IGNORECASE)
-    cleaned_content = re.sub(r'^KHÔNG\s*\.\s*(\d+)\s*Chương\s*', r'Chương \1: ', cleaned_content, flags=re.IGNORECASE)
-    cleaned_content = re.sub(r'(?<=\n)KHÔNG\s*\.\s*(\d+)\s*chương\s*', r'Chương \1: ', cleaned_content, flags=re.IGNORECASE)
-    cleaned_content = re.sub(r'(?<=\n)KHÔNG\s*\.\s*(\d+)\s*Chương\s*', r'Chương \1: ', cleaned_content, flags=re.IGNORECASE)
+    # Làm sạch nội dung dịch thô khỏi tiền tố dịch lỗi "KHÔNG.Xchương", "NO.Xchương", "第X章"
+    cleaned_content = content_text or ""
+    cleaned_content = re.sub(r'(?i)(?:KHÔNG|NO)\s*\.?\s*(\d+)\s*(?:chương|Chương|章)?\s*[:.:-]?\s*', r'Chương \1: ', cleaned_content)
+    cleaned_content = re.sub(r'第\s*(\d+)\s*章\s*[:.:-]?\s*', r'Chương \1: ', cleaned_content)
+    cleaned_content = re.sub(r'(?i)(?:Chương\s*(\d+)\s*:\s*){2,}', r'Chương \1: ', cleaned_content)
 
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(cleaned_content)
 
     gc.collect()
 
+    return str(file_path.resolve())
+
+def save_tts_text_file(
+    novel_title_rough: str,
+    chapter_no: int,
+    content_text: str
+) -> str:
+    """
+    Ghi văn bản chương đã qua xử lý chuẩn cho TTS vào thư mục Output/04b_VanBanTTS/<Tên_Truyện>/chapters/000001.txt
+    """
+    folder_novel = sanitize_filename(novel_title_rough or "Unknown_Novel")
+    target_dir = OUTPUT_ROOT / "04b_VanBanTTS" / folder_novel / "chapters"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{chapter_no:06d}.txt"
+    file_path = target_dir / filename
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(content_text or "")
     return str(file_path.resolve())
 
 def save_audio_chapter_file(
@@ -99,7 +115,7 @@ def read_version_file_content(file_path_str: str) -> str:
         return f.read()
 
 def delete_novel_disk_files(novel_title_rough: str):
-    """Xóa sạch toàn bộ dữ liệu đĩa của truyện ở cả 5 thư mục"""
+    """Xóa sạch toàn bộ dữ liệu đĩa của truyện ở tất cả các thư mục trong Output"""
     folder_novel = sanitize_filename(novel_title_rough)
     for folder_type in VERSION_FOLDER_MAP.values():
         target_dir = OUTPUT_ROOT / folder_type / folder_novel
@@ -107,7 +123,7 @@ def delete_novel_disk_files(novel_title_rough: str):
             shutil.rmtree(target_dir, ignore_errors=True)
 
 def delete_version_disk_files(version_type: str, novel_title_rough: str):
-    """Xóa sạch file đĩa của 1 phiên bản cụ thể (Ví dụ: Xóa bản GG hoặc LLM để dịch lại)"""
+    """Xóa sạch file đĩa của 1 phiên bản cụ thể"""
     v_type = version_type.upper()
     folder_type = VERSION_FOLDER_MAP.get(v_type, "03_DichAI_LLM")
     folder_novel = sanitize_filename(novel_title_rough)
@@ -115,5 +131,5 @@ def delete_version_disk_files(version_type: str, novel_title_rough: str):
     if target_dir.exists():
         shutil.rmtree(target_dir, ignore_errors=True)
 
-# Tự động đồng bộ và tạo 5 thư mục chuẩn khi import
+# Tự động đồng bộ và tạo các thư mục chuẩn khi import
 init_output_directories()

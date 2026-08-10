@@ -159,6 +159,37 @@ export default function AudioStudio({ novels }: AudioStudioProps) {
     }
   }, [readingChapterNo, selectedNovelId])
 
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const stopPolling = React.useCallback(() => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current)
+      pollIntervalRef.current = null
+    }
+  }, [])
+
+  const pollJob = React.useCallback((novelId: number) => {
+    stopPolling()
+
+    pollIntervalRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/novels/${novelId}/audio/status`)
+        if (res.ok) {
+          const status = await res.json()
+          setJobStatus(status)
+          if (!status.is_running) {
+            setIsGenerating(false)
+            stopPolling()
+            fetchVolumes(novelId) // Chỉ fetch lại volumes 1 lần duy nhất khi hoàn thành
+          }
+        }
+      } catch (e) {
+        setIsGenerating(false)
+        stopPolling()
+      }
+    }, 3000)
+  }, [stopPolling])
+
   // Poll Job Status
   const checkJobStatus = async (novelId: number) => {
     try {
@@ -169,6 +200,8 @@ export default function AudioStudio({ novels }: AudioStudioProps) {
         if (status.is_running) {
           setIsGenerating(true)
           pollJob(novelId)
+        } else {
+          stopPolling()
         }
       }
     } catch (e) {
@@ -176,25 +209,12 @@ export default function AudioStudio({ novels }: AudioStudioProps) {
     }
   }
 
-  const pollJob = (novelId: number) => {
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/novels/${novelId}/audio/status`)
-        if (res.ok) {
-          const status = await res.json()
-          setJobStatus(status)
-          if (!status.is_running) {
-            setIsGenerating(false)
-            clearInterval(interval)
-            fetchVolumes(novelId) // Chỉ fetch lại volumes 1 lần duy nhất khi hoàn thành
-          }
-        }
-      } catch (e) {
-        setIsGenerating(false)
-        clearInterval(interval)
-      }
-    }, 2000)
-  }
+  // Clear polling interval on unmount or novel change
+  useEffect(() => {
+    return () => {
+      stopPolling()
+    }
+  }, [selectedNovelId, stopPolling])
 
   // Cancel Running Job
   const handleCancelJob = async () => {

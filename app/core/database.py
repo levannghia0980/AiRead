@@ -17,12 +17,29 @@ if "postgresql" in DATABASE_URL:
         pool_recycle=3600
     )
 else:
-    # SQLite async engine settings
+    from sqlalchemy import event, text
+    # SQLite async engine settings with WAL mode and 60s busy timeout
     engine = create_async_engine(
         DATABASE_URL,
         echo=False,
-        connect_args={"check_same_thread": False}
+        connect_args={
+            "check_same_thread": False,
+            "timeout": 60.0
+        }
     )
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        try:
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            cursor.execute("PRAGMA synchronous=NORMAL;")
+            cursor.execute("PRAGMA busy_timeout=60000;")
+            cursor.execute("PRAGMA cache_size=-64000;")
+            cursor.execute("PRAGMA foreign_keys=ON;")
+            cursor.close()
+        except Exception:
+            pass
 
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
@@ -43,4 +60,8 @@ async def init_db():
     """Khởi tạo bảng trong Database"""
     import app.models.schema  # Nạp toàn bộ ORM schema models
     async with engine.begin() as conn:
+        if "sqlite" in DATABASE_URL:
+            await conn.execute(text("PRAGMA journal_mode=WAL;"))
+            await conn.execute(text("PRAGMA busy_timeout=60000;"))
         await conn.run_sync(Base.metadata.create_all)
+

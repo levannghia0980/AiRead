@@ -48,7 +48,7 @@ class HanVietContext:
         if self.conn is None:
             db_path = "database.db"
             if os.path.exists(db_path):
-                self.conn = sqlite3.connect(db_path, check_same_thread=False)
+                self.conn = sqlite3.connect(db_path, timeout=60.0, check_same_thread=False)
         return self.conn
 
     def close(self):
@@ -103,7 +103,7 @@ def build_hanviet_name(text: str, context: Optional[HanVietContext] = None) -> s
     else:
         db_path = "database.db"
         if os.path.exists(db_path):
-            local_conn = sqlite3.connect(db_path)
+            local_conn = sqlite3.connect(db_path, timeout=60.0)
             conn = local_conn
 
     try:

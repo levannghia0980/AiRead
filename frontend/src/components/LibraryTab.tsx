@@ -129,7 +129,6 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
     selectedNovel ? 'details' : 'bookshelf'
   )
   const [showRestartConfirm, setShowRestartConfirm] = useState(false)
-  const [restartConfirmText, setRestartConfirmText] = useState('')
 
   React.useEffect(() => {
     if (selectedNovel) {
@@ -471,7 +470,7 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
 
             {/* Nút Restart Toàn Bộ - Xóa sạch entities, audio, corrections */}
             <button
-              onClick={() => { setShowRestartConfirm(true); setRestartConfirmText('') }}
+              onClick={() => setShowRestartConfirm(true)}
               disabled={isRestarting}
               className="border-2 border-red-500/50 hover:bg-red-500/20 text-red-400 font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg shadow-red-500/10 disabled:opacity-40"
               title="Xóa SẠCH tất cả: bản dịch, audio, thực thể, lỗi — dịch lại từ đầu"
@@ -631,18 +630,10 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
                 <li>Metadata cache</li>
               </ul>
             </div>
-            <div className="mb-4">
-              <label className="text-xs text-slate-500 block mb-1.5">
-                Nhập <strong className="text-red-400">"{selectedNovel.novel.title || selectedNovel.novel.title_rough || selectedNovel.novel.title_raw}"</strong> để xác nhận:
-              </label>
-              <input
-                type="text"
-                value={restartConfirmText}
-                onChange={(e) => setRestartConfirmText(e.target.value)}
-                className="w-full bg-slate-800 border border-red-500/30 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-red-500"
-                placeholder="Nhập tên truyện..."
-                autoFocus
-              />
+            <div className="mb-4 text-center">
+              <p className="text-sm font-semibold text-white bg-slate-800/80 border border-red-500/30 rounded-lg p-3">
+                Truyện: <span className="text-cyber-accent">{selectedNovel.novel.title || selectedNovel.novel.title_rough || selectedNovel.novel.title_raw}</span>
+              </p>
             </div>
             <div className="flex gap-3">
               <button
@@ -656,10 +647,11 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
                   setShowRestartConfirm(false)
                   handleRestartNovel(selectedNovel.novel.id)
                 }}
-                disabled={restartConfirmText !== (selectedNovel.novel.title || selectedNovel.novel.title_rough || selectedNovel.novel.title_raw)}
-                className="flex-1 bg-red-600 hover:bg-red-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold py-2.5 rounded-xl text-sm transition-all disabled:cursor-not-allowed"
+                disabled={isRestarting}
+                className="flex-1 bg-red-600 hover:bg-red-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold py-2.5 rounded-xl text-sm transition-all disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
               >
-                🔄 Xác Nhận Restart
+                {isRestarting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <span>🔄</span>}
+                Xác Nhận Restart
               </button>
             </div>
           </div>

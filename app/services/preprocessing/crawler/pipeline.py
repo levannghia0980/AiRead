@@ -59,10 +59,10 @@ async def process_novel_link(novel_url: str) -> Dict[str, Any]:
         for ch_info in chapters_data:
             ch_no = ch_info["chapter_no"]
             ch_title_raw = ch_info["title"]
-            # Làm sạch tiêu đề chương khỏi lỗi "KHÔNG.Xchương" của dịch máy
+            # Làm sạch tiêu đề chương khỏi lỗi "KHÔNG.Xchương", "NO.Xchương", "第X章" của dịch máy
             import re
-            ch_title_raw = re.sub(r'^KHÔNG\s*\.\s*(\d+)\s*chương\s*', r'Chương \1: ', ch_title_raw, flags=re.IGNORECASE)
-            ch_title_raw = re.sub(r'^KHÔNG\s*\.\s*(\d+)\s*Chương\s*', r'Chương \1: ', ch_title_raw, flags=re.IGNORECASE)
+            ch_title_raw = re.sub(r'(?i)(?:KHÔNG|NO)\s*\.?\s*(\d+)\s*(?:chương|Chương|章)?\s*[:.:-]?\s*', r'Chương \1: ', ch_title_raw)
+            ch_title_raw = re.sub(r'第\s*(\d+)\s*章\s*[:.:-]?\s*', r'Chương \1: ', ch_title_raw)
             ch_title_raw = re.sub(r':\s*:', r':', ch_title_raw).strip()
             
             # Không dịch Hán Việt tiêu đề chương để chống lag cho hàng ngàn chương
@@ -133,8 +133,8 @@ async def process_single_chapter_crawl(chapter_id: int) -> Dict[str, Any]:
         ch_no = chapter.chapter_no
         ch_title_raw = chapter.title_raw
         import re
-        ch_title_raw = re.sub(r'^KHÔNG\s*\.\s*(\d+)\s*chương\s*', r'Chương \1: ', ch_title_raw, flags=re.IGNORECASE)
-        ch_title_raw = re.sub(r'^KHÔNG\s*\.\s*(\d+)\s*Chương\s*', r'Chương \1: ', ch_title_raw, flags=re.IGNORECASE)
+        ch_title_raw = re.sub(r'(?i)(?:KHÔNG|NO)\s*\.?\s*(\d+)\s*(?:chương|Chương|章)?\s*[:.:-]?\s*', r'Chương \1: ', ch_title_raw)
+        ch_title_raw = re.sub(r'第\s*(\d+)\s*章\s*[:.:-]?\s*', r'Chương \1: ', ch_title_raw)
         ch_title_raw = re.sub(r':\s*:', r':', ch_title_raw).strip()
         ch_title_rough = chapter.title_rough or ch_title_raw
         novel_title_raw = novel.title_raw
