@@ -115,8 +115,8 @@ async def get_novel_detail(novel_id: int = Path(...)) -> Dict[str, Any]:
                     except Exception:
                         pass
 
-            # Lấy bản dịch ưu tiên: FINAL -> LLM -> GG
-            for v_type in ["FINAL", "LLM", "GG"]:
+            # Lấy bản dịch ưu tiên: FINAL -> CONTEXTT -> LLM -> GG
+            for v_type in ["FINAL", "CONTEXTT", "LLM", "GG"]:
                 if v_type in c_vers:
                     v_trans = c_vers[v_type]
                     translated_text = v_trans.content
@@ -824,20 +824,31 @@ async def get_chapter_text(novel_id: int = Path(...), chapterNo: int = Path(...)
         res_ver = await session.execute(stmt_ver)
         versions = res_ver.scalars().all()
         
-        raw_text = ""
-        translated_text = ""
+        version_map: Dict[str, ChapterVersion] = {v.version_type: v for v in versions}
+        
         from app.services.storage.file_storage import read_version_file_content
-        for v in versions:
-            if v.version_type == "RAW":
+        raw_text = ""
+        if "RAW" in version_map:
+            v_raw = version_map["RAW"]
+            raw_text = v_raw.content or ""
+            if not raw_text and v_raw.file_path and os.path.exists(v_raw.file_path):
                 try:
-                    raw_text = read_version_file_content(v.file_path)
+                    raw_text = read_version_file_content(v_raw.file_path)
                 except Exception:
                     pass
-            elif v.version_type in ["FINAL", "LLM", "CONTEXTT"]:
-                try:
-                    translated_text = read_version_file_content(v.file_path)
-                except Exception:
-                    pass
+
+        translated_text = ""
+        for v_type in ["FINAL", "CONTEXTT", "LLM", "GG"]:
+            if v_type in version_map:
+                v_trans = version_map[v_type]
+                translated_text = v_trans.content or ""
+                if not translated_text and v_trans.file_path and os.path.exists(v_trans.file_path):
+                    try:
+                        translated_text = read_version_file_content(v_trans.file_path)
+                    except Exception:
+                        pass
+                if translated_text:
+                    break
 
         return {
             "chapter_no": ch.chapter_no,
@@ -851,31 +862,85 @@ class UpdateTextRequest(BaseModel):
 
 @router.put("/{novel_id}/chapters/{chapterNo}/text")
 async def update_chapter_text(novel_id: int = Path(...), chapterNo: int = Path(...), payload: UpdateTextRequest = ...):
+    if not payload or not payload.translated_text:
+        raise HTTPException(status_code=400, detail="Nội dung bản dịch trống.")
+
     async with AsyncSessionLocal() as session:
+        stmt_nov = select(Novel).where(Novel.id == novel_id)
+        res_nov = await session.execute(stmt_nov)
+        novel = res_nov.scalar_one_or_none()
+        if not novel:
+            raise HTTPException(status_code=404, detail="Không tìm thấy tiểu thuyết.")
+
         stmt = select(Chapter).where(Chapter.novel_id == novel_id, Chapter.chapter_no == chapterNo)
         res = await session.execute(stmt)
         ch = res.scalar_one_or_none()
         if not ch:
             raise HTTPException(status_code=404, detail="Không tìm thấy chương.")
             
+        novel_folder = sanitize_filename(novel.title_rough or novel.title_raw or f"novel_{novel_id}")
+        base_dir = r"D:\NENGHIA0980\AIREAD\Output\04_KetQua"
+        out_dir = os.path.join(base_dir, novel_folder, "chapters")
+        os.makedirs(out_dir, exist_ok=True)
+        file_path = os.path.join(out_dir, f"{chapterNo:06d}.txt")
+
+        # Ghi file ra đĩa
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(payload.translated_text)
+        except Exception as e:
+            print(f"⚠️ Lỗi ghi file bản dịch {file_path}: {e}")
+
+        # Cập nhật hoặc tạo ChapterVersion loại FINAL
         stmt_ver = select(ChapterVersion).where(
             ChapterVersion.chapter_id == ch.id,
-            ChapterVersion.version_type.in_(["FINAL", "LLM"])
+            ChapterVersion.version_type == "FINAL"
         )
         res_ver = await session.execute(stmt_ver)
         ver = res_ver.scalar_one_or_none()
         
-        from app.services.storage.file_storage import save_chapter_version_file
         if ver:
-            save_chapter_version_file(novel_id, chapterNo, ver.version_type, payload.translated_text)
+            ver.content = payload.translated_text
+            ver.file_path = file_path
+            ver.status = "COMPLETED"
         else:
-            rel_path = save_chapter_version_file(novel_id, chapterNo, "FINAL", payload.translated_text)
-            new_ver = ChapterVersion(chapter_id=ch.id, version_type="FINAL", file_path=rel_path)
+            new_ver = ChapterVersion(
+                chapter_id=ch.id, 
+                version_type="FINAL", 
+                file_path=file_path,
+                content=payload.translated_text,
+                status="COMPLETED"
+            )
             session.add(new_ver)
-            
-        ch.status = "TRANSLATED"
+
+        # Cập nhật thêm content của các version LLM / CONTEXTT nếu có để đồng bộ
+        stmt_other_vers = select(ChapterVersion).where(
+            ChapterVersion.chapter_id == ch.id,
+            ChapterVersion.version_type.in_(["LLM", "CONTEXTT"])
+        )
+        res_other_vers = await session.execute(stmt_other_vers)
+        for ov in res_other_vers.scalars().all():
+            ov.content = payload.translated_text
+
+        ch.status = "FINAL_DONE"
+        
+        # Xóa cache audio TTS cũ của chương (nếu có) để khi nghe lại sẽ đọc bản dịch mới
+        try:
+            mp3_cache_path = os.path.join(r"D:\NENGHIA0980\AIREAD\Output\05_Audio_TTS", novel_folder, "chapters", f"{chapterNo:06d}.mp3")
+            if os.path.exists(mp3_cache_path):
+                os.remove(mp3_cache_path)
+        except Exception:
+            pass
+
         await session.commit()
-    return {"status": "success", "message": "Đã lưu nội dung chương thành công."}
+
+    # Cập nhật lại file truyện hoàn chỉnh Full.txt
+    try:
+        await export_full_novel_txt(novel_id)
+    except Exception:
+        pass
+
+    return {"status": "success", "message": "Đã lưu bản dịch chỉnh sửa thành công."}
 
 @router.get("/{novel_id}/download")
 async def download_novel_file(novel_id: int = Path(...), fmt: str = Query("txt")):

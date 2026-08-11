@@ -685,6 +685,22 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ translated_text: text })
       })
+      if (res.ok) {
+        set((state) => {
+          if (!state.selectedNovel) return state
+          const updatedChapters = state.selectedNovel.chapters.map((ch) =>
+            ch.chapter_no === chapterNo
+              ? { ...ch, translated_text: text, status: 'COMPLETED' }
+              : ch
+          )
+          return {
+            selectedNovel: {
+              ...state.selectedNovel,
+              chapters: updatedChapters
+            }
+          }
+        })
+      }
       return res.ok
     } catch {
       return false

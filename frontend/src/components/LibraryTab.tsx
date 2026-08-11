@@ -209,14 +209,26 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
             </select>
 
             {isEditing ? (
-              <button
-                onClick={handleSaveEdit}
-                disabled={isSavingEdit}
-                className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 shadow-lg shadow-emerald-500/20 transition-all disabled:opacity-50"
-              >
-                {isSavingEdit ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-                Lưu Chỉnh Sửa
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleSaveEdit}
+                  disabled={isSavingEdit}
+                  className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 shadow-lg shadow-emerald-500/20 transition-all disabled:opacity-50"
+                  title="Lưu bản dịch đã chỉnh sửa"
+                >
+                  {isSavingEdit ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                  Lưu Chỉnh Sửa
+                </button>
+                <button
+                  onClick={() => setIsEditing(false)}
+                  disabled={isSavingEdit}
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 border border-cyber-border transition-all"
+                  title="Hủy bỏ chỉnh sửa"
+                >
+                  <XCircle className="w-3.5 h-3.5" />
+                  Hủy
+                </button>
+              </div>
             ) : (
               <button
                 onClick={() => setIsEditing(true)}
@@ -229,7 +241,7 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
 
             <button
               onClick={() => prevChapter && handleReadChapter(selectedNovel.novel.id, prevChapter.chapter_no)}
-              disabled={!prevChapter}
+              disabled={!prevChapter || isEditing}
               className="px-3 py-1.5 border border-cyber-border/60 rounded-lg text-xs font-semibold text-slate-300 hover:border-cyber-accent hover:text-cyber-accent disabled:opacity-30 disabled:hover:border-cyber-border/60 transition-all flex items-center gap-1"
             >
               <ChevronLeft className="w-4 h-4" /> Trước
@@ -237,7 +249,7 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
 
             <button
               onClick={() => nextChapter && handleReadChapter(selectedNovel.novel.id, nextChapter.chapter_no)}
-              disabled={!nextChapter}
+              disabled={!nextChapter || isEditing}
               className="px-3 py-1.5 border border-cyber-border/60 rounded-lg text-xs font-semibold text-slate-300 hover:border-cyber-accent hover:text-cyber-accent disabled:opacity-30 disabled:hover:border-cyber-border/60 transition-all flex items-center gap-1"
             >
               Sau <ChevronRight className="w-4 h-4" />
@@ -248,14 +260,28 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
         {/* Reader Content Body */}
         <div className="flex-1 overflow-y-auto p-6 text-slate-200 leading-relaxed font-sans text-base pb-44 md:pb-32">
           {isEditing ? (
-            <div
-              ref={editorRef}
-              contentEditable
-              suppressContentEditableWarning
-              className="focus:outline-none min-h-[500px] border border-cyber-accent/30 rounded-xl p-4 bg-slate-900/50 leading-relaxed font-sans text-base"
-              style={{ letterSpacing: 'normal' }}
-              dangerouslySetInnerHTML={{ __html: formatChapterTextForReader(readingChapter.translated_text) }}
-            />
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="animate-pulse font-bold">✏️ Chế độ chỉnh sửa trực tiếp:</span>
+                  <span>Bạn có thể click vào khung bên dưới để sửa chữ, sau đó bấm <strong>"Lưu Chỉnh Sửa"</strong>.</span>
+                </div>
+                <button
+                  onClick={() => setIsEditing(false)}
+                  className="text-[11px] underline hover:text-white"
+                >
+                  Đóng chế độ sửa
+                </button>
+              </div>
+              <div
+                ref={editorRef}
+                contentEditable
+                suppressContentEditableWarning
+                className="focus:outline-none min-h-[500px] border border-cyber-accent/50 focus:border-cyber-accent rounded-xl p-5 bg-slate-900/70 leading-relaxed font-sans text-base shadow-inner text-slate-100"
+                style={{ letterSpacing: 'normal' }}
+                dangerouslySetInnerHTML={{ __html: formatChapterTextForReader(readingChapter.translated_text) }}
+              />
+            </div>
           ) : (
             <div className="prose prose-invert max-w-none leading-relaxed text-slate-200 font-sans text-base">
               {splitParagraphs(readingChapter.translated_text).map((pText, idx) => (
