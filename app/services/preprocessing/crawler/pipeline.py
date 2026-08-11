@@ -5,7 +5,7 @@ from sqlalchemy import select, delete
 from app.core.database import AsyncSessionLocal
 from app.models.schema import Novel, Chapter, ChapterVersion
 from app.services.preprocessing.crawler.engine import scrape_novel_metadata, scrape_chapter_content
-from app.services.preprocessing.crawler.google_translator import translate_text_via_google
+from app.services.preprocessing.crawler.google_translator import translate_text_via_google, translate_text_best_quality
 from app.services.storage.file_storage import (
     save_chapter_version_file, 
     delete_novel_disk_files, 
@@ -23,8 +23,8 @@ async def process_novel_link(novel_url: str) -> Dict[str, Any]:
     
     title_raw = data.get("title", "Unknown Novel")
     # Chỉ dịch duy nhất tên truyện bằng Google Translate để tránh lag
-    from app.services.preprocessing.crawler.google_translator import translate_text_via_google
-    title_rough = await translate_text_via_google(title_raw)
+    from app.services.preprocessing.crawler.google_translator import translate_text_best_quality
+    title_rough = await translate_text_best_quality(title_raw)
     
     author = data.get("author", "Unknown Author")
     cover_url = data.get("cover_url", "")
@@ -154,7 +154,7 @@ async def process_single_chapter_crawl(chapter_id: int) -> Dict[str, Any]:
         )
 
         # 2. Dịch Google thô (GG)
-        gg_content = await translate_text_via_google(raw_content)
+        gg_content = await translate_text_best_quality(raw_content)
         file_path_gg = save_chapter_version_file(
             version_type="GG",
             novel_title_raw=novel_title_raw,

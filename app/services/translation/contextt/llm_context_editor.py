@@ -260,7 +260,7 @@ async def edit_context_batch_llm(chapter_ids: List[int], enable_names_dict: bool
     enable_unblock = kwargs.get("enable_unblock", True)
     if enable_unblock:
         from app.services.unblock.unblock_pipeline import mask_text_with_dictionary, get_unblock_prompt_enforcer
-        masked_text, mapping_table, _ = await mask_text_with_dictionary(combined_text)
+        masked_text, mapping_table, _ = await mask_text_with_dictionary(combined_text, aggressive=False)
         enforcer_prompt = "\n" + get_unblock_prompt_enforcer() if mapping_table else ""
     else:
         masked_text = combined_text
