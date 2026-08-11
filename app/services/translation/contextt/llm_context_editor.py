@@ -133,7 +133,7 @@ async def edit_context_batch_llm(chapter_ids: List[int], enable_names_dict: bool
                     with open(ver_raw.file_path, "r", encoding="utf-8", errors="ignore") as f:
                         raw_text = f.read()
                         
-            combined_text += f"\n=== [BEGIN_CHAPTER_{chap.chapter_no}] ===\n{gg_text}\n=== [END_CHAPTER_{chap.chapter_no}] ===\n"
+            combined_text += f"\n=== [BẮT ĐẦU CHƯƠNG {chap.chapter_no}] ===\n{gg_text}\n=== [KẾT THÚC CHƯƠNG {chap.chapter_no}] ===\n"
             if raw_text:
                 combined_raw_text += f"\n=== [RAW_CHAPTER_{cid}] ===\n{raw_text}\n=== [END_RAW_CHAPTER_{cid}] ===\n"
 
@@ -304,7 +304,7 @@ Nhiệm vụ của bạn KHÔNG PHẢI là dịch, mà là BIÊN TẬP LẠI b�
             "temperature": 0.3, 
             "topK": 40, 
             "topP": 0.95,
-            "maxOutputTokens": 8192
+            "maxOutputTokens": 65536
         },
         "safetySettings": safety_settings
     }
@@ -333,7 +333,7 @@ Nhiệm vụ của bạn KHÔNG PHẢI là dịch, mà là BIÊN TẬP LẠI b�
                 "temperature": 0.3, 
                 "topK": 40, 
                 "topP": 0.95,
-                "maxOutputTokens": 8192
+                "maxOutputTokens": 65536
             },
             "safetySettings": safety_settings
         }

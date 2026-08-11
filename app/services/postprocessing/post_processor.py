@@ -388,65 +388,8 @@ async def process_and_split_batch(
                                 print(f"[POST-PROCESS] 💡 Khôi phục thành công Chương {chap_no} từ khoảng trống giữa các chương trong lô.")
                                 extracted_map[cid] = gap_content
 
-            # Fallback Tier 4: Dịch lẻ chương bị thiếu HOẶC bị xén ngắn bất thường
-            # ĐẶT NGOÀI if missing_cids để bắt cả chương đã tách nhưng output quá ngắn
-            async with AsyncSessionLocal() as raw_session:
-                short_cids = []
-                for cid in cids:
-                    chap_no = chapter_map[cid]
-                    chap_text = extracted_map.get(cid, "").strip()
-                    
-                    # Kiểm tra: thiếu hoàn toàn hoặc quá ngắn so với RAW
-                    if not chap_text or len(chap_text) < 100:
-                        short_cids.append(cid)
-                        continue
-                    
-                    # So sánh với RAW để phát hiện bị xén
-                    stmt_raw = select(ChapterVersion).where(
-                        ChapterVersion.chapter_id == cid,
-                        ChapterVersion.version_type == "RAW"
-                    )
-                    res_raw = await raw_session.execute(stmt_raw)
-                    ver_raw = res_raw.scalar_one_or_none()
-                    if ver_raw:
-                        raw_len = len((ver_raw.content or "").strip()) if ver_raw.content else 0
-                        if not raw_len and ver_raw.file_path and os.path.exists(ver_raw.file_path):
-                            try:
-                                with open(ver_raw.file_path, "r", encoding="utf-8", errors="ignore") as f:
-                                    raw_len = len(f.read().strip())
-                            except Exception:
-                                pass
-                        if raw_len > 800 and len(chap_text) < raw_len * 0.3:
-                            short_cids.append(cid)
-                            print(f"[POST-PROCESS] ⚠️ Chương {chap_no} bị xén ngắn bất thường (RAW={raw_len}, Output={len(chap_text)})")
-                
-                for cid in short_cids:
-                    chap_no = chapter_map[cid]
-                    print(f"[POST-PROCESS] 🔄 Chương {chap_no} bị thiếu/xén chữ. Tự động dịch lẻ để đảm bảo đầy đủ...")
-                    try:
-                        if version_type == "LLM":
-                            from app.services.translation.rawt.llm_translator import translate_batch_llm
-                            single_res = await translate_batch_llm([cid])
-                        else:
-                            from app.services.translation.contextt.llm_context_editor import edit_context_batch_llm
-                            single_res = await edit_context_batch_llm([cid])
-                            
-                        if single_res and single_res.get("status") == "success":
-                            single_masked = single_res["translated_text_masked"]
-                            single_table = single_res.get("mapping_table", {})
-                            single_full = unmask_text_with_dictionary(single_masked, single_table) if single_table else single_masked
-                            clean_single = re.sub(r"(?:===\s*)?(?:\[|\()?\s*(?:BEGIN_CHAPTER|END_CHAPTER|BEGIN|END)[^\n\]\)]*(?:\]|\))?(?:\s*===)?", "", single_full, flags=re.IGNORECASE).strip()
-                            if len(clean_single) > 50:
-                                extracted_map[cid] = clean_single
-                                full_text = full_text + "\n" + single_full
-                                print(f"[POST-PROCESS] ✅ Cứu hộ dịch lẻ thành công Chương {chap_no}! ({len(clean_single)} ký tự)")
-                            else:
-                                print(f"[POST-PROCESS] ⚠️ Dịch lẻ Chương {chap_no} vẫn quá ngắn ({len(clean_single)} ký tự)")
-                    except Exception as ex_single:
-                        print(f"[POST-PROCESS] ❌ Lỗi cứu hộ dịch Chương {chap_no}: {ex_single}")
-
             # Bước 3: Kiểm tra NGHIÊM NGẶT — Mỗi chương PHẢI có CẢ thẻ BẮT ĐẦU lẫn KẾT THÚC
-            # Một chương hoàn chỉnh = có thẻ BẮT ĐẦU + nội dung + thẻ KẾT THÚC
+            # Một chương hoàn chỉnh = có thẻ BẮT ĐẦU + nội dung + thẻ KẾT THÚC (KHÔNG DỊCH VÁ LẺ)
             async with AsyncSessionLocal() as session:
                 for idx, cid in enumerate(cids):
                     chap_no = chapter_map[cid]
@@ -454,14 +397,14 @@ async def process_and_split_batch(
                     
                     # 3a. Kiểm tra thẻ BẮT ĐẦU CHƯƠNG trong LLM output
                     begin_tag_pattern = re.compile(
-                        rf"(?:===\s*)?\[\s*(?:BEGIN_CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG)\s+{chap_no}\s*\](?:\s*===)?",
+                        rf"(?:===\s*)?(?:\[|\()? *(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU|CHƯƠNG|CHAPTER)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{chap_no}\b[^\n\]\)]*(?:\]|\))?(?:\s*===)?",
                         re.IGNORECASE
                     )
                     has_begin_tag = bool(begin_tag_pattern.search(full_text))
                     
                     # 3b. Kiểm tra thẻ KẾT THÚC CHƯƠNG trong LLM output
                     end_tag_pattern = re.compile(
-                        rf"(?:===\s*)?\[\s*(?:END_CHAPTER|KẾT\s+THÚC\s+CHƯƠNG)\s+{chap_no}\s*\](?:\s*===)?",
+                        rf"(?:===\s*)?(?:\[|\()? *(?:END_CHAPTER|END\s+CHAPTER|KẾT\s+THÚC\s+CHƯƠNG|KẾT\s+THÚC)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{chap_no}\b[^\n\]\)]*(?:\]|\))?(?:\s*===)?",
                         re.IGNORECASE
                     )
                     has_end_tag = bool(end_tag_pattern.search(full_text))
