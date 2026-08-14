@@ -2,6 +2,18 @@ import os
 import sys
 import subprocess
 
+# Tự động chuyển đổi I/O stream sang UTF-8 trên Windows để chống lỗi [WinError 233] Pipe & UnicodeEncodeError
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except Exception:
+        pass
+
 # Đảm bảo thư mục gốc dự án nằm trong sys.path
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:

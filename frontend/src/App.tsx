@@ -85,6 +85,25 @@ export default function App() {
   const [showChaptersList, setShowChaptersList] = useState(false)
   const [chapterSearch, setChapterSearch] = useState('')
 
+  // Theme State (Dark vs Light Sepia Paper)
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    const saved = localStorage.getItem('airead_theme')
+    return (saved === 'light' || saved === 'dark') ? saved : 'dark'
+  })
+
+  useEffect(() => {
+    localStorage.setItem('airead_theme', theme)
+    if (theme === 'light') {
+      document.documentElement.classList.add('theme-light')
+    } else {
+      document.documentElement.classList.remove('theme-light')
+    }
+  }, [theme])
+
+  const toggleTheme = useCallback(() => {
+    setTheme(prev => (prev === 'dark' ? 'light' : 'dark'))
+  }, [])
+
   // API Key Test State
   const [isTestingKey, setIsTestingKey] = useState(false)
   const [keyTestResult, setKeyTestResult] = useState<{ success: boolean; message: string } | null>(null)
@@ -353,6 +372,8 @@ export default function App() {
     try {
       const response = await fetch(`/api/translation/novel/${novelId}/batch-fix-swept-errors`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model })
       })
       const result = await response.json()
       if (response.ok && result.status === 'success') {
@@ -387,6 +408,8 @@ export default function App() {
         setActiveTab={changeTab}
         selectedNovelTitle={selectedNovel?.novel.title}
         isRunning={progress?.isRunning}
+        theme={theme}
+        toggleTheme={toggleTheme}
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-4 md:px-6 pb-24 md:pb-6 pt-20 overflow-visible md:overflow-hidden min-h-0 flex flex-col">

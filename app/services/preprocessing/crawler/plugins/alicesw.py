@@ -1,4 +1,5 @@
 import re
+import base64
 import asyncio
 import logging
 from urllib.parse import urljoin
@@ -8,6 +9,35 @@ from bs4 import BeautifulSoup
 from app.services.preprocessing.crawler.base import BaseScraper
 
 logger = logging.getLogger(__name__)
+
+async def _solve_captcha_with_gemini(image_bytes: bytes) -> str:
+    try:
+        from app.core.config import get_active_setting
+        model = (await get_active_setting("AIREAD_MODEL") or "gemini-3.5-flash-lite").strip()
+        raw_api_key = await get_active_setting("AIREAD_API_KEYS")
+        api_key = raw_api_key.split(',')[0].strip() if raw_api_key else ""
+        if not api_key:
+            return ""
+        
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        b64_img = base64.b64encode(image_bytes).decode('utf-8')
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"inline_data": {"mime_type": "image/png", "data": b64_img}},
+                    {"text": "Return ONLY the exact 4 letters/numbers shown in this captcha image. Output ONLY the code, nothing else."}
+                ]
+            }],
+            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 10}
+        }
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json=payload)
+            if resp.status_code == 200:
+                res_json = resp.json()
+                return res_json.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
+    except Exception as e:
+        logger.warning(f"⚠️ Gemini Vision OCR Error: {e}")
+    return ""
 
 class AliceswScraper(BaseScraper):
     """
@@ -30,6 +60,44 @@ class AliceswScraper(BaseScraper):
             if resp.status_code != 200:
                 raise Exception(f"Failed to fetch {url} (Status Code: {resp.status_code})")
             resp.encoding = "utf-8"
+            
+            # Tự động phát hiện và giải mã Captcha bằng Gemini Vision nếu Alicesw yêu cầu xác minh
+            if "captcha_page" in str(resp.url) or "访问验证" in resp.text:
+                logger.info(f"🛡️ Alicesw Plugin: Phát hiện trang xác minh Captcha cho {url}. Đang tự động giải bằng AI Vision...")
+                try:
+                    m_redir = re.search(r'name=["\']redirect["\']\s+value=["\']([^"\']+)["\']', resp.text)
+                    redirect_val = m_redir.group(1) if m_redir else ""
+                    
+                    for attempt in range(3):
+                        img_resp = await client.get("https://www.alicesw.com/home/chapter/verify.html")
+                        code = await _solve_captcha_with_gemini(img_resp.content)
+                        if not code:
+                            try:
+                                import ddddocr
+                                ocr = ddddocr.DdddOcr(show_ad=False)
+                                code = ocr.classification(img_resp.content)
+                            except Exception:
+                                pass
+                                
+                        if not code:
+                            continue
+                            
+                        logger.info(f"🔑 Alicesw Plugin: AI Vision giải mã Captcha = '{code}'")
+                        post_data = {"redirect": redirect_val, "code": code}
+                        post_headers = {"Content-Type": "application/x-www-form-urlencoded", "Referer": str(resp.url)}
+                        await client.post("https://www.alicesw.com/home/chapter/check_code.html", data=post_data, headers=post_headers)
+                        
+                        ch_resp = await client.get(url)
+                        ch_resp.encoding = "utf-8"
+                        ch_text = ch_resp.text
+                        if "captcha_page" not in str(ch_resp.url) and "访问验证" not in ch_text:
+                            logger.info("🎉 Alicesw Plugin: Tự động vượt rào Captcha thành công bằng AI Vision!")
+                            return ch_text
+                except Exception as e:
+                    logger.warning(f"⚠️ Alicesw Plugin: Tự động giải captcha thất bại: {e}")
+                
+                raise Exception(f"Trang web Alicesw.com chặn chống cào tự động (Captcha) tại {url}. Vui lòng thử lại sau vài giây.")
+
             return resp.text
 
     async def get_novel_metadata(self, url: str) -> Dict[str, Any]:

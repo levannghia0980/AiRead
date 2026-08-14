@@ -147,3 +147,188 @@
   border-bottom-color: rgba(244, 63, 94, 0.7);
 }
 
+/* ==========================================================================
+   LIGHT THEME (Warm Sepia Parchment / Paper Reader Aesthetic)
+   ========================================================================== */
+html.theme-light,
+html.theme-light body,
+.theme-light body {
+  background-color: #f4ecd8 !important;
+  color: #1c1917 !important;
+}
+
+html.theme-light ::-webkit-scrollbar-track,
+.theme-light ::-webkit-scrollbar-track {
+  background: #e8debe;
+}
+
+html.theme-light ::-webkit-scrollbar-thumb,
+.theme-light ::-webkit-scrollbar-thumb {
+  background: #cbb991;
+  border-radius: 4px;
+}
+
+html.theme-light ::-webkit-scrollbar-thumb:hover,
+.theme-light ::-webkit-scrollbar-thumb:hover {
+  background: #aa9568;
+}
+
+/* Glass Panels & Cards in Light Sepia Mode */
+.theme-light .glass-panel {
+  background: rgba(253, 251, 246, 0.94) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+  border: 1px solid #e3d5b4 !important;
+  box-shadow: 0 4px 18px rgba(120, 90, 40, 0.06) !important;
+  color: #1c1917 !important;
+}
+
+.theme-light .glass-card {
+  background: #fbf5e7 !important;
+  backdrop-filter: blur(8px) !important;
+  border: 1px solid #e1d2ae !important;
+  color: #1c1917 !important;
+}
+
+.theme-light .glass-card:hover {
+  background: #f5ebda !important;
+  border-color: #c99341 !important;
+  box-shadow: 0 4px 12px rgba(180, 110, 20, 0.1) !important;
+  transform: translateY(-2px);
+}
+
+.theme-light .glass-input {
+  background: #f7f0e0 !important;
+  border: 1px solid #d3c39e !important;
+  color: #1c1917 !important;
+}
+
+.theme-light .glass-input:focus {
+  border-color: #b45309 !important;
+  box-shadow: 0 0 10px rgba(180, 83, 9, 0.2) !important;
+  outline: none;
+}
+
+/* Reader Specific Light Sepia Paper Styling (Matching Reference Screenshot) */
+.theme-light .reader-outer-bg,
+.theme-light .reader-container {
+  background-color: #f2ebd7 !important;
+  border-color: #d8cba8 !important;
+  color: #1c1917 !important;
+}
+
+.theme-light .reader-header {
+  background-color: rgba(235, 220, 185, 0.97) !important;
+  border-color: #d8c7a1 !important;
+  color: #1c1917 !important;
+}
+
+.theme-light .reader-paper-sheet {
+  background-color: #fcf8ee !important;
+  border: 1px solid #e2d6b6 !important;
+  box-shadow: 0 2px 14px rgba(120, 90, 40, 0.08) !important;
+  color: #221f1d !important;
+}
+
+.theme-light .reader-paper-sheet p,
+.theme-light .reader-content-body p,
+.theme-light p.theme-paragraph-text {
+  color: #221f1d !important;
+  font-size: 1.08rem;
+  line-height: 1.85;
+}
+
+.theme-light .reader-header h2,
+.theme-light .reader-title {
+  color: #1c1917 !important;
+}
+
+/* Top Navigation Bar in Light Sepia Theme */
+.theme-light header {
+  background-color: rgba(235, 220, 185, 0.96) !important;
+  border-color: #d8c7a1 !important;
+}
+
+.theme-light header h1 {
+  color: #1c1917 !important;
+}
+
+.theme-light header p {
+  color: #78716c !important;
+}
+
+.theme-light nav {
+  background-color: rgba(226, 211, 178, 0.75) !important;
+  border-color: #d4c39b !important;
+}
+
+.theme-light nav button {
+  color: #57534e !important;
+}
+
+.theme-light nav button:hover {
+  color: #1c1917 !important;
+  background-color: rgba(212, 195, 158, 0.6) !important;
+}
+
+/* General Text Overrides in Light Theme */
+.theme-light .text-slate-100,
+.theme-light .text-slate-200,
+.theme-light .text-slate-300 {
+  color: #1c1917 !important;
+}
+
+.theme-light .text-slate-400,
+.theme-light .text-slate-500,
+.theme-light .text-cyber-muted {
+  color: #6b635b !important;
+}
+
+.theme-light .text-cyber-accent {
+  color: #b45309 !important;
+}
+
+.theme-light .border-cyber-border,
+.theme-light .border-cyber-border\/40,
+.theme-light .border-slate-800,
+.theme-light .border-slate-900 {
+  border-color: #d8c7a1 !important;
+}
+
+.theme-light .bg-slate-950,
+.theme-light .bg-slate-900,
+.theme-light .bg-slate-900\/70,
+.theme-light .bg-slate-950\/60,
+.theme-light .bg-slate-950\/95,
+.theme-light .bg-\[\#070A13\] {
+  background-color: #f2e9d4 !important;
+}
+
+.theme-light .bg-slate-800 {
+  background-color: #e4d6b9 !important;
+}
+
+/* Highlights for fallback and censor in Light Sepia Mode */
+.theme-light .fallback-word {
+  color: #b45309 !important;
+  border-bottom: 1px dashed rgba(180, 83, 9, 0.7) !important;
+  background-color: rgba(180, 83, 9, 0.08) !important;
+}
+
+.theme-light .fallback-word:hover {
+  background-color: rgba(180, 83, 9, 0.18) !important;
+  color: #92400e !important;
+}
+
+.theme-light .censor-word {
+  color: #be123c !important;
+  border-bottom: 1px dashed rgba(190, 18, 60, 0.7) !important;
+  background-color: rgba(190, 18, 60, 0.08) !important;
+}
+
+.theme-light .censor-word:hover {
+  background-color: rgba(190, 18, 60, 0.18) !important;
+  color: #9f1239 !important;
+}
+
+

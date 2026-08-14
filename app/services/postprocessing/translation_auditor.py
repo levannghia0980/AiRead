@@ -12,16 +12,54 @@ from app.core.config import get_active_setting
 from app.core.llm_client import post_gemini_with_retry, safe_json_loads
 import httpx
 
-async def call_gemini_api(prompt: str, model: str = None, is_json: bool = True) -> Optional[str]:
+async def call_gemini_api(prompt: str, model: str = None, is_json: bool = True) -> tuple[Optional[str], Optional[str]]:
+    """
+    Gọi Gemini/OpenRouter API sử dụng ĐÚNG mã Model và Key mà người dùng cấu hình.
+    Trả về (kết_quả_text, thông_báo_lỗi_chi_tiết).
+    """
     api_keys_str = await get_active_setting("AIREAD_API_KEYS")
     if not api_keys_str:
-        return None
+        api_keys_str = os.getenv("GEMINI_API_KEY", "") or os.getenv("AIREAD_API_KEYS", "")
+    if not api_keys_str:
+        return None, "Không tìm thấy API Key trong cấu hình CSDL hoặc file .env."
         
-    if not model:
-        model = await get_active_setting("AIREAD_MODEL") or "gemini-3.5-flash-lite"
+    keys = [k.strip() for k in api_keys_str.split(',') if k.strip()]
+    if not keys:
+        return None, "Danh sách API Key rỗng."
+
+    selected_model = model or (await get_active_setting("AIREAD_MODEL")) or "gemini-3.5-flash-lite"
+    selected_model = selected_model.strip()
     
-    api_key = api_keys_str.split(',')[0].strip()
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    provider_val = os.environ.get("AIREAD_PROVIDER") or await get_active_setting("AIREAD_PROVIDER") or "gemini"
+    provider = str(provider_val).lower().strip()
+    is_openrouter = (provider == "openrouter") or ("/" in selected_model) or ("qwen" in selected_model.lower()) or ("openrouter" in selected_model.lower())
+
+    if is_openrouter:
+        api_key = keys[0]
+        or_headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://localhost:8000",
+            "X-Title": "AiRead"
+        }
+        or_body = {
+            "model": selected_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2,
+            "max_tokens": 4096
+        }
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=or_headers, json=or_body)
+            if resp.status_code == 200:
+                text_out = resp.json()["choices"][0]["message"]["content"].strip()
+                if text_out:
+                    return text_out, None
+            return None, f"OpenRouter API Error (HTTP {resp.status_code}): {resp.text[:300]}"
+        except Exception as e:
+            return None, f"OpenRouter Exception: {str(e)}"
+    
+    # Gemini path
     headers = {"Content-Type": "application/json"}
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -30,15 +68,38 @@ async def call_gemini_api(prompt: str, model: str = None, is_json: bool = True) 
     if is_json:
         payload["generationConfig"]["responseMimeType"] = "application/json"
         
+    last_err = None
     async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await post_gemini_with_retry(client, url, headers, payload)
-        if resp.status_code == 200:
-            data = resp.json()
+        for key_idx, api_key in enumerate(keys):
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent?key={api_key}"
             try:
-                return data["candidates"][0]["content"]["parts"][0]["text"]
-            except (KeyError, IndexError):
-                pass
-        return None
+                resp = await post_gemini_with_retry(client, url, headers, payload, max_retries=2)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    try:
+                        text_out = data["candidates"][0]["content"]["parts"][0]["text"]
+                        if text_out and text_out.strip():
+                            return text_out, None
+                    except (KeyError, IndexError):
+                        last_err = "API trả về 200 nhưng cấu trúc candidates rỗng."
+                else:
+                    err_msg = resp.text
+                    try:
+                        err_json = resp.json()
+                        err_msg = err_json.get("error", {}).get("message", resp.text)
+                    except Exception:
+                        pass
+                    last_err = f"HTTP {resp.status_code} ({selected_model}): {err_msg}"
+                    
+                    if resp.status_code == 429 and key_idx < len(keys) - 1:
+                        print(f"⚠️ Key #{key_idx+1} bị dính 429, tự động chuyển sang Key #{key_idx+2}...")
+                        continue
+            except Exception as e:
+                last_err = f"Lỗi kết nối ({selected_model}): {str(e)}"
+                if key_idx < len(keys) - 1:
+                    continue
+                    
+    return None, last_err
 
 # Regex bắt thẻ span của lỗi Hán tự do Google dịch
 # VD mới: <span class="swept-chinese" data-raw="灌透">tưới tiêu</span>
@@ -134,11 +195,11 @@ def apply_swept_corrections(content: str, corrections_map: Dict[str, str], chapt
     return fix_broken_words(new_content)
 
 
-async def batch_fix_swept_errors_llm(novel_id: int):
+async def batch_fix_swept_errors_llm(novel_id: int, model: Optional[str] = None):
     """
     1. Quét toàn bộ chương dịch (FINAL) của truyện
     2. Gom tất cả lỗi
-    3. Gửi 1 request LLM duy nhất
+    3. Gửi 1 request LLM duy nhất với Model người dùng cấu hình
     4. Áp dụng sửa lỗi siêu chính xác và lưu lại DB + file
     """
     async with AsyncSessionLocal() as session:
@@ -189,14 +250,37 @@ async def batch_fix_swept_errors_llm(novel_id: int):
         if not all_errors:
             return {"status": "success", "message": "Không tìm thấy lỗi Hán tự gạch chân xanh nào cần sửa.", "fixed_count": 0}
 
-        # 2. Tạo Request duy nhất tới LLM
-        prompt = f"""Bạn là biên tập viên cao cấp chuyên dịch thuật và hiệu đính văn học mạng Trung Quốc (thể loại: {genre.upper()}).
-Dưới đây là danh sách TẤT CẢ các TỪ DỊCH LỖI (do công cụ dịch tự động dịch sai cụm từ Hán) được ghim trong câu văn của từng chương.
+        # 2. Gom nhóm các chương theo kích thước Lô (batch_size) từ Cài đặt hệ thống
+        # để đảm bảo 100% khớp với cấu hình dịch lô, tránh tạo quá nhiều request lẻ.
+        try:
+            batch_size_str = await get_active_setting("AIREAD_BATCH_SIZE")
+            batch_size = max(1, int(batch_size_str)) if batch_size_str and str(batch_size_str).isdigit() else 3
+        except Exception:
+            batch_size = 3
+
+        # Lấy danh sách ID các chương có lỗi
+        ch_ids_with_errors = [cid for cid in chapter_error_map.keys()]
+        
+        corrections_map = {}
+        error_logs = []
+        
+        # Chia các chương có lỗi thành các lô (mỗi lô chứa batch_size chương)
+        for i in range(0, len(ch_ids_with_errors), batch_size):
+            batch_cids = ch_ids_with_errors[i : i + batch_size]
+            batch_errors = []
+            for cid in batch_cids:
+                batch_errors.extend(chapter_error_map[cid])
+                
+            if not batch_errors:
+                continue
+
+            prompt = f"""Bạn là biên tập viên cao cấp chuyên dịch thuật và hiệu đính văn học mạng Trung Quốc (thể loại: {genre.upper()}).
+Dưới đây là danh sách CÁC TỪ DỊCH LỖI được ghim trong câu văn của Lô {len(batch_cids)} chương.
 
 Mỗi mục lỗi chứa mã [error_id], từ gốc tiếng Trung [raw_chinese], từ bị dịch sai [faulty_term], và câu văn chứa nó [sentence_context] (đã bọc lỗi trong thẻ [LỖI: ...]).
 
 === DANH SÁCH LỖI BẮT BUỘC SỬA ===
-{json.dumps(all_errors, ensure_ascii=False, indent=2)}
+{json.dumps(batch_errors, ensure_ascii=False, indent=2)}
 
 === YÊU CẦU BẮT BUỘC (SỬA TRỌN VẸN CỤM TỪ MƯỢT MÀ - LÀM SẠCH VĂN BẢN CUỐI CÙNG) ===
 1. NGUYÊN TẮC QUAN TRỌNG NHẤT — SỬA CẢ CỤM TỪ (KHÔNG DỊCH MỘT TỪ ĐƠN ĐỘC):
@@ -227,21 +311,23 @@ Mỗi mục lỗi chứa mã [error_id], từ gốc tiếng Trung [raw_chinese],
 }}
 6. Chỉ trả về JSON thuần hợp lệ, không bọc thẻ markdown ```json.
 """
-        
-        # 3. Call LLM
-        llm_response = await call_gemini_api(prompt, model=None, is_json=True)
-        if not llm_response:
-            return {"status": "error", "message": "LLM API thất bại hoặc trả về rỗng."}
-            
-        try:
-            res_data = safe_json_loads(llm_response)
-            corrections_list = res_data.get("corrections", []) if isinstance(res_data, dict) else []
-        except Exception:
-            return {"status": "error", "message": "Lỗi parse JSON từ phản hồi LLM."}
+            # 3. Gọi LLM cho từng lô chương
+            llm_response, err_msg = await call_gemini_api(prompt, model=model, is_json=True)
+            if not llm_response:
+                error_logs.append(err_msg or "Phản hồi rỗng")
+                continue
+                
+            try:
+                res_data = safe_json_loads(llm_response)
+                corrections_list = res_data.get("corrections", []) if isinstance(res_data, dict) else []
+                for c in corrections_list:
+                    if c.get("error_id") and c.get("corrected_term") is not None:
+                        corrections_map[c["error_id"]] = c["corrected_term"]
+            except Exception as e:
+                error_logs.append(f"Parse error: {e}")
 
-            
-        # Map error_id -> corrected_term
-        corrections_map = {c.get("error_id"): c.get("corrected_term") for c in corrections_list if c.get("error_id") and c.get("corrected_term")}
+        if not corrections_map and error_logs:
+            return {"status": "error", "message": f"LLM API thất bại: {error_logs[0]}"}
         
         # 4. Áp dụng thay thế
         fixed_count = 0

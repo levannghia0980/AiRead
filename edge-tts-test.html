@@ -1,164 +1,148 @@
 <!DOCTYPE html>
 <html lang="vi">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Coc Coc TTS Test - Vietnamese</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      margin: 24px;
-      background: #f5f7fb;
-      color: #1f2937;
-    }
-    .container {
-      max-width: 900px;
-      margin: auto;
-      background: white;
-      padding: 24px;
-      border-radius: 12px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.08);
-    }
-    textarea {
-      width: 100%;
-      min-height: 140px;
-      font-size: 16px;
-      padding: 12px;
-      border-radius: 8px;
-      border: 1px solid #cbd5e1;
-      margin-top: 12px;
-    }
-    button {
-      margin-right: 10px;
-      margin-top: 12px;
-      padding: 10px 16px;
-      border: none;
-      border-radius: 8px;
-      cursor: pointer;
-      background: #2563eb;
-      color: white;
-      font-weight: 600;
-    }
-    button.secondary {
-      background: #475569;
-    }
-    #voiceList {
-      margin-top: 20px;
-      display: grid;
-      gap: 10px;
-    }
-    .voice-card {
-      padding: 12px;
-      border: 1px solid #e2e8f0;
-      border-radius: 8px;
-      background: #f8fafc;
-    }
-    .voice-card button {
-      margin-top: 6px;
-      background: #0f766e;
-    }
-  </style>
+    <meta charset="UTF-8">
+    <title>Edge-TTS Hoài My & Nam Minh Studio</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 850px; margin: 30px auto; padding: 25px; background: #0f172a; color: #f8fafc; border-radius: 12px; }
+        h1 { color: #38bdf8; margin-bottom: 5px; }
+        .subtitle { color: #94a3b8; font-size: 14px; margin-bottom: 20px; }
+        .section { background: #1e293b; padding: 20px; border-radius: 10px; border: 1px solid #334155; margin-bottom: 20px; }
+        h3 { color: #facc15; margin-top: 0; }
+        textarea { width: 100%; height: 140px; background: #0f172a; color: #fff; border: 1px solid #475569; border-radius: 8px; padding: 12px; font-size: 15px; box-sizing: border-box; resize: vertical; }
+        select { background: #0f172a; color: #38bdf8; padding: 10px 14px; border-radius: 8px; border: 1px solid #475569; font-size: 15px; font-weight: bold; width: 100%; max-width: 450px; }
+        button { background: #38bdf8; color: #0f172a; border: none; padding: 12px 24px; font-size: 16px; font-weight: bold; border-radius: 8px; cursor: pointer; transition: 0.2s; margin-top: 12px; }
+        button:hover { background: #7dd3fc; transform: translateY(-1px); }
+        .log { margin-top: 15px; padding: 12px; background: #020617; border-radius: 8px; font-family: monospace; font-size: 14px; color: #38bdf8; min-height: 40px; }
+        audio { width: 100%; margin-top: 15px; }
+    </style>
 </head>
 <body>
-  <div class="container">
-    <h1>Test tạo văn bản thành giọng nói trên Cốc Cốc</h1>
-    <p>Trang này dùng Web Speech API của trình duyệt Chromium để đọc văn bản tiếng Việt bằng các giọng có sẵn trên máy bạn.</p>
+    <h1>🎙️ Trình Tạo & Nghe Thử Giọng Đọc Hoài My (Microsoft AI)</h1>
+    <div class="subtitle">Kết nối trực tiếp Microsoft Neural Voice qua WebSocket (Chuẩn 100% Hoài My & Nam Minh)</div>
 
-    <label for="textInput"><strong>Văn bản tiếng Việt:</strong></label>
-    <textarea id="textInput">Xin chào! Đây là đoạn văn bản tiếng Việt dùng để kiểm tra giọng nói trên Microsoft Edge. Mỗi giọng sẽ được phát thử lần lượt để bạn nghe độ rõ, tốc độ và âm sắc của từng giọng.</textarea>
+    <div class="section">
+        <h3>1. Chọn Giọng Đọc Microsoft Chính Thức</h3>
+        <select id="voiceSelect">
+            <option value="vi-VN-HoaiMyNeural">👩 vi-VN-HoaiMyNeural (Nữ Hoài My - Truyền cảm, luyến láy sắc hiệp)</option>
+            <option value="vi-VN-NamMinhNeural">👨 vi-VN-NamMinhNeural (Nam Nam Minh - Trầm ấm, dõng dạc)</option>
+        </select>
+    </div>
 
-    <button id="loadVoicesBtn">Tải danh sách giọng</button>
-    <button id="speakAllBtn" class="secondary">Phát bằng tất cả giọng</button>
-    <button id="stopBtn">Dừng phát</button>
+    <div class="section">
+        <h3>2. Văn Bản Thử Nghiệm Sắc Hiệp 18+</h3>
+        <textarea id="textInput">Chương 1: Hắn ôm lấy bầu vú trắng nõn, cắm con c-ặc vào lỗ l-ồn của nàng, sau đó hai người bắt đầu đ-ịt nhau cuồng nhiệt. Mạc Nhã Nghi tức giận: Cái đồ ch-ết tiệt này, mày muốn chọc tức chết mẹ hả! Hắn tiếp tục liếm l-ồn và bú c-ặc say đắm.</textarea>
+        
+        <div>
+            <button id="btnGenerate" onclick="generateSpeech()">▶️ Tạo Âm Thanh Hoài My & Nghe Ngay</button>
+        </div>
 
-    <div id="voiceList"></div>
-  </div>
+        <audio id="audioPlayer" controls style="display:none;"></audio>
+        <div class="log" id="logBox">Sẵn sàng tạo âm thanh Hoài My.</div>
+    </div>
 
-  <script>
-    const textInput = document.getElementById('textInput');
-    const voiceList = document.getElementById('voiceList');
-    const loadVoicesBtn = document.getElementById('loadVoicesBtn');
-    const speakAllBtn = document.getElementById('speakAllBtn');
-    const stopBtn = document.getElementById('stopBtn');
+    <script>
+        const logBox = document.getElementById('logBox');
+        const audioPlayer = document.getElementById('audioPlayer');
+        const btnGen = document.getElementById('btnGenerate');
 
-    let voices = [];
+        function generateUUID() {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                const r = Math.random() * 16 | 0;
+                const v = c === 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        }
 
-    function populateVoices() {
-      voices = window.speechSynthesis.getVoices();
-      voiceList.innerHTML = '';
+        async function generateSpeech() {
+            const text = document.getElementById('textInput').value.trim();
+            const voice = document.getElementById('voiceSelect').value;
+            
+            if (!text) {
+                logBox.textContent = '❌ Vui lòng nhập văn bản!';
+                return;
+            }
 
-      voices.forEach((voice, index) => {
-        const card = document.createElement('div');
-        card.className = 'voice-card';
-        card.innerHTML = `
-          <div><strong>${index + 1}. ${voice.name}</strong></div>
-          <div>Lang: ${voice.lang}</div>
-          <div>Default: ${voice.default ? 'Có' : 'Không'}</div>
-          <button type="button">Phát thử giọng này</button>
-        `;
+            btnGen.disabled = true;
+            btnGen.textContent = '⏳ Đang kết nối Microsoft Neural Voice...';
+            logBox.textContent = `Đang gửi yêu cầu tạo giọng ${voice}...`;
 
-        const testBtn = card.querySelector('button');
-        testBtn.addEventListener('click', () => speakText(textInput.value, voice));
-        voiceList.appendChild(card);
-      });
-    }
+            const connectionId = generateUUID().replace(/-/g, '');
+            const wsUrl = `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4&ConnectionId=${connectionId}`;
 
-    function speakText(text, selectedVoice) {
-      if (!text.trim()) {
-        alert('Vui lòng nhập văn bản tiếng Việt trước khi phát.');
-        return;
-      }
+            try {
+                const ws = new WebSocket(wsUrl);
+                ws.binaryType = 'arraybuffer';
+                const audioChunks = [];
 
-      if (!('speechSynthesis' in window)) {
-        alert('Trình duyệt của bạn không hỗ trợ Speech Synthesis.');
-        return;
-      }
+                ws.onopen = () => {
+                    logBox.textContent = '🔗 Đã kết nối máy chủ Microsoft. Đang tổng hợp giọng đọc...';
+                    
+                    // 1. Config message
+                    const configMsg = "Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n" + 
+                        JSON.stringify({
+                            context: {
+                                synthesis: {
+                                    audio: {
+                                        metadataoptions: { sentenceBoundaryEnabled: "false", wordBoundaryEnabled: "false" },
+                                        outputFormat: "audio-24khz-48kbitrate-mono-mp3"
+                                    }
+                                }
+                            }
+                        });
+                    ws.send(configMsg);
 
-      window.speechSynthesis.cancel();
+                    // 2. SSML synthesis message
+                    const requestId = generateUUID().replace(/-/g, '');
+                    const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='vi-VN'><voice name='${voice}'><prosody pitch='+0Hz' rate='-4%'>${text}</prosody></voice></speak>`;
+                    const ssmlMsg = `X-RequestId:${requestId}\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n${ssml}`;
+                    ws.send(ssmlMsg);
+                };
 
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.voice = selectedVoice;
-      utterance.lang = selectedVoice?.lang || 'vi-VN';
-      utterance.rate = 1;
-      utterance.pitch = 1;
-      utterance.volume = 1;
-      window.speechSynthesis.speak(utterance);
-    }
+                ws.onmessage = (event) => {
+                    if (typeof event.data === 'string') {
+                        if (event.data.includes('Path:turn.end')) {
+                            ws.close();
+                        }
+                    } else if (event.data instanceof ArrayBuffer) {
+                        const buffer = event.data;
+                        const dataView = new DataView(buffer);
+                        const headerLength = dataView.getUint16(0);
+                        if (buffer.byteLength > headerLength + 2) {
+                            const audioData = buffer.slice(headerLength + 2);
+                            audioChunks.push(audioData);
+                        }
+                    }
+                };
 
-    async function speakAllVoices() {
-      if (!voices.length) {
-        populateVoices();
-      }
+                ws.onclose = () => {
+                    btnGen.disabled = false;
+                    btnGen.textContent = '▶️ Tạo Âm Thanh Hoài My & Nghe Ngay';
+                    
+                    if (audioChunks.length > 0) {
+                        const blob = new Blob(audioChunks, { type: 'audio/mp3' });
+                        const audioUrl = URL.createObjectURL(blob);
+                        audioPlayer.src = audioUrl;
+                        audioPlayer.style.display = 'block';
+                        audioPlayer.play();
+                        logBox.textContent = `🎉 ĐÃ TẠO XONG HOÀI MY! Dung lượng: ${(blob.size / 1024).toFixed(1)} KB. Đang tự động phát âm thanh...`;
+                    } else {
+                        logBox.textContent = '❌ Lỗi: Máy chủ không trả về âm thanh. Vui lòng kiểm tra lại.';
+                    }
+                };
 
-      const text = textInput.value.trim();
-      if (!text) {
-        alert('Vui lòng nhập văn bản tiếng Việt trước khi phát tất cả giọng.');
-        return;
-      }
+                ws.onerror = (err) => {
+                    btnGen.disabled = false;
+                    btnGen.textContent = '▶️ Tạo Âm Thanh Hoài My & Nghe Ngay';
+                    logBox.textContent = `❌ Lỗi kết nối WebSocket: ${err.message || 'Không thể kết nối'}`;
+                };
 
-      for (const voice of voices) {
-        await new Promise((resolve) => {
-          const utterance = new SpeechSynthesisUtterance(text);
-          utterance.voice = voice;
-          utterance.lang = voice.lang || 'vi-VN';
-          utterance.rate = 1;
-          utterance.pitch = 1;
-          utterance.volume = 1;
-          utterance.onend = resolve;
-          window.speechSynthesis.cancel();
-          window.speechSynthesis.speak(utterance);
-        });
-      }
-    }
-
-    loadVoicesBtn.addEventListener('click', populateVoices);
-    speakAllBtn.addEventListener('click', speakAllVoices);
-    stopBtn.addEventListener('click', () => window.speechSynthesis.cancel());
-
-    if (window.speechSynthesis) {
-      window.speechSynthesis.onvoiceschanged = populateVoices;
-      populateVoices();
-    }
-  </script>
+            } catch (ex) {
+                btnGen.disabled = false;
+                btnGen.textContent = '▶️ Tạo Âm Thanh Hoài My & Nghe Ngay';
+                logBox.textContent = `❌ Ngoại lệ: ${ex.message}`;
+            }
+        }
+    </script>
 </body>
 </html>

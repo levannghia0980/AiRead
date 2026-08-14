@@ -3,7 +3,9 @@ import {
   BookOpen,
   Library as LibIcon,
   FileText,
-  Headphones
+  Headphones,
+  Sun,
+  Moon
 } from 'lucide-react'
 
 interface NavbarProps {
@@ -11,18 +13,22 @@ interface NavbarProps {
   setActiveTab: (tab: 'translate' | 'glossary' | 'library' | 'audio') => void
   selectedNovelTitle?: string
   isRunning?: boolean
+  theme?: 'dark' | 'light'
+  toggleTheme?: () => void
 }
 
 export const Navbar: React.FC<NavbarProps> = React.memo(({
   activeTab,
   setActiveTab,
   selectedNovelTitle,
-  isRunning
+  isRunning,
+  theme = 'dark',
+  toggleTheme
 }) => {
   return (
     <>
       {/* Top Navbar Header */}
-      <header className="fixed top-0 left-0 right-0 z-50 h-16 bg-[#070A13]/95 border-b border-slate-900">
+      <header className="fixed top-0 left-0 right-0 z-50 h-16 bg-[#070A13]/95 border-b border-slate-900 transition-colors duration-200">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           {/* Brand Logo */}
           <div className="flex items-center space-x-3">
@@ -92,12 +98,37 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
 
           </nav>
 
-          {/* Right Status Badge */}
+          {/* Right Status & Theme Toggle */}
           <div className="flex items-center space-x-3">
+            {/* Theme Switcher Button */}
+            {toggleTheme && (
+              <button
+                onClick={toggleTheme}
+                className={`px-3 py-1.5 rounded-xl border transition-all flex items-center gap-1.5 text-xs font-bold ${
+                  theme === 'light'
+                    ? 'bg-[#f4ecd8] border-[#d8c7a1] text-[#b45309] hover:bg-[#ede4ce] shadow-sm'
+                    : 'bg-slate-900/90 border-cyber-border text-amber-400 hover:bg-slate-800'
+                }`}
+                title={theme === 'light' ? 'Chuyển sang Giao diện Tối (Cyber Dark)' : 'Chuyển sang Giao diện Sáng (Giấy Đọc Truyện)'}
+              >
+                {theme === 'light' ? (
+                  <>
+                    <Sun className="w-4 h-4 text-amber-700" />
+                    <span className="hidden sm:inline text-amber-900 font-bold">Giấy Sáng</span>
+                  </>
+                ) : (
+                  <>
+                    <Moon className="w-4 h-4 text-amber-400" />
+                    <span className="hidden sm:inline text-slate-300">Giao diện Tối</span>
+                  </>
+                )}
+              </button>
+            )}
+
             {selectedNovelTitle ? (
               <div className="text-right">
                 <span className="text-[9px] text-cyber-muted block">Truyện đang chọn:</span>
-                <span className="text-xs font-bold text-cyber-accent truncate max-w-[120px] sm:max-w-[180px] block">
+                <span className="text-xs font-bold text-cyber-accent truncate max-w-[100px] sm:max-w-[160px] block">
                   {selectedNovelTitle}
                 </span>
               </div>

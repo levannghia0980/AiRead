@@ -7,7 +7,7 @@ URBAN_PROFILE = {
     "description": (
         "Bối cảnh: Hiện đại / Đô thị.\n"
         "Dẫn chuyện ngôi 3: Dùng 'hắn/y/gã', CẤM 'cậu/anh'.\n"
-        "Thoại: Đại từ hiện đại tự nhiên theo quan hệ/tuổi/cảm xúc."
+        "Thoại: Đại từ hiện đại tự nhiên theo quan hệ/tuổi/thân tộc (Mẹ - Con, Bố - Con, Anh - Em, Ta - Ngươi/Tôi - Cậu). TUYỆT ĐỐI CẤM 'mày - tao'."
     )
 }
 
@@ -16,7 +16,7 @@ XIANXIA_PROFILE = {
         "Bối cảnh: Tu tiên / Huyền huyễn / Cổ phong.\n"
         "Dẫn chuyện ngôi 3 & Thoại: CẤM từ hiện đại (cậu/tôi/bạn/anh/em/cô).\n"
         "Dẫn chuyện: Dùng 'hắn/y/gã/nàng/lão'. Xen kẽ nhịp nhàng, tránh lặp.\n"
-        "Đối thoại: Hệ cổ phong: ta-ngươi, sư phụ-đệ tử, huynh-đệ, tỷ-muội, tiền bối-vãn bối."
+        "Đối thoại: Hệ cổ phong: ta-ngươi, sư phụ-đệ tử, huynh-đệ, tỷ-muội, tiền bối-vãn bối. TUYỆT ĐỐI CẤM 'mày - tao'."
     )
 }
 
@@ -25,7 +25,7 @@ WUXIA_PROFILE = {
         "Bối cảnh: Kiếm hiệp / Võ lâm / Giang hồ.\n"
         "Dẫn chuyện ngôi 3 & Thoại: CẤM từ hiện đại (cậu/tôi/bạn/anh/em/cô).\n"
         "Dẫn chuyện: Dùng 'hắn/y/gã/nàng/lão/ông'.\n"
-        "Đối thoại: Quy tắc giang hồ: ta-ngươi, huynh-đệ, tỷ-muội, chưởng môn, các hạ."
+        "Đối thoại: Quy tắc giang hồ: ta-ngươi, huynh-đệ, tỷ-muội, chưởng môn, các hạ. TUYỆT ĐỐI CẤM 'mày - tao'."
     )
 }
 
@@ -40,7 +40,9 @@ COMMON_RULES = (
     "3. THUẬT NGỮ & SỐ ĐẾM:\n"
     "   - Cảnh giới/Tầng: BẮT BUỘC số Hán-Việt (Nhất→Thập). CẤM 'thứ ba', 'thứ 4'.\n"
     "   - Giữ nguyên thuật ngữ tu tiên (Khí Hải, Thần Thức, Pháp Bảo, Công Pháp...).\n"
-    "4. XƯNG HÔ: Nhất quán theo bối phận (Sư phụ-Đệ tử, Sư huynh-Sư đệ). CẤM đảo ngược.\n"
+    "4. XƯNG HÔ:\n"
+    "   - Nhất quán theo bối phận (Mẹ - Con, Sư phụ - Đệ tử, Sư huynh - Sư đệ). CẤM đảo ngược.\n"
+    "   - TUYỆT ĐỐI CẤM dùng 'mày - tao' trong đối thoại (dùng 'ta - ngươi', 'tôi - cậu' hoặc xưng hô thân tộc phù hợp).\n"
     "5. GIỮ NGUYÊN nội dung, không thêm bớt tình tiết."
 )
 

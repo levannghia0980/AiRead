@@ -929,6 +929,9 @@ async def update_chapter_text(novel_id: int = Path(...), chapterNo: int = Path(.
             mp3_cache_path = os.path.join(r"D:\NENGHIA0980\AIREAD\Output\05_Audio_TTS", novel_folder, "chapters", f"{chapterNo:06d}.mp3")
             if os.path.exists(mp3_cache_path):
                 os.remove(mp3_cache_path)
+            tmp_ch_dir = os.path.join(r"D:\NENGHIA0980\AIREAD\Output\05_Audio_TTS", novel_folder, "chapters", f"_tmp_ch{chapterNo:06d}")
+            if os.path.exists(tmp_ch_dir):
+                shutil.rmtree(tmp_ch_dir, ignore_errors=True)
         except Exception:
             pass
 
@@ -1075,6 +1078,9 @@ async def add_chapter_correction(
         )
         session.add(new_corr)
         await session.commit()
+    
+    from app.services.storage.metadata_cache import sync_novel_metadata
+    await sync_novel_metadata(novel_id)
     return {"success": True, "message": "Đã thêm từ sửa lỗi thành công."}
 
 @router.put("/{novel_id}/chapters/{chapter_no}/corrections/{corr_id}")
@@ -1095,6 +1101,9 @@ async def update_chapter_correction(
         corr.wrong_text = payload.wrong_text
         corr.correct_text = payload.correct_text
         await session.commit()
+    
+    from app.services.storage.metadata_cache import sync_novel_metadata
+    await sync_novel_metadata(novel_id)
     return {"success": True, "message": "Đã cập nhật lỗi thành công."}
 
 @router.delete("/{novel_id}/chapters/{chapter_no}/corrections/{corr_id}")
@@ -1113,6 +1122,9 @@ async def delete_chapter_correction(
             
         await session.delete(corr)
         await session.commit()
+    
+    from app.services.storage.metadata_cache import sync_novel_metadata
+    await sync_novel_metadata(novel_id)
     return {"success": True}
 
 @router.post("/{novel_id}/glossary")

@@ -36,8 +36,8 @@ SYSTEM_PROMPT_INSTRUCTION = (
     '    {"chinese_name": "圣奴", "vietnamese_name": "Thánh Nô", "entity_type": "SECT"}\n'
     "  ],\n"
     '  "corrections": [\n'
-    '    {"gg_error": "Mo Yayi", "correct_vietnamese": "Mạc Nhã Nghi"},\n'
-    '    {"gg_error": "Serena", "correct_vietnamese": "Mạc Nhã Nghi"}\n'
+    '    {"gg_error": "Xiao Fan", "correct_vietnamese": "Tiểu Phàm"},\n'
+    '    {"gg_error": "Fane", "correct_vietnamese": "Tiểu Phàm"}\n'
     "  ]\n"
     "}"
 )
@@ -182,12 +182,16 @@ async def collect_batch_entities(chapter_ids: List[int]) -> Dict[str, Any]:
             b2_unique.append(item)
 
     existing_db_dict = {}
-    if novel_id:
+    if novel_id and chapter_ids:
         async with AsyncSessionLocal() as session:
-            stmt_ent = select(NovelEntity).where(NovelEntity.novel_id == novel_id)
+            from app.models.schema import ChapterEntityLink
+            stmt_ent = select(NovelEntity).join(ChapterEntityLink).where(
+                ChapterEntityLink.chapter_id.in_(chapter_ids),
+                NovelEntity.entity_type != "CORRECTION"
+            )
             res_ent = await session.execute(stmt_ent)
             for e in res_ent.scalars():
-                if e.chinese_name and e.rough_translation and e.entity_type != "CORRECTION":
+                if e.chinese_name and e.rough_translation:
                     existing_db_dict[e.chinese_name] = {
                         "vietnamese_name": e.rough_translation,
                         "entity_type": e.entity_type or "NAME"

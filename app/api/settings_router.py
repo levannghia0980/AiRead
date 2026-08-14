@@ -57,8 +57,8 @@ class SettingsUpdatePayload(BaseModel):
     @field_validator("AIREAD_MODEL")
     @classmethod
     def validate_model(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]:
-            raise ValueError("Chỉ chấp nhận model 'gemini-3.1-flash-lite' hoặc 'gemini-3.5-flash-lite'.")
+        if v is not None:
+            return v.strip()
         return v
 
 @router.get("")
@@ -175,9 +175,9 @@ class TestConnectionPayload(BaseModel):
     @field_validator("model")
     @classmethod
     def validate_model(cls, v: str) -> str:
-        if v not in ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"]:
-            raise ValueError("Chỉ chấp nhận model 'gemini-3.1-flash-lite' hoặc 'gemini-3.5-flash-lite'.")
-        return v
+        if v:
+            return v.strip()
+        return "gemini-3.5-flash-lite"
 
 @router.post("/test-connection")
 async def test_api_connection(payload: TestConnectionPayload):
@@ -214,6 +214,11 @@ async def test_api_connection(payload: TestConnectionPayload):
                         err_msg = err_json.get("error", {}).get("message", resp.text)
                     except Exception:
                         pass
+                    if resp.status_code == 429 or "RESOURCE_EXHAUSTED" in err_msg or "Quota exceeded" in err_msg:
+                        return {
+                            "status": "success",
+                            "message": f"✅ API Key HOÀN TOÀN HỢP LỆ! (Lưu ý: Key đang chạm mốc 15 RPM Free Tier của Google, hệ thống sẽ tự chờ vài chục giây để chạy tiếp)."
+                        }
                     return {
                         "status": "failed",
                         "message": f"Kết nối Gemini thất bại (HTTP {resp.status_code}): {err_msg}"

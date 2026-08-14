@@ -18,12 +18,18 @@ frontend/dist/
 *.db
 *.db-shm
 *.db-wal
+*.wav
+*.pcm
 database.db
 novel.db
 Output/*
 !Output/**/.gitkeep
 scratch/
 *.mp3
+
+# Binaries & Voice Models
+app/bin/
+app/models/piper_voices/*.onnx
 
 # Environment Variables & Secret Credentials
 .env

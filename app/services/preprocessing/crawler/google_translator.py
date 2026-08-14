@@ -1,6 +1,7 @@
 import httpx
 import asyncio
 import re
+import html
 import random
 import logging
 from typing import List, Optional
@@ -8,11 +9,11 @@ from typing import List, Optional
 logger = logging.getLogger(__name__)
 
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0",
 ]
 
 
@@ -102,7 +103,7 @@ async def _translate_single_chunk(
                     translated_parts = [p[0] for p in res_json[0] if p and len(p) > 0 and p[0]]
                     if translated_parts:
                         return "".join(translated_parts)
-            elif resp.status_code in (429, 503):
+            elif resp.status_code in (429, 503, 302):
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1.0 * (attempt + 1))
                     continue
@@ -119,6 +120,72 @@ async def _translate_single_chunk(
             return None
 
     return None
+
+
+async def _translate_chunk_via_m_google(
+    client: httpx.AsyncClient,
+    chunk: str,
+    source_lang: str = "zh-CN",
+    target_lang: str = "vi"
+) -> Optional[str]:
+    """
+    Dịch 1 đoạn qua giao diện web di động https://translate.google.com/m.
+    Cực kỳ ổn định và chống chặn 429 từ Google.
+    """
+    if not chunk or not chunk.strip():
+        return ""
+
+    url = "https://translate.google.com/m"
+    params = {"sl": source_lang, "tl": target_lang, "q": chunk}
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+    }
+
+    try:
+        resp = await client.get(url, params=params, headers=headers, timeout=25.0)
+        if resp.status_code == 200:
+            match = re.search(r'<div class="result-container">(.*?)</div>', resp.text, re.DOTALL)
+            if match:
+                res = html.unescape(match.group(1)).strip()
+                if res:
+                    return res
+    except Exception as e:
+        logger.warning(f"[TRANSLATOR] translate.google.com/m error: {e}")
+    return None
+
+
+async def translate_text_via_m_google(
+    text: str,
+    source_lang: str = "zh-CN",
+    target_lang: str = "vi"
+) -> Optional[str]:
+    """
+    Dịch toàn bộ văn bản qua translate.google.com/m theo từng đoạn.
+    """
+    if not text or not text.strip():
+        return ""
+
+    chunks = _chunk_text_by_paragraphs(text, max_chars=1800)
+    translated_chunks = []
+
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        for i, chunk in enumerate(chunks):
+            if not chunk.strip():
+                translated_chunks.append("")
+                continue
+
+            res = await _translate_chunk_via_m_google(
+                client, chunk, source_lang=source_lang, target_lang=target_lang
+            )
+            if res:
+                translated_chunks.append(res)
+            else:
+                return None
+
+            if i < len(chunks) - 1:
+                await asyncio.sleep(0.3)
+
+    return "\n".join(translated_chunks)
 
 
 async def translate_text_via_google_nmt(
@@ -188,7 +255,12 @@ async def translate_text_via_google(text: str, source_lang: str = "zh-CN", targe
             if res is not None:
                 translated_chunks.append(res)
             else:
-                translated_chunks.append(chunk)
+                # Nếu gtx bị chặn, thử fallback sang m.google
+                m_res = await _translate_chunk_via_m_google(client, chunk, source_lang, target_lang)
+                if m_res:
+                    translated_chunks.append(m_res)
+                else:
+                    translated_chunks.append(chunk)
 
             await asyncio.sleep(0.2)
 
@@ -200,7 +272,8 @@ async def translate_text_best_quality(text: str, source_lang: str = "zh-CN", tar
     Hàm dịch tối ưu chất lượng tốt nhất có thể:
     1. Thử client 'at' (NMT Engine chất lượng cao)
     2. Thử client 'dict-chrome-ex' (Chrome Extension Engine)
-    3. Fallback sang 'gtx' (Legacy Google Engine)
+    3. Thử client mobile web 'translate.google.com/m' (Chống chặn 429 cực mạnh)
+    4. Fallback sang 'gtx' (Legacy Google Engine)
     """
     if not text or not text.strip():
         return ""
@@ -221,5 +294,17 @@ async def translate_text_best_quality(text: str, source_lang: str = "zh-CN", tar
                     return res
         except Exception:
             pass
+
+    # Thử translate.google.com/m
+    try:
+        m_res = await translate_text_via_m_google(text, source_lang=source_lang, target_lang=target_lang)
+        if m_res and m_res.strip():
+            latin_chars = len(re.findall(r'[a-zA-ZÀ-ỹ]', m_res))
+            total_chars = len(m_res.strip())
+            if total_chars > 0 and (latin_chars / total_chars) > 0.2:
+                logger.info(f"[TRANSLATOR] ✅ Dịch thành công bằng engine 'm.google' ({len(text)} -> {len(m_res)} ký tự)")
+                return m_res
+    except Exception as e:
+        logger.warning(f"[TRANSLATOR] m.google engine error: {e}")
 
     return await translate_text_via_google(text, source_lang, target_lang)

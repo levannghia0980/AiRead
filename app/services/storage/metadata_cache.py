@@ -232,6 +232,25 @@ def load_chapter_corrections_fast(novel_title_rough: str, chapter_no: int) -> Li
     return data.get("corrections", [])
 
 
+def load_all_novel_corrections_fast(novel_title_rough: str) -> Dict[str, str]:
+    """
+    Đọc gom TOÀN BỘ corrections đã biết của toàn bộ truyện từ chapters/*.json.
+    Dùng để đối chiếu và sửa các lỗi Google Translate xuất hiện lặp lại ở các chương sau.
+    """
+    meta_dir = _get_novel_meta_dir(novel_title_rough)
+    chapters_dir = meta_dir / "chapters"
+    all_corrs: Dict[str, str] = {}
+    if chapters_dir.exists():
+        for ch_file in sorted(chapters_dir.glob("*.json")):
+            ch_data = _read_json(ch_file, {})
+            for c in ch_data.get("corrections", []):
+                wt = c.get("wrong_text", "")
+                ct = c.get("correct_text", "")
+                if wt and ct:
+                    all_corrs[wt] = ct
+    return all_corrs
+
+
 def load_novel_context_fast(novel_title_rough: str) -> Dict[str, str]:
     """
     Đọc nhanh context truyện (genre, profile...) từ context.json.

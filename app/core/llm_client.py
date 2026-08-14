@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import time
 import httpx
 from typing import Dict, Any, Optional
 
@@ -12,6 +13,9 @@ DEFAULT_SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"}
 ]
 
+_LAST_GEMINI_REQUEST_TIME = 0.0
+_GEMINI_REQUEST_LOCK = asyncio.Lock()
+
 async def post_gemini_with_retry(
     client: httpx.AsyncClient,
     url: str,
@@ -21,10 +25,13 @@ async def post_gemini_with_retry(
 ) -> httpx.Response:
     """
     Tự động gửi request đến Gemini API và xử lý thông minh:
-    - Bắt và thử lại tự động các lỗi mạng/ngắt kết nối (Server disconnected without sending a response, Timeout, Connection reset).
-    - Xử lý thông minh lỗi HTTP 429 (Rate Limit / Quota Exceeded) với delay khuyến nghị từ API.
-    - Tự động gắn bộ lọc safetySettings=BLOCK_NONE để loại bỏ hoàn toàn vi phạm chặn văn bản (PROHIBITED_CONTENT).
+    - Chủ động giãn cách tối thiểu 4.1s giữa các request (Adaptive Pacing) để 100% không chạm mốc 15 RPM.
+    - Bắt và thử lại tự động các lỗi mạng/ngắt kết nối.
+    - Xử lý thông minh lỗi HTTP 429 (Rate Limit / Quota Exceeded) với delay từ API.
+    - Tự động gắn bộ lọc safetySettings=BLOCK_NONE để loại bỏ hoàn toàn vi phạm chặn văn bản.
     """
+    global _LAST_GEMINI_REQUEST_TIME
+
     if payload is not None and "safetySettings" not in payload:
         payload["safetySettings"] = DEFAULT_SAFETY_SETTINGS
 
@@ -37,6 +44,16 @@ async def post_gemini_with_retry(
 
     last_exception = None
     for attempt in range(1, max_retries + 1):
+        # Tự động điều tiết tần suất request (Pacing): Giãn cách tối thiểu 4.1s giữa các request
+        # để đảm bảo 100% không vượt quá ngưỡng 15 RPM của Gemini Free Tier, tránh tối đa việc bị ngắt 60s.
+        async with _GEMINI_REQUEST_LOCK:
+            now = time.time()
+            elapsed = now - _LAST_GEMINI_REQUEST_TIME
+            min_interval = 4.1  # 60s / 15 RPM = 4.0s -> 4.1s safe margin
+            if elapsed < min_interval:
+                await asyncio.sleep(min_interval - elapsed)
+            _LAST_GEMINI_REQUEST_TIME = time.time()
+
         try:
             resp = await client.post(url, headers=headers, json=payload)
         except Exception as e:
@@ -59,26 +76,28 @@ async def post_gemini_with_retry(
             
         # Kiểm tra nếu dính lỗi 429 Quota Exceeded / Rate Limit
         if resp.status_code == 429 or "RESOURCE_EXHAUSTED" in resp.text or "Quota exceeded" in resp.text:
-            wait_seconds = 18.0 # Giá trị chờ mặc định an toàn cho Gemini Free Tier (15 RPM)
+            wait_seconds = 8.0  # Chờ ngắn hơn để nhanh thử lại hoặc xoay key
             
             try:
                 err_data = resp.json()
-                # Tìm retryDelay trong details của Gemini response
                 details = err_data.get("error", {}).get("details", [])
                 for d in details:
                     if "retryDelay" in d:
-                        delay_str = d["retryDelay"] # Dạng "18s" hoặc "21s"
+                        delay_str = d["retryDelay"]
                         num = float(re.sub(r"[^\d.]", "", delay_str))
                         if num > 0:
-                            wait_seconds = num + 1.5 # Thêm 1.5s buffer an toàn
+                            wait_seconds = min(num + 1.0, 15.0)  # Cắt tối đa 15s chờ
                             break
             except Exception:
                 pass
                 
-            log_429 = f"⚠️ [LLM 429 Rate Limit] Chạm giới hạn 15 RPM Gemini Free Tier. Đang tự động nghỉ {wait_seconds:.1f}s trước khi thử lại (Lần {attempt}/{max_retries})..."
+            log_429 = f"⚠️ [LLM 429 Rate Limit] Chạm giới hạn 15 RPM Gemini Free Tier. Đang thử lại (Lần {attempt}/{max_retries})..."
             print(log_429)
             _safe_add_log(log_429, "warning")
-            await asyncio.sleep(wait_seconds)
+            if attempt < max_retries:
+                await asyncio.sleep(wait_seconds)
+            else:
+                return resp
         else:
             # Lỗi khác (400, 500...), thử lại với exponential backoff ngắn
             log_err = f"⚠️ [LLM HTTP {resp.status_code}] Gặp lỗi API: {resp.text[:150]}... Đang chờ 5s để thử lại ({attempt}/{max_retries})."
@@ -86,6 +105,72 @@ async def post_gemini_with_retry(
             _safe_add_log(log_err, "warning")
             await asyncio.sleep(5.0)
             
+    return resp
+
+
+async def post_openrouter_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    headers: Dict[str, str],
+    payload: Dict[str, Any],
+    max_retries: int = 6
+) -> httpx.Response:
+    """
+    Gửi request đến OpenRouter API với auto-retry thông minh:
+    - Tự đọc retry_after_seconds từ response 429 và chờ đúng thời gian yêu cầu.
+    - Retry tối đa max_retries lần cho các lỗi mạng và 429.
+    """
+    def _safe_add_log(msg: str, level: str = "info"):
+        try:
+            from app.api.translation_router import add_system_log
+            add_system_log(msg, level)
+        except Exception:
+            pass
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = await client.post(url, headers=headers, json=payload)
+        except Exception as e:
+            wait_s = min(5.0 * attempt, 30.0)
+            log_net = f"⚠️ [OpenRouter MẠNG] Lỗi kết nối: {e}. Chờ {wait_s:.0f}s thử lại ({attempt}/{max_retries})..."
+            print(log_net)
+            _safe_add_log(log_net, "warning")
+            if attempt < max_retries:
+                await asyncio.sleep(wait_s)
+                continue
+            raise
+
+        if resp.status_code == 200:
+            return resp
+
+        if resp.status_code == 429:
+            # Đọc retry_after_seconds từ response OpenRouter
+            wait_s = 10.0
+            try:
+                err_data = resp.json()
+                retry_s = err_data.get("error", {}).get("metadata", {}).get("retry_after_seconds")
+                if retry_s and float(retry_s) > 0:
+                    wait_s = float(retry_s) + 2.0  # Thêm 2s buffer
+            except Exception:
+                pass
+            wait_s = min(wait_s, 60.0)
+            log_429 = f"⚠️ [OpenRouter 429] Rate Limit Free Tier. Chờ {wait_s:.0f}s thử lại ({attempt}/{max_retries})..."
+            print(log_429)
+            _safe_add_log(log_429, "warning")
+            if attempt < max_retries:
+                await asyncio.sleep(wait_s)
+                continue
+            return resp
+        else:
+            # Lỗi khác
+            log_err = f"⚠️ [OpenRouter HTTP {resp.status_code}] {resp.text[:200]}... ({attempt}/{max_retries})"
+            print(log_err)
+            _safe_add_log(log_err, "warning")
+            if attempt < max_retries:
+                await asyncio.sleep(5.0)
+                continue
+            return resp
+
     return resp
 
 

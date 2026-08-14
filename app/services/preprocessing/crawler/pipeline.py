@@ -153,8 +153,13 @@ async def process_single_chapter_crawl(chapter_id: int) -> Dict[str, Any]:
             content_text=raw_content
         )
 
-        # 2. Dịch Google thô (GG)
-        gg_content = await translate_text_best_quality(raw_content)
+        # 2. Dịch Google thô (GG) — Bảo vệ xưng hô / bối phận tiếng Trung
+        from app.services.preprocessing.crawler.pronoun_protector import protect_pronouns, restore_pronouns
+        novel_profile = novel.context_profile or (novel.genres or "xianxia").lower()
+        protected_raw, pronoun_map = protect_pronouns(raw_content, profile=novel_profile)
+        gg_content_raw = await translate_text_best_quality(protected_raw)
+        gg_content = restore_pronouns(gg_content_raw, pronoun_map)
+        
         file_path_gg = save_chapter_version_file(
             version_type="GG",
             novel_title_raw=novel_title_raw,

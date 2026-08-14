@@ -168,9 +168,9 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
     const nextChapter = selectedNovel?.chapters.find((c: any) => c.chapter_no === readingChapter.chapter_no + 1 && (c.status === 'COMPLETED' || c.status === 'RESCUED'))
 
     return (
-      <div className="relative flex flex-col h-full overflow-hidden bg-slate-950/60 rounded-2xl border border-cyber-border/40">
+      <div className="relative flex flex-col h-full overflow-hidden bg-slate-950/60 rounded-2xl border border-cyber-border/40 reader-container">
         {/* Reader Header Controls */}
-        <div className="flex-shrink-0 border-b border-cyber-border/40 px-5 py-3.5 flex items-center justify-between bg-slate-950/95 z-30 flex-wrap gap-2">
+        <div className="flex-shrink-0 border-b border-cyber-border/40 px-5 py-3.5 flex items-center justify-between bg-slate-950/95 z-30 flex-wrap gap-2 reader-header">
           <div className="flex items-center gap-3">
             <button
               onClick={() => {
@@ -183,7 +183,7 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
               <span>Thoát Đọc (Danh Sách)</span>
             </button>
             <div>
-              <h2 className="text-sm font-bold text-cyber-accent">
+              <h2 className="text-sm font-bold text-cyber-accent reader-title">
                 Chương {readingChapter.chapter_no}: {readingChapter.title}
               </h2>
               <p className="text-[10px] text-cyber-muted font-medium flex items-center gap-1">
@@ -258,17 +258,17 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
         </div>
 
         {/* Reader Content Body */}
-        <div className="flex-1 overflow-y-auto p-6 text-slate-200 leading-relaxed font-sans text-base pb-44 md:pb-32">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 text-slate-200 leading-relaxed font-sans text-base pb-44 md:pb-32 reader-content-body">
           {isEditing ? (
-            <div className="space-y-3">
+            <div className="max-w-4xl mx-auto space-y-3 my-2">
               <div className="flex items-center justify-between p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs">
                 <div className="flex items-center gap-2">
                   <span className="animate-pulse font-bold">✏️ Chế độ chỉnh sửa trực tiếp:</span>
-                  <span>Bạn có thể click vào khung bên dưới để sửa chữ, sau đó bấm <strong>"Lưu Chỉnh Sửa"</strong>.</span>
+                  <span>Bạn có thể click trực tiếp vào văn bản bên dưới để sửa chữ, sau đó bấm <strong>"Lưu Chỉnh Sửa"</strong>.</span>
                 </div>
                 <button
                   onClick={() => setIsEditing(false)}
-                  className="text-[11px] underline hover:text-white"
+                  className="text-[11px] underline hover:text-white font-semibold"
                 >
                   Đóng chế độ sửa
                 </button>
@@ -277,16 +277,28 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
                 ref={editorRef}
                 contentEditable
                 suppressContentEditableWarning
-                className="focus:outline-none min-h-[500px] border border-cyber-accent/50 focus:border-cyber-accent rounded-xl p-5 bg-slate-900/70 leading-relaxed font-sans text-base shadow-inner text-slate-100"
+                className="focus:outline-none min-h-[500px] border border-cyber-accent/50 focus:border-cyber-accent rounded-2xl p-6 sm:p-10 bg-slate-900/70 leading-relaxed font-sans text-base shadow-inner text-slate-100 reader-paper-sheet"
                 style={{ letterSpacing: 'normal' }}
                 dangerouslySetInnerHTML={{ __html: formatChapterTextForReader(readingChapter.translated_text) }}
               />
             </div>
           ) : (
-            <div className="prose prose-invert max-w-none leading-relaxed text-slate-200 font-sans text-base">
-              {splitParagraphs(readingChapter.translated_text).map((pText, idx) => (
-                <ParagraphItem key={idx} htmlContent={pText} />
-              ))}
+            <div className="max-w-4xl mx-auto reader-paper-sheet p-6 sm:p-10 rounded-2xl border border-cyber-border/30 shadow-md my-2">
+              <div className="mb-6 pb-4 border-b border-cyber-border/30">
+                <h1 className="text-xl sm:text-2xl font-bold reader-title text-cyber-accent mb-2">
+                  Chương {readingChapter.chapter_no}: {readingChapter.title}
+                </h1>
+                <p className="text-xs text-cyber-muted flex items-center gap-2">
+                  <span>{selectedNovel?.novel.title}</span>
+                  <span>•</span>
+                  <span>{splitParagraphs(readingChapter.translated_text).length} đoạn văn</span>
+                </p>
+              </div>
+              <div className="prose max-w-none leading-relaxed text-slate-200 font-sans text-base">
+                {splitParagraphs(readingChapter.translated_text).map((pText, idx) => (
+                  <ParagraphItem key={idx} htmlContent={pText} />
+                ))}
+              </div>
             </div>
           )}
         </div>

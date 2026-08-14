@@ -455,7 +455,7 @@ async def generate_range(
 
 @router.post("/cancel")
 async def cancel_audio_job(novel_id: int = Path(...)):
-    """Hủy tiến trình tạo audio đang chạy của truyện"""
+    """Hủy tiến trình tạo audio đang chạy của truyện và dọn sạch các file tạm _tmp_ch*"""
     cancelled_any = False
     for key, job in ACTIVE_TTS_JOBS.items():
         if key.startswith(f"{novel_id}_") and job.get("is_running", False):
@@ -466,8 +466,21 @@ async def cancel_audio_job(novel_id: int = Path(...)):
             job["is_running"] = False
             job["status"] = "cancelled"
             
+    # Dọn sạch các thư mục tạm _tmp_ch* dở dang trên đĩa
+    async with AsyncSessionLocal() as session:
+        stmt = select(Novel).where(Novel.id == novel_id)
+        res = await session.execute(stmt)
+        novel = res.scalar_one_or_none()
+        if novel:
+            novel_folder = sanitize_filename(novel.title_rough if novel.title_rough else novel.title_raw)
+            chapters_cache_dir = os.path.join(r"D:\NENGHIA0980\AIREAD\Output\05_Audio_TTS", novel_folder, "chapters")
+            if os.path.exists(chapters_cache_dir):
+                for f in os.listdir(chapters_cache_dir):
+                    if f.startswith("_tmp_ch"):
+                        shutil.rmtree(os.path.join(chapters_cache_dir, f), ignore_errors=True)
+
     if cancelled_any:
-        return {"status": "success", "message": "Đã hủy bỏ tiến trình sinh audio thành công."}
+        return {"status": "success", "message": "Đã hủy bỏ tiến trình sinh audio và dọn sạch dữ liệu tạm dở dang."}
     return {"status": "warning", "message": "Không tìm thấy tiến trình sinh audio nào đang hoạt động."}
 
 @router.get("/download/{filename}")

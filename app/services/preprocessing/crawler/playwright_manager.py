@@ -22,6 +22,14 @@ class PlaywrightManager:
                 logger.warning(f"Could not set WindowsProactorEventLoopPolicy: {e}")
 
         async with self._lock:
+            if self._browser:
+                try:
+                    if not self._browser.is_connected():
+                        logger.warning("Playwright browser instance was disconnected. Re-initializing...")
+                        self._browser = None
+                except Exception:
+                    self._browser = None
+
             if not self._playwright:
                 from playwright.async_api import async_playwright
                 logger.info("Initializing Playwright...")
@@ -30,18 +38,30 @@ class PlaywrightManager:
                 except NotImplementedError as e:
                     logger.error(f"Playwright start failed due to Windows Event Loop policy: {e}")
                     raise Exception("Playwright không tương thích với EventLoop hiện tại.")
+                except Exception as e:
+                    logger.error(f"Playwright start error: {e}")
+                    self._playwright = None
+                    raise Exception(f"Không thể khởi chạy Playwright driver: {e}")
+
             if not self._browser:
                 logger.info("Launching shared Chromium browser instance...")
-                self._browser = await self._playwright.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--disable-accelerated-2d-canvas",
-                        "--disable-gpu",
-                    ]
-                )
+                try:
+                    self._browser = await self._playwright.chromium.launch(
+                        headless=True,
+                        args=[
+                            "--no-sandbox",
+                            "--disable-setuid-sandbox",
+                            "--disable-dev-shm-usage",
+                            "--disable-accelerated-2d-canvas",
+                            "--disable-gpu",
+                        ]
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to launch Chromium browser: {e}")
+                    self._browser = None
+                    self._playwright = None
+                    raise e
+
             return self._browser
 
     async def close(self):

@@ -35,11 +35,10 @@ const ToggleSwitch: React.FC<{
   <button
     type="button"
     onClick={() => onChange(!checked)}
-    className={`w-full rounded-xl px-3 py-2 flex items-center justify-between transition-all duration-200 border cursor-pointer ${
-      checked
+    className={`w-full rounded-xl px-3 py-2 flex items-center justify-between transition-all duration-200 border cursor-pointer ${checked
         ? 'border-emerald-500/50 bg-emerald-950/30 text-emerald-300 shadow-[0_0_10px_rgba(16,185,129,0.15)]'
         : 'border-slate-800 bg-slate-900/60 text-slate-400 hover:border-slate-700'
-    }`}
+      }`}
   >
     <div className="flex flex-col text-left pr-2 min-w-0">
       <span className="text-xs font-bold flex items-center gap-1.5 truncate">
@@ -49,14 +48,12 @@ const ToggleSwitch: React.FC<{
       {sublabel && <span className="text-[10px] opacity-75 mt-0.5 font-normal leading-tight">{sublabel}</span>}
     </div>
     <div
-      className={`w-9 h-5 rounded-full transition-colors duration-300 relative flex-shrink-0 p-0.5 ${
-        checked ? 'bg-emerald-500' : 'bg-slate-700'
-      }`}
+      className={`w-9 h-5 rounded-full transition-colors duration-300 relative flex-shrink-0 p-0.5 ${checked ? 'bg-emerald-500' : 'bg-slate-700'
+        }`}
     >
       <div
-        className={`w-4 h-4 rounded-full bg-white shadow-md transform transition-transform duration-300 ${
-          checked ? 'translate-x-4' : 'translate-x-0'
-        }`}
+        className={`w-4 h-4 rounded-full bg-white shadow-md transform transition-transform duration-300 ${checked ? 'translate-x-4' : 'translate-x-0'
+          }`}
       />
     </div>
   </button>
@@ -71,7 +68,7 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
   batchSize,
   startChapter,
   endChapter,
-  translationStyle = 'original_only',
+  translationStyle = 'draft_only',
   enableUnblock = true,
   forceRetranslate = false,
   setSettings,
@@ -91,12 +88,8 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
         ]
       case 'openrouter':
         return [
-          'openrouter/free',
-          'google/gemini-2.0-flash-lite-preview-02-05:free',
-          'google/gemini-2.0-pro-exp-02-05:free',
-          'deepseek/deepseek-r1:free',
-          'deepseek/deepseek-chat:free',
-          'meta-llama/llama-3.3-70b-instruct:free'
+          'google/gemma-4-26b-a4b-it:free',
+          'nvidia/nemotron-3-ultra-550b-a55b:free'
         ]
       case 'openai':
         return ['gpt-4o-mini', 'gpt-4o']
@@ -214,8 +207,8 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
 
         {keyTestResult && (
           <div className={`mt-1 text-[10px] p-1.5 rounded-lg flex items-center gap-1.5 ${keyTestResult.success
-              ? 'bg-emerald-950/40 border border-emerald-500/30 text-emerald-400'
-              : 'bg-rose-950/40 border border-rose-500/30 text-rose-400'
+            ? 'bg-emerald-950/40 border border-emerald-500/30 text-emerald-400'
+            : 'bg-rose-950/40 border border-rose-500/30 text-rose-400'
             }`}>
             {keyTestResult.success ? <CheckCircle className="w-3 h-3 flex-shrink-0" /> : <XCircle className="w-3 h-3 flex-shrink-0" />}
             <span className="truncate">{keyTestResult.message}</span>

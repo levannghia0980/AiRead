@@ -1,5 +1,6 @@
 import re
 import os
+import shutil
 from typing import Dict, List, Any, Optional
 from sqlalchemy import select
 from app.core.database import AsyncSessionLocal
@@ -72,7 +73,7 @@ def fix_broken_words(text: str, protected_names: list = None) -> str:
         sorted_names = sorted(set(protected_names), key=len, reverse=True)
         for idx, name in enumerate(sorted_names):
             if name and name in text:
-                placeholder = f"§PROT_{idx:04d}§"
+                placeholder = f"___PROT_NAME_{idx:04d}___"
                 text = text.replace(name, placeholder)
                 name_placeholders[placeholder] = name
     
@@ -81,6 +82,26 @@ def fix_broken_words(text: str, protected_names: list = None) -> str:
     vn_upper = r'A-ZÀÁẢÃẠẤẦẨẪẬẮẰẲẴẶÉÈẺẼẸẾỀỂỄỆÍÌỈĨỊÓÒỎÕỌỐỒỔỖỘƠỚỜỞỠỢÚÙỦŨỤƯỨỪỬỮỰỲÝỶỸỴĐ'
     vn_all = rf'{vn_lower}{vn_upper}'
     
+    # Rule 00: Tự động dọn dẹp các thẻ span lỗi không có dấu ngoặc nhọn (VD: span style=... /span)
+    text = re.sub(r'(?i)span style="[^"]*" class="swept-chinese" data-raw="[^"]*"', '', text)
+    text = re.sub(r'(?i)/span', '', text)
+    text = re.sub(r'<span[^>]*class="swept-chinese"[^>]*>(.*?)</span>', r'\1', text)
+
+    # Rule 00b: Tự động loại bỏ rác metadata crawler website Trung Quốc ở đầu chương
+    text = re.sub(r'(?i)^\s*(?:Mì nấm cần thêm trứng|Thêm trứng vào mì nấm|蘑菇面要加蛋)\s*\n?', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*\d+\s*từ\s*\n?', '', text, flags=re.IGNORECASE | re.MULTILINE)
+    text = re.sub(r'^\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s*\n?', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*[]\s*\n?', '', text, flags=re.MULTILINE)
+
+    # Rule 00c: Bộ chuẩn hóa lặp từ tổng quát (Generalized Dynamic Deduplication)
+    # Tự động bắt mọi cụm 1-3 từ bị lặp lại liên tiếp (VD: "bầu vú bầu vú" -> "bầu vú", "lỗ lồn lỗ lồn" -> "lỗ lồn")
+    vn_word = r'[a-zA-Z0-9\u00C0-\u024F\u1E00-\u1EFF]+'
+    # Bắt cụm 2-3 từ lặp lại
+    text = re.sub(rf'\b({vn_word}\s+{vn_word})\s+\1\b', r'\1', text, flags=re.IGNORECASE)
+    text = re.sub(rf'\b({vn_word}\s+{vn_word}\s+{vn_word})\s+\1\b', r'\1', text, flags=re.IGNORECASE)
+    # Bắt từ đơn lặp lại
+    text = re.sub(rf'\b({vn_word})\s+\1\b', r'\1', text, flags=re.IGNORECASE)
+
     # Rule 0a: Sửa triệt để rác tiêu đề chương bị dịch nhầm
     text = re.sub(r'(?i)(?:KHÔNG|NO)\s*\.?\s*(\d+)\s*(?:chương|Chương|章)?\s*[:.:-]?\s*', r'Chương \1: ', text)
     text = re.sub(r'第\s*(\d+)\s*章\s*[:.:-]?\s*', r'Chương \1: ', text)
@@ -88,6 +109,21 @@ def fix_broken_words(text: str, protected_names: list = None) -> str:
 
     # Rule 0b: Sửa triệt để lỗi tách rời chữ 'y' (VD: vẫ y -> vẫy, lấ y -> lấy, đâ y -> đây, giâ y -> giây)
     text = re.sub(rf'(?<=[{vn_all}])\s+(y)\b', r'\1', text)
+
+    # Dọn dẹp thẻ neo inline ⟦Tn:...⟧ còn sót lại (nếu có)
+    from app.services.translation.contextt.term_anchor_tagger import clean_remaining_anchor_tags
+    text = clean_remaining_anchor_tags(text)
+
+    # Rule 2: Chuẩn hóa ngữ pháp cấu trúc sở hữu 'của' và xử lý chữ 'Đích' (的) tổng quát
+    text = re.sub(r'(?i)\b(?:của\s+)?(tôi|anh|hắn|cô ấy|nàng|em|mình|ta|chúng tôi|bọn họ|họ|mẹ|con)\s+[Đđ]ích\b', r'của \1', text)
+    text = re.sub(r'(?i)\b[Đđ]ích\b', '', text)
+    text = re.sub(r'\bTÔI\b', 'tôi', text)
+    text = re.sub(r'(?i)\bcủa\s+của\b', 'của', text)
+
+    # Rule 3: Đảo ngược trật tự từ sở hữu bộ phận cơ thể dịch ngược (VD: 'hắn đôi mắt' -> 'đôi mắt của hắn')
+    body_parts = r'âm hộ|âm đạo|tiểu huyệt|hoa huyệt|mật huyệt|nộn huyệt|cự vật|dương vật|quy đầu|nhũ hoa|núm vú|bầu vú|ngực|mông|đùi|bụng|eo|cơ thể|thân thể|làn da|khuôn mặt|đôi mắt|đôi môi'
+    pronouns = r'cô ấy|anh ấy|hắn|nàng|tôi|em|bạn|ta|mẹ|con'
+    text = re.sub(rf'\b({pronouns})\s+({body_parts})\b', r'\2 của \1', text, flags=re.IGNORECASE)
 
 
 
@@ -158,6 +194,21 @@ async def enforce_entity_names(text: str, novel_id: int) -> str:
     if replaced_count > 0:
         print(f"[POST-PROCESS] 🛡️ enforce_entity_names: Đã thay thế {replaced_count} tên Hán tự sót lại bằng tên Việt chuẩn từ DB.")
     
+    return text
+
+def enforce_chapter_corrections(text: str, corrections: Dict[str, str]) -> str:
+    """
+    Hậu xử lý an toàn: Quét và thay thế các từ Pinyin / Tiếng Anh dịch lỗi còn sót lại (như Mo Yayi, Serena, Wang Wei)
+    bằng tên Việt chuẩn theo đúng ranh giới từ (Word Boundary \\b...\\b), đảm bảo 100% không bao giờ thay thế lố hay dính từ.
+    """
+    if not text or not corrections:
+        return text or ""
+    for wrong_text, correct_text in corrections.items():
+        if wrong_text and correct_text and wrong_text.strip().lower() != correct_text.strip().lower():
+            # CHỈ thay thế nếu wrong_text là Pinyin / Tiếng Anh (không chứa dấu thanh tiếng Việt)
+            if not re.search(r'[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]', wrong_text.lower()):
+                pattern = r'\b' + re.escape(wrong_text) + r'\b'
+                text = re.sub(pattern, correct_text, text)
     return text
 
 def extract_chapter_text(full_text: str, cid: int, next_cid: int = None, chap_no: int = None, next_chap_no: int = None) -> Optional[str]:
@@ -282,9 +333,10 @@ async def process_and_split_batch(
     4. Sweep Pinyin (Bôi đỏ tiếng Anh/Pinyin)
     5. Lưu vào file và cập nhật DB.
     """
-    # 1. Unmask
-    print("[POST-PROCESS] Đang giải mã các từ nhạy cảm (Unmasking)...")
-    full_text = unmask_text_with_dictionary(translated_text_masked, mapping_table)
+    # 1. Unmask (Giải mã từ nhạy cảm - Bật nâng cấp từ ngữ sắc văn 18+ cho luồng CONTEXTT)
+    is_contextt = (version_type.upper() == "CONTEXTT")
+    print(f"[POST-PROCESS] Đang giải mã các từ nhạy cảm (Unmasking - Bật nâng cấp sắc văn: {is_contextt})...")
+    full_text = unmask_text_with_dictionary(translated_text_masked, mapping_table, is_draft_only=is_contextt)
     
     # Khởi tạo thư mục
     async with AsyncSessionLocal() as session:
@@ -437,17 +489,13 @@ async def process_and_split_batch(
                     len_status = f"RAW={raw_len} → Output={out_len}"
                     print(f"[POST-PROCESS] 🔍 Kiểm tra Chương {chap_no}: {tag_status} | {len_status}")
                     
-                    # NGHIÊM NGẶT: Phải có CẢ 2 thẻ BẮT ĐẦU + KẾT THÚC, không bị xén ngắn
-                    if not chap_text or not has_begin_tag or not has_end_tag or is_too_short:
+                    # BỀN BỈ: Nếu trích xuất được nội dung và chiều dài hợp lệ, chấp nhận chương mà không hủy cả lô
+                    if not chap_text or is_too_short:
                         reason = []
-                        if not has_begin_tag:
-                            reason.append("thiếu thẻ BẮT ĐẦU CHƯƠNG")
-                        if not has_end_tag:
-                            reason.append("thiếu thẻ KẾT THÚC CHƯƠNG")
                         if is_too_short:
                             reason.append(f"đầu ra bị xén ngắn (RAW: {raw_len} ký tự, Output: {out_len} ký tự)")
                         if not chap_text:
-                            reason.append("không trích xuất được nội dung")
+                            reason.append("không trích xuất được nội dung (thiếu thẻ phân tách)")
                             
                         reason_str = ", ".join(reason)
                         err_msg = (
@@ -479,6 +527,10 @@ async def process_and_split_batch(
                 # 3b. Fix broken words (dính chữ từ LLM output) — có bảo vệ tên thực thể
                 chap_text = fix_broken_words(chap_text, protected_names=protected_names)
                 
+                # 3b2. Nâng cấp các cụm từ sắc văn 18+ và dọn rác dịch thô Google Translate ở Hậu xử lý
+                from app.services.unblock.preprocessor.erotic_dictionary import upgrade_erotic_phrase
+                chap_text = upgrade_erotic_phrase(chap_text)
+                
                 # 3c. Enforce entity names (lưới an toàn cuối cùng)
                 chap_text = await enforce_entity_names(chap_text, novel_id)
                 
@@ -494,23 +546,24 @@ async def process_and_split_batch(
                     
                 saved_files.append(file_path)
                 
-                # Cập nhật DB (version_type = FINAL)
-                stmt_ver = select(ChapterVersion).where(
-                    ChapterVersion.chapter_id == cid, 
-                    ChapterVersion.version_type == "FINAL"
-                )
-                res_ver = await session.execute(stmt_ver)
-                ver = res_ver.scalar_one_or_none()
-                if ver:
-                    ver.file_path = file_path
-                    ver.content = chap_text
-                else:
-                    session.add(ChapterVersion(
-                        chapter_id=cid, 
-                        version_type="FINAL", 
-                        file_path=file_path, 
-                        content=chap_text
-                    ))
+                # Cập nhật DB cho tất cả các loại phiên bản kết quả: FINAL, CONTEXTT, EDITED, LLM
+                for v_type in ["FINAL", "CONTEXTT", "EDITED", "LLM"]:
+                    stmt_ver = select(ChapterVersion).where(
+                        ChapterVersion.chapter_id == cid, 
+                        ChapterVersion.version_type == v_type
+                    )
+                    res_ver = await session.execute(stmt_ver)
+                    ver = res_ver.scalar_one_or_none()
+                    if ver:
+                        ver.file_path = file_path
+                        ver.content = chap_text
+                    else:
+                        session.add(ChapterVersion(
+                            chapter_id=cid, 
+                            version_type=v_type, 
+                            file_path=file_path, 
+                            content=chap_text
+                        ))
                     
                 # Update status
                 stmt_chap = select(Chapter).where(Chapter.id == cid)
@@ -525,6 +578,9 @@ async def process_and_split_batch(
                     if os.path.exists(mp3_cache_path):
                         os.remove(mp3_cache_path)
                         print(f"[POST-PROCESS] 🧹 Đã xóa cache Audio cũ của chương {chap_no}.")
+                    tmp_ch_dir = os.path.join(r"D:\NENGHIA0980\AIREAD\Output\05_Audio_TTS", novel_folder, "chapters", f"_tmp_ch{chap_no:06d}")
+                    if os.path.exists(tmp_ch_dir):
+                        shutil.rmtree(tmp_ch_dir, ignore_errors=True)
                 except Exception:
                     pass
 

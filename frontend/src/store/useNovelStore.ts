@@ -192,7 +192,7 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
   batchSize: Math.max(parseInt(localStorage.getItem('airead_batch_size') || '3'), 1),
   startChapter: null,
   endChapter: null,
-  translationStyle: localStorage.getItem('airead_translation_style') || 'original_only',
+  translationStyle: localStorage.getItem('airead_translation_style') || 'draft_only',
   enableUnblock: localStorage.getItem('airead_enable_unblock') !== 'false',
   enableLlmExtract: true,
   enableNamesDict: true,

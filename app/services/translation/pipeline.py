@@ -3,7 +3,7 @@ import re
 from typing import List, Optional, Dict, Any
 from sqlalchemy import select
 from app.core.database import AsyncSessionLocal
-from app.models.schema import Chapter, Novel, NovelEntity, ChapterEntityLink
+from app.models.schema import Chapter, Novel, NovelEntity, ChapterEntityLink, ChapterVersion
 from app.services.preprocessing.dichhan.evidence_collector import collect_batch_entities
 from app.services.preprocessing.dichhan.llm_extractor import process_2branch_evidence_via_llm
 from app.api.novel_router import update_novel_entity_and_apply, UpdateNovelEntityRequest
@@ -132,10 +132,12 @@ async def _process_evidence_and_save(
         return
 
     evidence_payload = await collect_batch_entities(batch)
+    from app.models.schema import ChapterEntityLink
     
     if evidence_payload["branch_1_ner_candidates"] or evidence_payload["branch_2_gg_errors_to_clean"]:
         try:
             llm_res = await process_2branch_evidence_via_llm(evidence_payload)
+            raw_llm_entities = list(llm_res.get("entities", []))
             entities = llm_res.get("entities", [])
             corrections = llm_res.get("corrections", [])
             
@@ -186,76 +188,49 @@ async def _process_evidence_and_save(
                                         ChapterEntityLink.entity_id == ent_id
                                     )
                                     link_res = await session.execute(stmt_link)
-                                    if not link_res.scalar_one_or_none():
+                                    if not link_res.scalars().first():
                                         session.add(ChapterEntityLink(chapter_id=cid, entity_id=ent_id))
                                 await session.commit()
                     except Exception as e:
                         print(f"[PREPROCESS] Lỗi update entity {ent}: {e}")
                     
-            # Áp dụng Corrections — CHỈ lưu vào chương nào thực sự có lỗi đó trong văn bản GG
-            if enable_gg_corrections and corrections:
-                import os as _os
-                from app.models.schema import ChapterCorrection, ChapterVersion as _CV
-                async with AsyncSessionLocal() as session:
-                    # Tải trước nội dung GG của từng chương để kiểm tra
-                    chapter_gg_texts: Dict[int, str] = {}
-                    for cid in batch:
-                        stmt_gg_pre = select(_CV).where(
-                            _CV.chapter_id == cid, _CV.version_type == "GG"
-                        )
-                        res_gg_pre = await session.execute(stmt_gg_pre)
-                        ver_pre = res_gg_pre.scalar_one_or_none()
-                        if ver_pre:
-                            txt = ""
-                            if ver_pre.content:
-                                txt = ver_pre.content
-                            elif ver_pre.file_path and _os.path.exists(ver_pre.file_path):
-                                with open(ver_pre.file_path, "r", encoding="utf-8", errors="ignore") as _f:
-                                    txt = _f.read()
-                            chapter_gg_texts[cid] = txt
-
-                    for corr in corrections:
-                        gg_err = corr.get("gg_error")
-                        corr_vi = corr.get("correct_vietnamese")
-                        if not gg_err or not corr_vi:
-                            continue
-                        for cid in batch:
-                            # Chỉ lưu nếu lỗi thực sự xuất hiện trong GG text của chương đó
-                            if gg_err not in chapter_gg_texts.get(cid, ""):
-                                continue
-                            stmt_exist = select(ChapterCorrection).where(
-                                ChapterCorrection.chapter_id == cid,
-                                ChapterCorrection.wrong_text == gg_err
-                            )
-                            exist_res = await session.execute(stmt_exist)
-                            if not exist_res.scalar_one_or_none():
-                                session.add(ChapterCorrection(
-                                    chapter_id=cid,
-                                    wrong_text=gg_err,
-                                    correct_text=corr_vi
-                                ))
-                    await session.commit()
-                    
-            # Cập nhật và làm sạch file GG Text trực tiếp bằng các Correction vừa trích xuất
+            # Lưu ChapterCorrection vào CSDL và áp dụng làm sạch file GG Text
             if enable_gg_corrections and corrections:
                 import os
-                from app.models.schema import ChapterVersion
+                from app.models.schema import ChapterCorrection, ChapterVersion
                 async with AsyncSessionLocal() as session:
                     for cid in batch:
+                        for corr in corrections:
+                            gg_err = corr.get("gg_error")
+                            corr_vi = corr.get("correct_vietnamese")
+                            if gg_err and corr_vi:
+                                stmt_c = select(ChapterCorrection).where(
+                                    ChapterCorrection.chapter_id == cid,
+                                    ChapterCorrection.wrong_text == gg_err
+                                )
+                                res_c = await session.execute(stmt_c)
+                                existing_c = res_c.scalar_one_or_none()
+                                if not existing_c:
+                                    session.add(ChapterCorrection(
+                                        chapter_id=cid,
+                                        wrong_text=gg_err,
+                                        correct_text=corr_vi
+                                    ))
+                        
                         stmt_gg = select(ChapterVersion).where(
                             ChapterVersion.chapter_id == cid,
                             ChapterVersion.version_type == "GG"
                         )
                         res_gg = await session.execute(stmt_gg)
-                        ver_gg = res_gg.scalar_one_or_none()
+                        ver_gg = res_gg.scalars().first()
                         
                         if ver_gg:
                             gg_text = ""
-                            if ver_gg.content:
-                                gg_text = ver_gg.content
-                            elif ver_gg.file_path and os.path.exists(ver_gg.file_path):
+                            if ver_gg.file_path and os.path.exists(ver_gg.file_path):
                                 with open(ver_gg.file_path, "r", encoding="utf-8", errors="ignore") as f:
                                     gg_text = f.read()
+                            elif ver_gg.content:
+                                gg_text = ver_gg.content
                                     
                             if gg_text:
                                 original_text = gg_text
@@ -272,7 +247,8 @@ async def _process_evidence_and_save(
                                         pattern = re.compile(
                                             r'(?<![a-zA-Z0-9\u00C0-\u024F\u1E00-\u1EFF])'
                                             + re.escape(gg_err)
-                                            + r'(?![a-zA-Z0-9\u00C0-\u024F\u1E00-\u1EFF])'
+                                            + r'(?![a-zA-Z0-9\u00C0-\u024F\u1E00-\u1EFF])',
+                                            re.IGNORECASE
                                         )
                                         gg_text = pattern.sub(corr_vi, gg_text)
                                 
@@ -281,11 +257,12 @@ async def _process_evidence_and_save(
                                     if ver_gg.file_path:
                                         with open(ver_gg.file_path, "w", encoding="utf-8") as f:
                                             f.write(gg_text)
+                    await session.commit()
 
             # Link entities với chapters trong batch (để làm sạch cache per-chapter)
-            if entities:
+            if raw_llm_entities:
                 async with AsyncSessionLocal() as session:
-                    all_ch_names = [e["chinese_name"] for e in entities if e.get("chinese_name")]
+                    all_ch_names = [e["chinese_name"] for e in raw_llm_entities if e.get("chinese_name")]
                     stmt_ents = select(NovelEntity).where(
                         NovelEntity.novel_id == novel_id,
                         NovelEntity.chinese_name.in_(all_ch_names)
@@ -364,8 +341,8 @@ async def _translate_batch(translation_flow: str, batch: List[int], enable_names
                 batch_name = f"batch_ch{'_'.join(map(str, res_chap_nos))}.txt"
                 raw_llm_path = os.path.join(llm_out_dir, batch_name)
 
-                # Unmask giải mã sơ bộ để đọc tiếng Việt
-                unmasked_text = unmask_text_with_dictionary(res["translated_text_masked"], res.get("mapping_table", {}))
+                # Unmask giải mã sơ bộ để đọc tiếng Việt (bật nâng cấp sắc văn cho luồng CONTEXTT)
+                unmasked_text = unmask_text_with_dictionary(res["translated_text_masked"], res.get("mapping_table", {}), is_draft_only=not is_rawt)
 
                 with open(raw_llm_path, "w", encoding="utf-8") as f:
                     f.write(f"=== KẾT QUẢ LLM TRẢ VỀ CHO CHƯƠNG {res_chap_nos} (TRƯỚC HẬU XỬ LÝ) ===\n\n")
@@ -489,6 +466,7 @@ async def run_translation_batch_pipeline(
 
             # Phân lô (Batching)
             batches = [chapter_ids[i:i + batch_size] for i in range(0, len(chapter_ids), batch_size)]
+
             results = []
             
             # BƯỚC 1: Tiền xử lý cho Batch ĐẦU TIÊN (Lô 1)

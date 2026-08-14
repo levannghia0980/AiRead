@@ -6,21 +6,6 @@ from app.services.unblock.preprocessor.trie_matcher import LongestMatchTrie
 
 logger = logging.getLogger(__name__)
 
-CONNECTORS = {
-    "vào", "ra", "lên", "xuống", "của", "trong", "trên", "dưới", "ở", "từ",
-    "với", "cho", "đã", "đang", "sắp", "lại", "chỗ", "vùng", "vị trí", "mặt",
-    "khe", "cặp", "đôi", "chiếc", "cái", "bộ", "nắn", "mó", "mút", "bóp",
-    "vuốt", "bằng", "qua", "sang", "tới", "lấy", "về", "bề", "lọt", "đoạn", "bớt",
-    "sẵn", "lòng", "trở", "thành", "một", "mình", "có", "thích", "không", "sau",
-    "khi", "đứa", "bé", "bụng", "nên", "gọi", "con", "là", "anh", "hay", "bố",
-    "mẹ", "cha", "bạn", "khiến", "người", "bị", "được", "làm", "thể", "nằm",
-    "ôm", "áp", "sát", "đè", "tựa", "kéo", "đẩy", "rút", "nhét", "kẹp", "vòng",
-    "quấn", "toàn", "thân", "thể", "da", "thịt", "môi", "lưỡi", "hơi", "thở",
-    "nóng", "bừng", "ấm", "áp", "sâu", "nhẹ", "khẽ", "mạnh", "chậm", "nhanh",
-    "liên", "tục", "nơi", "cả", "cùng", "rất", "như", "đều", "đáng", "yêu",
-    "xinh", "đẹp", "trắng", "nõn", "mềm", "mại", "nâng", "hạ", "run", "rẩy"
-}
-
 class PlaceholderEncoder:
     def __init__(self, trie: LongestMatchTrie):
         self.trie = trie
@@ -54,58 +39,37 @@ class PlaceholderEncoder:
             elif "zh" in th_lower:
                 prefix = "ZH"
         
-        return f"§{prefix}_{secrets.token_hex(2).upper()}§"
+        import string
+        rand_suffix = secrets.choice(string.ascii_uppercase) + secrets.token_hex(2).upper()[:3]
+        return f"§{prefix}_{rand_suffix}§"
 
-    def _merge_proximity_matches(self, text: str, matches: List[Tuple[int, int, str, str]], aggressive: bool = True) -> List[Tuple[int, int, str, str]]:
+    def _merge_overlapping_matches(self, text: str, matches: List[Tuple[int, int, str, str]]) -> List[Tuple[int, int, str, str]]:
         """
-        Gộp các từ nhẹ hoặc từ nhạy cảm đứng gần nhau thành 1 cụm token duy nhất.
-        - Khi aggressive=True (Dịch thô): nới rộng phạm vi gộp (gap <= 90 chars) và gộp toàn bộ vế câu nhạy cảm
-          chứa từ 2 từ nhạy cảm / gợi cảm trở lên, đảm bảo 100% không để lộ câu văn gợi dục lên LLM.
+        Xử lý chồng chéo vị trí giữa các từ nhạy cảm trong CSDL (Tuyệt đối KHÔNG gộp các từ ngoài từ điển ở giữa).
         """
         if not matches:
             return []
 
         merged = []
         curr_start, curr_end, curr_word, curr_type = matches[0]
-        max_allowed_gap = 90 if aggressive else 35
 
         for next_start, next_end, next_word, next_type in matches[1:]:
             if next_start < curr_end:
-                # Đã trùng lặp hoặc chồng chéo
+                # Đã trùng lặp hoặc chồng chéo vị trí -> lấy phạm vi bao phủ dài nhất
                 curr_end = max(curr_end, next_end)
                 curr_word = text[curr_start:curr_end].lower()
                 continue
 
-            gap_text = text[curr_end:next_start]
-            gap_clean = gap_text.strip().lower()
-            gap_words = set(re.findall(r"[A-Za-zÀ-ỹ]+", gap_clean))
-
-            # Điều kiện gộp mạnh tay:
-            # 1. Khoảng cách ngắn (gap <= max_allowed_gap)
-            # 2. Hoặc không chứa dấu ngắt câu nghiêm ngặt (., !, ?, \n) trong luồng aggressive
-            should_merge = False
-            if len(gap_clean) <= max_allowed_gap:
-                if not gap_words or gap_words.issubset(CONNECTORS):
-                    should_merge = True
-                elif aggressive and not any(p in gap_text for p in [".", "!", "?", "\n"]):
-                    # Trong luồng dịch thô, nếu cùng nằm trong 1 vế câu thoại/lời dẫn, gộp nguyên vế câu
-                    should_merge = True
-
-            if should_merge:
-                curr_end = next_end
-                curr_word = text[curr_start:curr_end].lower()
-                curr_type = "scene"  # Gộp thành loại scene (SCN) đại diện cho cảnh nhạy cảm
-            else:
-                merged.append((curr_start, curr_end, curr_word, curr_type))
-                curr_start, curr_end, curr_word, curr_type = next_start, next_end, next_word, next_type
+            merged.append((curr_start, curr_end, curr_word, curr_type))
+            curr_start, curr_end, curr_word, curr_type = next_start, next_end, next_word, next_type
 
         merged.append((curr_start, curr_end, curr_word, curr_type))
         return merged
 
-    def encode(self, text: str, mask_level: str = "word", aggressive: bool = True) -> Tuple[str, Dict[str, Dict[str, str]]]:
+    def encode(self, text: str, mask_level: str = "word") -> Tuple[str, Dict[str, Dict[str, str]]]:
         """
         Rà soát và giấu triệt để các từ/cụm từ khớp từ điển nhạy cảm.
-        Tự động gộp các từ nhẹ đứng cạnh nhau thành 1 cụm nhạy cảm duy nhất (chế độ aggressive=True mạnh tay hơn cho dịch thô).
+        Tự động gộp các từ đứng cạnh nhau thành 1 cụm nhạy cảm duy nhất.
         Giữ nguyên 100% cấu trúc câu từ, chủ ngữ, vị ngữ, đại từ sở hữu xung quanh.
         """
         if not text:
@@ -115,8 +79,61 @@ class PlaceholderEncoder:
         if not raw_matches:
             return text, {}
 
-        # Gộp các từ nhạy cảm gần nhau thành cụm ngữ cảnh nhạy cảm thống nhất
-        matches = self._merge_proximity_matches(text, raw_matches, aggressive=aggressive)
+        # Xử lý chồng chéo vị trí nếu có
+        matches = self._merge_overlapping_matches(text, raw_matches)
+
+        # 1. Phân loại các match: Vùng trong thẻ neo gợi ý VS Vùng văn bản chính
+        # - Vùng văn bản chính: Gán mã §PREFIX_XXXX§ thật, đưa vào mapping_table để theo dõi tỷ lệ bảo vệ (80%) và giải mã sau khi dịch.
+        # - Vùng trong thẻ neo gợi ý: Gán mã tự do giả lập (DUMMY MASK) như ⟪TAG_MASK_xxxx⟫ để Gemini KHÔNG BỊ CHẶN (Safety Pass),
+        #   nhưng TUYỆT ĐỐI KHÔNG đưa vào mapping_table (không tính vào tổng số lượng thẻ, không cần giải mã vì thẻ neo sẽ bị xóa).
+        protected_tag_spans = []
+        for tag_match in re.finditer(r'‹[^›\n]+›|⟦[^⟧\n]+⟧|<([A-Za-z0-9_]+)>.*?</\1>', text, re.DOTALL):
+            protected_tag_spans.append((tag_match.start(), tag_match.end()))
+
+        main_matches = []
+        inside_matches = []
+        for m in matches:
+            m_start, m_end = m[0], m[1]
+            inside_tag = False
+            for p_start, p_end in protected_tag_spans:
+                if p_start <= m_start and m_end <= p_end:
+                    inside_tag = True
+                    break
+            if inside_tag:
+                inside_matches.append(m)
+            else:
+                main_matches.append(m)
+
+        # 2. Xử lý mã hóa DUMMY cho các từ nhạy cảm nằm trong ruột thẻ neo (KHÔNG TÍNH VÀO MAPPING_TABLE)
+        text_with_dummy = text
+        if inside_matches:
+            # Sắp xếp ngược từ cuối lên đầu để không làm lệch index
+            for start, end, matched_term_lower, word_type in sorted(inside_matches, key=lambda x: x[0], reverse=True):
+                dummy_token = f"⟪TAG_MASK_{secrets.token_hex(2).upper()}⟫"
+                text_with_dummy = text_with_dummy[:start] + dummy_token + text_with_dummy[end:]
+
+            # Cập nhật lại danh sách span của thẻ neo sau khi đã chèn dummy
+            new_protected_tag_spans = []
+            for tag_match in re.finditer(r'‹[^›\n]+›|⟦[^⟧\n]+⟧|<([A-Za-z0-9_]+)>.*?</\1>', text_with_dummy, re.DOTALL):
+                new_protected_tag_spans.append((tag_match.start(), tag_match.end()))
+
+            # Tìm lại matches và LOẠI BỎ TRIỆT ĐỂ mọi match nằm trong ruột thẻ neo
+            raw_matches = self.trie.find_all_matches(text_with_dummy)
+            merged = self._merge_overlapping_matches(text_with_dummy, raw_matches)
+            
+            final_matches = []
+            for m in merged:
+                m_start, m_end = m[0], m[1]
+                inside = False
+                for p_start, p_end in new_protected_tag_spans:
+                    if p_start <= m_start and m_end <= p_end:
+                        inside = True
+                        break
+                if not inside:
+                    final_matches.append(m)
+            matches = final_matches
+        else:
+            matches = main_matches
 
         mapping_table: Dict[str, Dict[str, str]] = {}
         reverse_term_token_map: Dict[str, str] = {}
@@ -124,8 +141,8 @@ class PlaceholderEncoder:
         last_idx = 0
 
         for start, end, matched_term_lower, word_type in matches:
-            encoded_chunks.append(text[last_idx:start])
-            actual_original_text = text[start:end]
+            encoded_chunks.append(text_with_dummy[last_idx:start])
+            actual_original_text = text_with_dummy[start:end]
 
             if matched_term_lower in reverse_term_token_map:
                 token = reverse_term_token_map[matched_term_lower]
@@ -142,8 +159,8 @@ class PlaceholderEncoder:
             encoded_chunks.append(f" {token} ")
             last_idx = end
 
-        encoded_chunks.append(text[last_idx:])
+        encoded_chunks.append(text_with_dummy[last_idx:])
         encoded_text = "".join(encoded_chunks)
-        logger.info(f"🛡️ [Encoder - Aggressive={aggressive}] Đã giấu {len(matches)} cụm từ nhạy cảm ngữ cảnh thành {len(mapping_table)} token.")
+        logger.info(f"🛡️ [Encoder] Đã giấu {len(matches)} cụm từ nhạy cảm chính thành {len(mapping_table)} token (Bỏ qua {len(inside_matches)} từ trong thẻ neo).")
         return encoded_text, mapping_table
 

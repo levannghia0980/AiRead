@@ -85,8 +85,8 @@ class StartTranslationRequest(BaseModel):
     batch_size: Optional[int] = 3
     start_chapter: Optional[int] = None
     end_chapter: Optional[int] = None
-    translation_style: Optional[str] = "original_only"
-    enable_unblock: Optional[bool] = False
+    translation_style: Optional[str] = "draft_only"
+    enable_unblock: Optional[bool] = True
     enable_llm_extract: Optional[bool] = True
     enable_names_dict: Optional[bool] = True
     enable_gg_corrections: Optional[bool] = True
@@ -155,6 +155,9 @@ async def _bg_translation_worker(payload: StartTranslationRequest):
     except asyncio.CancelledError:
         add_system_log("🛑 Tiến trình dịch đã bị hủy bởi người dùng.", "warning")
     except Exception as e:
+        import traceback
+        print(f"❌ Exception in _bg_translation_worker: {e}", flush=True)
+        traceback.print_exc()
         add_system_log(f"❌ Lỗi tiến trình dịch: {str(e)}", "error")
     finally:
         global _CURRENT_TASK
@@ -252,7 +255,7 @@ async def test_key(payload: TestKeyRequest):
     from app.api.settings_router import test_api_connection, TestConnectionPayload
     req = TestConnectionPayload(
         provider=payload.provider,
-        model=payload.model if payload.model in ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"] else "gemini-3.5-flash-lite",
+        model=payload.model or "gemini-3.5-flash-lite",
         api_key=payload.api_key
     )
     res = await test_api_connection(req)
@@ -311,16 +314,20 @@ async def start_translation_pipeline(novel_id: int, payload: PipelineRunRequest)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+class BatchFixErrorsPayload(BaseModel):
+    model: Optional[str] = None
+
 @router.post("/novel/{novel_id}/batch-fix-swept-errors")
-async def batch_fix_swept_errors(novel_id: int):
+async def batch_fix_swept_errors(novel_id: int, payload: Optional[BatchFixErrorsPayload] = None):
     """
     Quét tìm lỗi Hán tự bị gạch chân xanh (<span class='swept-chinese'>) trong các chương dịch
     và gửi 1 request LLM duy nhất để dịch chuẩn lại toàn bộ, sau đó tự động chèn lại vào file.
     """
     from app.services.postprocessing.translation_auditor import batch_fix_swept_errors_llm
     try:
+        req_model = payload.model if payload and payload.model else None
         add_system_log(f"🔍 Đang quét và sửa lỗi Hán tự gạch chân xanh cho truyện ID {novel_id}...", "info")
-        result = await batch_fix_swept_errors_llm(novel_id)
+        result = await batch_fix_swept_errors_llm(novel_id, model=req_model)
         if result.get("status") == "success":
             fixed_count = result.get("fixed_count", 0)
             if fixed_count > 0:
