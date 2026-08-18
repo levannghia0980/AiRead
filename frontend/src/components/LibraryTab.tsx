@@ -16,7 +16,7 @@ import {
   Eye,
   Library as LibIcon
 } from 'lucide-react'
-import { Novel } from '../store/useNovelStore'
+import { Novel, useNovelStore } from '../store/useNovelStore'
 import ReaderFloatingBar from './ReaderFloatingBar'
 import ParagraphItem from './ParagraphItem'
 
@@ -97,6 +97,14 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
   handleRestartNovel,
   isRestarting
 }) => {
+  const fetchNovels = useNovelStore((state) => state.fetchNovels)
+
+  React.useEffect(() => {
+    if (!novels || novels.length === 0) {
+      fetchNovels()
+    }
+  }, [novels, fetchNovels])
+
   const [viewMode, setViewMode] = useState<'bookshelf' | 'details'>(
     selectedNovel ? 'details' : 'bookshelf'
   )
@@ -301,6 +309,14 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
               Chọn một bộ truyện để xem danh sách chương, đọc nội dung hoặc xuất bản file.
             </p>
           </div>
+          <button
+            onClick={() => fetchNovels()}
+            title="Làm mới danh sách truyện"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Làm mới</span>
+          </button>
         </div>
 
         <div className="flex-1 overflow-y-auto">

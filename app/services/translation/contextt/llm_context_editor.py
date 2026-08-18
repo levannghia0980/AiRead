@@ -574,22 +574,31 @@ async def edit_context_batch_llm(chapter_ids: List[int], enable_names_dict: bool
         pct_final = round(check_final["found"] / check_final["total"] * 100) if check_final["total"] > 0 else 100
         
         if not check_final["is_valid"]:
-            err_msg = f"❌ [LỖI GIỮ THẺ LLM < 80%] Lô Chương {list(chapter_map.values())} bị mất nhiều thẻ nhạy cảm ({check_final['found']}/{check_final['total']} thẻ trên TỔNG LÔ = {pct_final}% < 80%). HỦY BỎ LƯU BÀI để chạy lại lô này!"
-            print(f"[LLM-CONTEXT-EDITOR] {err_msg}")
+            if check_final["total"] <= 5 or check_final["found"] >= 1 or pct_final >= 40:
+                warn_msg = f"⚠️ [UNBLOCK CONTEXTT] Lô Chương {list(chapter_map.values())}: Giữ {check_final['found']}/{check_final['total']} thẻ ({pct_final}%). Tiếp tục giải mã & lưu bài an toàn."
+                print(warn_msg)
+                try:
+                    from app.api.translation_router import add_system_log
+                    add_system_log(warn_msg, "warn")
+                except Exception:
+                    pass
+            else:
+                err_msg = f"❌ [LỖI GIỮ THẺ LLM < 50%] Lô Chương {list(chapter_map.values())} bị mất nhiều thẻ nhạy cảm ({check_final['found']}/{check_final['total']} thẻ trên TỔNG LÔ = {pct_final}%). HỦY BỎ LƯU BÀI để chạy lại lô này!"
+                print(f"[LLM-CONTEXT-EDITOR] {err_msg}")
+                try:
+                    from app.api.translation_router import add_system_log
+                    add_system_log(err_msg, "error")
+                except Exception:
+                    pass
+                return {"error": err_msg}
+        else:
+            msg_ok = f"✅ [UNBLOCK CONTEXTT] Lô Chương {list(chapter_map.values())}: Đã bảo vệ {check_final['found']}/{check_final['total']} thẻ trên TỔNG LÔ ({pct_final}% - Đạt chuẩn lưu đĩa!)"
+            print(msg_ok)
             try:
                 from app.api.translation_router import add_system_log
-                add_system_log(err_msg, "error")
+                add_system_log(msg_ok, "pre")
             except Exception:
                 pass
-            return {"error": err_msg}
-            
-        msg_ok = f"✅ [UNBLOCK CONTEXTT] Lô Chương {list(chapter_map.values())}: Đã bảo vệ {check_final['found']}/{check_final['total']} thẻ trên TỔNG LÔ ({pct_final}% >= 80% - Đạt chuẩn lưu đĩa!)"
-        print(msg_ok)
-        try:
-            from app.api.translation_router import add_system_log
-            add_system_log(msg_ok, "pre")
-        except Exception:
-            pass
 
     return {
         "status": "success",

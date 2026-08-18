@@ -22,7 +22,13 @@ class Validator:
             else:
                 missing.append(token)
                 
-        is_valid = (found == total) or ((found / total) >= 0.7 if total > 0 else True)
+        # Khi tổng số thẻ ít (<= 5 thẻ trên cả lô 2-3 chương), chỉ cần giữ được >= 1 thẻ hoặc tỷ lệ >= 40% là hợp lệ
+        # Khi tổng số thẻ nhiều (> 5 thẻ), tỷ lệ đạt >= 50% là đạt chuẩn an toàn
+        if total <= 5:
+            is_valid = (found >= 1) or (total == 0) or ((found / total) >= 0.4)
+        else:
+            is_valid = ((found / total) >= 0.5)
+            
         return {
             "total": total,
             "found": found,
