@@ -77,6 +77,57 @@ async def sweep_chinese_characters(text: str) -> str:
             
     return text
 
+def sanitize_false_positive_slang(text: str) -> str:
+    """
+    LƯỚI AN TOÀN CUỐI CÙNG: Phát hiện và sửa lỗi thay thế nhầm (false positive)
+    từ hệ thống Unblock/Sắc Văn trong văn bản tiếng Việt đầu ra.
+    
+    Chạy SAU TẤT CẢ các bước dịch và unmask, để bắt những trường hợp
+    edge-case hiếm mà Trie matcher + rawt_decoder không ngăn được.
+    """
+    if not text:
+        return text
+    
+    t = text
+    
+    # === NHÓM 1: Lỗi từ 干 (làm/khô) bị dịch nhầm thành 'địtt' ===
+    # 干得好 → 'địtt đến tốt' thay vì 'làm tốt'
+    t = re.sub(r'(?i)\bđịtt\s+đến\s+(tốt|hay|đẹp|giỏi|nhanh|chậm|khá|xuất\s+sắc|mệt|nhiều|sạch)\b', r'làm \1', t)
+    t = re.sub(r'(?i)\bđịtt\s+thành\s+(quả|tích|công|tựu|phẩm|tựu)\b', r'làm nên \1', t)
+    t = re.sub(r'(?i)\bđịtt\s+(?:đến\s+)?khô\b', 'uống cạn', t)
+    
+    # === NHÓM 2: Lỗi từ 插入 (chèn vào) bị dịch nhầm thành 'đút vào' ===
+    t = re.sub(r'(?i)\bđút\s+vào\s+(sắp\s+xếp|phân\s+loại|thuật\s+toán|thứ\s+tự|dữ\s+liệu)\b', r'chèn vào \1', t)
+    t = re.sub(r'(?i)\bđút\s+vào\s+ngữ\b', 'chêm ngữ', t)
+    
+    # === NHÓM 3: Lỗi từ 喷水 (phun nước) bị thêm 'dâm' ===  
+    t = re.sub(r'(?i)\bphun\s+nước\s+dâm\s+(ao|hồ|đài|vườn|bể|sân|công\s+viên)\b', r'phun nước \1', t)
+    t = re.sub(r'(?i)\bđài\s+phun\s+nước\s+dâm\b', 'đài phun nước', t)
+    
+    # === NHÓM 4: Lỗi từ 射 (bắn) trong ngữ cảnh quân sự/khoa học ===
+    t = re.sub(r'(?i)\bbắn\s+tinh\s+(tên|cung|súng|đạn|pháo|tia)\b', r'bắn \1', t)
+    t = re.sub(r'(?i)\b(phóng|phát|phản|chiếu|bức)\s+bắn\s+tinh\b', r'\1 xạ', t)
+    
+    # === NHÓM 5: Lỗi 精 (tinh hoa) bị hiểu nhầm ngữ cảnh tinh dịch ===
+    t = re.sub(r'(?i)\btinh\s+dịch\s+(thần|lực|hoa|thông|xác|tế|mật|anh|tuyển|phẩm|giản|chuẩn)\b', r'tinh \1', t)
+    t = re.sub(r'(?i)\brượu\s+tinh\s+dịch\b', 'rượu cồn', t)
+    
+    # === NHÓM 6: Lỗi 交 (giao) bị hiểu nhầm thành giao hợp ===
+    t = re.sub(r'(?i)\bđịtt\s+nhau\s+thông\b', 'giao thông', t)
+    t = re.sub(r'(?i)\bđịtt\s+nhau\s+lưu\b', 'giao lưu', t)
+    t = re.sub(r'(?i)\bđịtt\s+nhau\s+dịch\b', 'giao dịch', t)
+    t = re.sub(r'(?i)\bđịtt\s+nhau\s+hoán\b', 'giao hoán', t)
+    
+    # === NHÓM 7: Lỗi 乳 (sữa) trong ngữ cảnh thực phẩm/khoa học ===
+    t = re.sub(r'(?i)\b(đầu\s+vú|bầu\s+vú)\s+(trắng|sản\s+phẩm|tương|keo|hóa|danh|acid)\b', r'sữa \2', t)
+    t = re.sub(r'(?i)\bcho\s+bú\s+động\s+vật\b', 'động vật có vú', t)
+    
+    # === NHÓM 8: Lỗi 穴 (huyệt đạo) trong ngữ cảnh y học/địa lý ===
+    t = re.sub(r'(?i)\b(lỗ\s+lồn|hoa\s+huyệt|mật\s+huyệt)\s+(vị|đạo|đạo|châm\s+cứu)\b', r'huyệt \2', t)
+    t = re.sub(r'(?i)\bhang\s+lỗ\s+lồn\b', 'hang động', t)
+    
+    return t
+
 def reformat_fragmented_paragraphs(text: str) -> str:
     """
     Tự động ghép nối các câu văn miêu tả bị ngắt dòng vụn vặt từng câu thành các đoạn văn thuần Việt mượt mà.
@@ -626,7 +677,10 @@ async def process_and_split_batch(
                 # 3c. Enforce entity names (lưới an toàn cuối cùng)
                 chap_text = await enforce_entity_names(chap_text, novel_id)
 
-                # 3d. Chuẩn hóa dấu câu tiếng Việt & làm sạch chuỗi la hét / cảm thán lặp từ quá dài
+                # 3d. Sanitize false positive slang (lưới an toàn cuối cùng chống thay nhầm từ lóng)
+                chap_text = sanitize_false_positive_slang(chap_text)
+
+                # 3e. Chuẩn hóa dấu câu tiếng Việt & làm sạch chuỗi la hét / cảm thán lặp từ quá dài
                 chap_text = re.sub(r'(?i)\b([aáàảãạ])(?:\s*[\-—.,~]*\s*\1){3,}', r'\1...', chap_text)
                 chap_text = re.sub(r'(?i)\b(ha|hả|hô|hì|hê|oa|oá|hức|hic|hừ|hừm|ơ|ô|ư|ưm)(?:\s*[\-—.,~]*\s*\1){3,}', r'\1 \1 \1!', chap_text)
                 chap_text = re.sub(r'(?i)\b(á|ối|ối dồi ôi|trời ơi)(?:\s*[\-—.,~]*\s*\1){2,}', r'\1!', chap_text)

@@ -79,12 +79,21 @@ class RawtDecoder:
                 if is_chinese:
                     target_replacement = zh_map.get(orig_term) or zh_map.get(orig_term.lower())
                     if not target_replacement:
+                        from app.services.unblock.common.trie_matcher import SAFE_COMPOUNDS
                         sorted_zh_keys = sorted(zh_map.keys(), key=lambda x: len(x), reverse=True)
                         translated_parts = orig_term
                         for zh_key in sorted_zh_keys:
                             if zh_key in translated_parts:
-                                vn_val = zh_map[zh_key]
-                                translated_parts = translated_parts.replace(zh_key, f" {vn_val} ")
+                                # BẢO VỆ TỪ AN TOÀN: Kiểm tra xem zh_key có nằm bên trong
+                                # một từ ghép an toàn (safe compound) trong orig_term không
+                                is_safe = False
+                                for safe_word in SAFE_COMPOUNDS:
+                                    if zh_key in safe_word and safe_word in translated_parts:
+                                        is_safe = True
+                                        break
+                                if not is_safe:
+                                    vn_val = zh_map[zh_key]
+                                    translated_parts = translated_parts.replace(zh_key, f" {vn_val} ")
 
                         if re.search(r"[\u4e00-\u9fff]", translated_parts):
                             translated_parts = build_hanviet_name(translated_parts) or translated_parts

@@ -18,6 +18,13 @@ def clean_duplicate_slang_words(text: str) -> str:
     t = re.sub(r'(?i)\bđịtt\s+diễn\b', 'thao diễn', t)
     t = re.sub(r'(?i)\bđịtt\s+trì\b', 'thao trì', t)
     t = re.sub(r'(?i)\bthể\s+địtt\b', 'thể thao', t)
+    
+    # 1b. Sửa từ sai ngữ nghĩa do 干 (làm/khô) bị dịch nhầm thành 'địtt'
+    t = re.sub(r'(?i)\bđịtt\s+đến\s+(tốt|hay|đẹp|giỏi|nhanh|chậm|khá|sạch)\b', r'làm \1', t)
+    t = re.sub(r'(?i)\bđịtt\s+thành\s+(quả|tích|công|tựu|phẩm)\b', r'làm nên \1', t)
+    t = re.sub(r'(?i)\bđịtt\s+(?:đến\s+)?khô\b', 'uống cạn', t)
+    t = re.sub(r'(?i)\bđịtt\s+(?:đến\s+)?sạch\b', 'dọn sạch', t)
+    t = re.sub(r'(?i)\bđịtt\s+(?:đến\s+)?gọn\b', 'thu gọn', t)
 
     # 2. Chuẩn hóa 'đầu cặc' & Sửa lặp 'đầu cặc cặc' / 'đầu khấc cặc cặc' / 'đầu khấc' / 'đầu cặc con cặc'
     t = re.sub(r'(?i)\bđầu\s+(?:khấc|cặc)(?:\s+(?:con\s+)?cặc)+\b', 'đầu cặc', t)
