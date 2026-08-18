@@ -22,16 +22,32 @@ class Validator:
             else:
                 missing.append(token)
                 
-        # Khi tổng số thẻ ít (<= 5 thẻ trên cả lô 2-3 chương), chỉ cần giữ được >= 1 thẻ hoặc tỷ lệ >= 40% là hợp lệ
-        # Khi tổng số thẻ nhiều (> 5 thẻ), tỷ lệ đạt >= 50% là đạt chuẩn an toàn
-        if total <= 5:
-            is_valid = (found >= 1) or (total == 0) or ((found / total) >= 0.4)
+        missing_count = len(missing)
+        pct = (found / total) if total > 0 else 1.0
+
+        # PHÂN TẦNG THÔNG MINH KẾT HỢP SỐ THẺ MẤT VÀ TỔNG SỐ THẺ:
+        # 1. Tầng cực ít (total <= 3): Mất 1-3 thẻ do AI dịch tự nhiên sang tiếng Việt -> 100% HỢP LỆ (Không hủy lô)
+        if total <= 3:
+            is_valid = True
+            tier_desc = f"Tầng cực ít (<=3 thẻ): Giữ {found}/{total} thẻ (Mất {missing_count} thẻ) -> Tự động đạt chuẩn"
+        # 2. Tầng ít (4 <= total <= 7): Chỉ cần giữ được >= 1 thẻ hoặc số thẻ mất <= 4 -> HỢP LỆ
+        elif total <= 7:
+            is_valid = (found >= 1) or (missing_count <= 4)
+            tier_desc = f"Tầng ít (4-7 thẻ): Giữ {found}/{total} thẻ (Mất {missing_count} thẻ, {round(pct*100)}%)"
+        # 3. Tầng vừa (8 <= total <= 15): Cho phép mất <= 6 thẻ hoặc giữ >= 35% -> HỢP LỆ
+        elif total <= 15:
+            is_valid = (missing_count <= 6) or (pct >= 0.35)
+            tier_desc = f"Tầng vừa (8-15 thẻ): Giữ {found}/{total} thẻ (Mất {missing_count} thẻ, {round(pct*100)}%)"
+        # 4. Tầng nhiều (> 15 thẻ): Cho phép mất <= 10 thẻ hoặc giữ >= 35% -> Chỉ hủy khi mất hàng loạt
         else:
-            is_valid = ((found / total) >= 0.5)
+            is_valid = (missing_count <= 10) or (pct >= 0.35)
+            tier_desc = f"Tầng nhiều (>15 thẻ): Giữ {found}/{total} thẻ (Mất {missing_count} thẻ, {round(pct*100)}%)"
             
         return {
             "total": total,
             "found": found,
             "missing": missing,
-            "is_valid": is_valid
+            "missing_count": missing_count,
+            "is_valid": is_valid,
+            "tier_desc": tier_desc
         }
