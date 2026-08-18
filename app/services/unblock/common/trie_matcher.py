@@ -1,6 +1,25 @@
 import re
 from typing import List, Dict, Tuple, Set
 
+# Danh sách từ ghép tiếng Hán an toàn (Safe Compounds / Whitelist)
+# Tuyệt đối KHÔNG ĐƯỢC bóc tách hoặc mask bất kỳ chuỗi con nào thuộc các từ này!
+SAFE_COMPOUNDS: Set[str] = {
+    # Nhóm 操
+    "贞操", "操心", "操劳", "操办", "操纵", "操持", "体操", "早操", "晚操", "操场", "操练", "操刀", "节操", "操作", "风操",
+    # Nhóm 逼
+    "逼近", "逼迫", "紧逼", "逼人", "威逼", "逼退", "逼真", "逼降", "逼问", "倒逼", "逼出", "逼得", "逼走", "逼供",
+    # Nhóm 龟
+    "乌龟", "金龟", "海龟", "神龟", "龟缩", "龟壳", "龟速",
+    # Nhóm 奸
+    "奸细", "奸商", "奸雄", "奸诈", "奸贼", "汉奸", "奸佞", "抓奸", "捉奸",
+    # Nhóm 骚
+    "骚动", "骚乱", "骚扰", "风骚", "离骚", "骚客",
+    # Nhóm 骨
+    "骨髓", "深入骨髓", "透骨", "脱胎换骨", "骨肉", "骨气", "骨头", "白骨", "露骨", "刻骨铭心",
+    # Nhóm 瘫
+    "瘫痪", "瘫坐", "瘫倒", "瘫软"
+}
+
 class TrieNode:
     def __init__(self):
         self.children: Dict[str, TrieNode] = {}
@@ -16,6 +35,12 @@ class LongestMatchTrie:
         if not word or not word.strip():
             return
         clean_word = word.strip().lower()
+        
+        # BẢO VỆ CHỮ HÁN: Từ tiếng Trung bắt buộc phải từ 2 ký tự trở lên
+        # Tuyệt đối cấm từ 1 ký tự đơn lẻ để tránh phá hỏng từ ghép thông thường
+        if len(clean_word) < 2 and any('\u4e00' <= c <= '\u9fff' for c in clean_word):
+            return
+            
         self.words.add(clean_word)
         node = self.root
         for char in clean_word:
@@ -61,8 +86,25 @@ class LongestMatchTrie:
             
             if longest_match_len > 0:
                 matched_str = text[i:i + longest_match_len]
-                matches.append((i, i + longest_match_len, matched_str, longest_categories))
-                i += longest_match_len
+                
+                # KIỂM TRA BẢO VỆ TỪ AN TOÀN (SAFE COMPOUNDS)
+                # Nếu từ khớp nằm trong một từ ghép an toàn (ví dụ: '操' nằm trong '贞操' hay '骨' nằm trong '骨髓') -> BỎ QUA
+                is_safe_compound = False
+                check_window = text[max(0, i-6):min(n, i + longest_match_len + 6)]
+                for safe_word in SAFE_COMPOUNDS:
+                    if safe_word in check_window:
+                        safe_idx = check_window.find(safe_word)
+                        safe_start = max(0, i-6) + safe_idx
+                        safe_end = safe_start + len(safe_word)
+                        if not (i + longest_match_len <= safe_start or i >= safe_end):
+                            is_safe_compound = True
+                            break
+                            
+                if not is_safe_compound:
+                    matches.append((i, i + longest_match_len, matched_str, longest_categories))
+                    i += longest_match_len
+                else:
+                    i += 1
             else:
                 i += 1
                 
