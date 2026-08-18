@@ -535,10 +535,6 @@ Nhiệm vụ: Dịch Hán văn sang tiếng Việt mượt mà, thuần Việt 1
                 add_system_log(msg_ok, "pre")
             except Exception:
                 pass
-            from app.api.translation_router import add_system_log
-            add_system_log(msg_ok, "pre")
-        except Exception:
-            pass
 
     return {
         "status": "success",
