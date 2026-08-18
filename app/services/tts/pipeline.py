@@ -6,14 +6,16 @@ import asyncio
 import random
 import subprocess
 import psutil
+import gc
 import edge_tts
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 from sqlalchemy import select, update
 from app.core.database import AsyncSessionLocal
 from app.models.schema import Novel, Chapter, ChapterVersion, TTSChunk
 from app.services.storage.file_storage import sanitize_filename, save_tts_text_file
 from app.core.config import get_active_setting
-from app.services.tts.offline_piper import synthesize_text_piper_async, is_piper_available
+from app.services.tts.persistent_client import PersistentEdgeTTSClient
+from app.services.tts.rotating_engine import RotatingBatchTTSEngine
 
 # Bản đồ ánh xạ cấu hình giọng đọc của Edge-TTS sang tên giọng nói thực tế
 VOICE_MAP = {
@@ -27,9 +29,19 @@ VOICE_MAP = {
 # Theo dõi các tác vụ TTS đang chạy trực tiếp trên bộ nhớ để thăm dò trạng thái
 ACTIVE_TTS_JOBS: Dict[str, Dict[str, Any]] = {}
 
-# Semaphore toàn cục giới hạn số kết nối TTS đồng thời thực sự tới Microsoft (ngưỡng an toàn 4 luồng/IP tránh ConnectionReset)
-TTS_CONCURRENCY_SEMAPHORE = asyncio.Semaphore(4)
+# Semaphore giới hạn nghiêm ngặt 1 kết nối đồng thời tới Microsoft Edge-TTS để đảm bảo 1 luồng duy nhất, ổn định tuyệt đối
+TTS_CONCURRENCY_SEMAPHORE = asyncio.Semaphore(1)
 _CONSECUTIVE_FAILURES = {"count": 0}
+
+def safe_print(*args, **kwargs):
+    try:
+        print(*args, **kwargs)
+    except Exception:
+        try:
+            cleaned = [str(a).encode("ascii", "replace").decode("ascii") for a in args]
+            print(*cleaned, **kwargs)
+        except Exception:
+            pass
 
 def get_ffmpeg_cmd() -> str:
     """Trả về đường dẫn tới ffmpeg executable (dùng imageio_ffmpeg hoặc hệ thống)"""
@@ -58,19 +70,19 @@ def get_audio_duration_ffmpeg(file_path: str) -> str:
         print(f"[TTS-MERGER] Lỗi đọc duration tệp {file_path}: {e}")
     return "00:00:00"
 
-def generate_silence_file(duration_sec: float = 0.25, sample_rate: int = 44100) -> Optional[str]:
-    """Tạo tệp MP3 chứa khoảng lặng (silence) với độ dài tùy chọn theo chuẩn 44.1kHz Stereo"""
+def generate_silence_file(duration_sec: float = 0.25, sample_rate: int = 24000) -> Optional[str]:
+    """Tạo tệp MP3 chứa khoảng lặng (silence) với độ dài tùy chọn theo chuẩn 24kHz Mono 48kbps của Edge-TTS"""
     import tempfile
-    silence_path = os.path.join(tempfile.gettempdir(), f"silence_{int(duration_sec*1000)}ms_44k.mp3")
+    silence_path = os.path.join(tempfile.gettempdir(), f"silence_{int(duration_sec*1000)}ms_24k_mono.mp3")
     if os.path.exists(silence_path) and os.path.getsize(silence_path) > 0:
         return silence_path
     try:
         cmd = [
             get_ffmpeg_cmd(), "-y", "-f", "lavfi",
-            "-i", f"anullsrc=r={sample_rate}:cl=stereo",
+            "-i", f"anullsrc=r={sample_rate}:cl=mono",
             "-t", str(duration_sec),
-            "-ar", "44100", "-ac", "2",
-            "-b:a", "192k", silence_path
+            "-ar", str(sample_rate), "-ac", "1",
+            "-b:a", "48k", silence_path
         ]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="ignore")
         if result.returncode == 0 and os.path.exists(silence_path):
@@ -79,27 +91,57 @@ def generate_silence_file(duration_sec: float = 0.25, sample_rate: int = 44100) 
         print(f"[TTS-SILENCE] Lỗi tạo file silence: {e}")
     return None
 
-def merge_audio_files(file_paths: List[str], output_path: str, add_silence_sec: float = 0.25) -> bool:
-    """Ghép nối danh sách các tệp mp3 bằng FFmpeg Concat Demuxer (-c copy) kèm khoảng nghỉ silence tùy chọn"""
+# Chuỗi bộ lọc Audio DSP Mastering chuyên biệt cho Audiobook:
+# 1. highpass (75Hz): Lọc sạch tạp âm siêu trầm gây ù nền, làm nhòe chữ khi tua nhanh
+# 2. equalizer (300Hz, -1.8dB): Triệt tiêu tiếng ồm đục, giúp giọng thoáng và sáng
+# 3. equalizer (2800Hz, +2.2dB): Tăng độ nét bóc tách phụ âm (Presence) - giữ phát âm cực rõ ràng kể cả khi tua 1.5x - 2.0x
+# 4. equalizer (6200Hz, -3.0dB): De-essing làm dịu phụ âm xát (s, x, ch, tr, dấu sắc), loại bỏ 100% tiếng xì chói / rè dải âm cao
+# 5. lowpass (11000Hz): Cắt lọc nhiễu lượng tử hóa số dải siêu cao
+# BỘ LỌC AUDIO MASTERING TỰ NHIÊN (Không kích chói, không nuốt âm, chuẩn EBU R128):
+# 1. highpass=f=50: Lọc bỏ ù xì tần số cực thấp dưới 50Hz mà tai người không nghe thấy
+# 2. loudnorm: Chuẩn hóa âm lượng EBU R128 (-16 LUFS, True Peak -1.5dB, LRA 11) giữ nguyên độ động tự nhiên, không bị pumping/nuốt chữ
+AUDIOBOOK_MASTERING_FILTERS = (
+    "highpass=f=50,"
+    "loudnorm=I=-16:TP=-1.5:LRA=11"
+)
+
+def merge_audio_files(
+    file_paths: List[str], 
+    output_path: str, 
+    add_silence_sec: float = 0.0,
+    apply_mastering: bool = False
+) -> bool:
+    """
+    Ghép nối danh sách các tệp mp3 bằng Stream Copy nguyên bản (-c copy) 100%.
+    - Bảo toàn 100% độ trung thực (Fidelity) chuẩn phòng thu của Microsoft Edge-TTS.
+    - Không nén lại (0% generation loss), không méo dải tần, không nuốt âm/rách tiếng.
+    - Cho ra file lưu trên đĩa và tải về nghe chuẩn 100% y hệt như nghe trực tiếp trên web.
+    """
     if not file_paths:
         return False
     
-    silence_path = generate_silence_file(add_silence_sec, sample_rate=44100) if (add_silence_sec > 0 and len(file_paths) > 1) else None
-    
-    list_file_path = output_path + ".txt"
+    import tempfile, uuid
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    list_file_path = os.path.join(tempfile.gettempdir(), f"airead_concat_{uuid.uuid4().hex[:8]}.txt")
     try:
         with open(list_file_path, "w", encoding="utf-8") as f:
-            for idx, fp in enumerate(file_paths):
-                # Chuẩn hóa đường dẫn chứa dấu gạch chéo xuôi cho FFmpeg tương thích Windows
+            for fp in file_paths:
                 normalized_path = fp.replace("\\", "/")
                 f.write(f"file '{normalized_path}'\n")
-                if silence_path and idx < len(file_paths) - 1:
-                    norm_silence = silence_path.replace("\\", "/")
-                    f.write(f"file '{norm_silence}'\n")
         
-        cmd = [get_ffmpeg_cmd(), "-y", "-f", "concat", "-safe", "0", "-i", list_file_path, "-c", "copy", output_path]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="ignore")
-        return result.returncode == 0
+        # 1. Ưu tiên số 1: Ghép nối Stream Copy nguyên bản (0% suy hao, chuẩn 100% như Web)
+        cmd_copy = [get_ffmpeg_cmd(), "-y", "-f", "concat", "-safe", "0", "-i", list_file_path, "-c", "copy", output_path]
+        res_copy = subprocess.run(cmd_copy, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="ignore")
+        if res_copy.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
+            return True
+
+        # 2. Fallback: Nếu stream copy không được thì chuyển mã cơ bản
+        cmd_fallback = [
+            get_ffmpeg_cmd(), "-y", "-f", "concat", "-safe", "0", 
+            "-i", list_file_path, "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "24000", output_path
+        ]
+        res_fb = subprocess.run(cmd_fallback, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="ignore")
+        return res_fb.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 1024
     except Exception as e:
         print(f"[TTS-MERGER] Lỗi khi chạy lệnh ghép nối FFmpeg: {e}")
         return False
@@ -141,257 +183,343 @@ def _convert_roman_numerals(text: str) -> str:
 
 def sanitize_tts_text(text: str) -> str:
     """
-    Tiền xử lý văn bản toàn diện chuẩn mực trước khi gửi vào Edge-TTS:
-    - Loại bỏ HTML, Markdown, rác quảng cáo, emoji, ký tự điều khiển/zero-width
-    - Chuẩn hóa số La Mã, từ viết tắt game/truyện hệ thống (EXP, HP, MP, Lv, NPC, VIP)
-    - Xử lý hoàn hảo các ký hiệu toán học, dấu âm (+100, -50 HP, 5+3=8, 10-3, 5*3, 10/2, 50%, $100, 5000₫, °C, >, <, >=, <=, !=, ~)
-    - Xử lý dấu ngoặc mượt mà, bảo toàn dấu ba chấm (...) tạo nhịp ngắt cảm xúc
-    - Loại bỏ ngắt nhịp vô lý giúp audiobook truyền cảm, tự nhiên, đọc xuyên suốt.
+    Làm sạch văn bản khi đưa lên TTS & lưu vào 04b_VanBanTTS:
+    - Loại bỏ dòng tiêu đề tên chương ở đầu (Chương 1: ..., Hồi 1: ..., Quyển 1..., Chapter 1...).
+    - Loại bỏ các dòng / cụm kết thúc chương (Hết chương, Toàn văn hoàn, End Chapter,...).
+    - Loại bỏ lời kêu gọi tác giả / xin phiếu / xin đề cử ở cuối chương.
+    - Loại bỏ ký tự rỗng/vô hình zero-width, HTML tags, Markdown formatting, Emojis, URL, watermark cào web.
+    - Chuẩn hóa dấu câu Đông Á, ngoặc kép, dấu chấm lửng, đơn vị, chức danh và khoảng trắng sau dấu câu.
+    - Chuẩn hóa ngắt nghỉ câu theo từng loại dấu câu để Edge-TTS diễn đọc tự nhiên, liền mạch, có cảm xúc.
+    - Bảo toàn 100% nguyên văn từ ngữ và từ lóng của nội dung truyện.
     """
     if not text:
-        return text
+        return ""
 
-    # 0. Loại bỏ ký tự rỗng/vô hình zero-width, byte order mark và control characters
+    # 0. Loại bỏ ký tự rỗng/vô hình zero-width, BOM và control characters
     text = re.sub(r'[\u200b\u200c\u200d\u200e\u200f\ufeff\xa0]', ' ', text)
     text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
 
-    # 1. Unescape HTML entities trước khi xử lý
-    text = text.replace('&nbsp;', ' ').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"').replace('&#39;', "'")
-
-    # 2. Loại bỏ HTML tags thực sự (tránh xóa nhầm biểu thức so sánh toán học như < 5 hay <= 10)
+    # 1. Bóc tách thẻ HTML <span ...>Nội dung</span> -> Giữ lại Nội dung thuần túy
+    text = re.sub(r'<span\b[^>]*data-raw=["\'](.*?)["\'][^>]*>(.*?)</span>', r'\2', text, flags=re.DOTALL)
+    text = re.sub(r'<span\b[^>]*>(.*?)</span>', r'\1', text, flags=re.DOTALL)
     text = re.sub(r'</?[a-zA-Z][a-zA-Z0-9]*[^>]*>', ' ', text)
-    text = re.sub(r'\[/?[a-zA-Z0-9=\-]+\]', '', text)
 
-    # 3. Chuyển đổi phép nhân và số thẻ '#' TRƯỚC khi xóa Markdown
-    text = re.sub(r'(\d+)\s*[*×xX]\s*(\d+)', r'\1 nhân \2', text)
-    text = re.sub(r'(^|\s)#(\d+)', r'\1số \2', text)
-
+    # 2. Xóa Markdown, URL, Email, code block
+    text = text.replace('&nbsp;', ' ').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"').replace('&#39;', "'")
     text = re.sub(r'https?://\S+|www\.\S+', '', text)
     text = re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', '', text)
     text = re.sub(r'```[\s\S]*?```', '', text)
     text = re.sub(r'`[^`]*`', '', text)
-    text = re.sub(r'#{1,6}\s+', '', text)
+    text = re.sub(r'#{1,6}[ \t]+', '', text)
     text = re.sub(r'\*{1,3}', '', text)
     text = re.sub(r'_{1,3}', '', text)
-    text = re.sub(r'^[=\-*~+_#]{3,}.*$', '', text, flags=re.MULTILINE)
-    text = re.sub(r'[-–—]{3,}', ' — ', text)
-    text = re.sub(r'~{2,}', '', text)
 
+    # 3. Loại bỏ Emojis & ký tự trang trí lạ
     text = re.sub(r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF\U00002702-\U000027B0\U0001f900-\U0001f9ff\U00002600-\U000026FF]', '', text)
     text = re.sub(r'[★☆◆◇■□▲△▼▽●○♥♠♣♦♂♀⟪⟫▸▹►▻◄◄§†‡✓✕✗¶™®©♪♫✿❀❁☸⚡⚙⚔🛡🗡👑✦✧✨✴❇❄🔴🔵🟡🟢🟣⭐🌟🔥💥💢]', '', text)
 
-    unit_words_pattern = r'^(?:năm|tháng|ngày|giờ|phút|giây|lần|tuổi|người|cái|bước|món|trận|hiệp|vòng|tầng|cấp|thế\s+kỷ)$'
-    def _clean_chapter_header(m):
-        line = m.group(0).strip()
-        if not line:
-            return ""
-        if re.search(r'[,;!?]$', line):
-            return line 
-        if re.match(r'^(?:Quyển\s+\d+\s*[-–—:]?\s*)?Chương\s+\d+$', line, re.IGNORECASE):
-            return "" 
-        if re.match(r'^(?:Quyển\s+\d+\s*[-–—:]?\s*)?Chương\s+\d+\s*[:.:\-–—]', line, re.IGNORECASE):
-            return "" 
-        m_word = re.match(r'^(?:Quyển\s+\d+\s*[-–—:]?\s*)?Chương\s+\d+\s+([^\s]+)', line, re.IGNORECASE)
-        if m_word:
-            first_w = m_word.group(1).lower()
-            if re.match(unit_words_pattern, first_w):
-                return line 
-            if not re.search(r'\.$', line):
-                return "" 
-        return line
-
-    text = re.sub(r'^\s*(?:Quyển\s+\d+\s*[-–—:]?\s*)?Chương\s+\d+.*$', _clean_chapter_header, text, flags=re.IGNORECASE | re.MULTILINE)
-    text = re.sub(r'[\(\[\{]\s*(?:Hết\s+Chương(?:\s+\d+)?|\bHết\b|Chương\s+kết\ thúc|Tác\ giả\ có\ lời\ muốn\ nói)[^\)\}\]\n]*[\)\]\}]', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'^\s*[\(\[\{]?\s*(?:Hết\s+Chương(?:\s+\d+)?|\bHết\b)\s*[\)\]\}]?\.?\s*$', '', text, flags=re.IGNORECASE | re.MULTILINE)
-    text = re.sub(r'^\s*[-–—]*\s*Hết\s*[-–—]*\s*$', '', text, flags=re.IGNORECASE | re.MULTILINE)
-
-    text = re.sub(r'\s*(?:→|⇒|-->|->)\s*', ' chuyển thành ', text)
-    text = re.sub(r'\s*(?:←|⇐|<--|<-)\s*', ' từ ', text)
-    text = re.sub(r'↑\s*(\d+)', r' tăng \1 ', text)
-    text = re.sub(r'↓\s*(\d+)', r' giảm \1 ', text)
-    text = text.replace('↑', ' tăng ').replace('↓', ' giảm ')
-
-    text = re.sub(r'(?<!cộng trừ)\s*±\s*', ' cộng trừ ', text, flags=re.IGNORECASE)
-    text = re.sub(r'(?<!vô cực)\s*∞\s*', ' vô cực ', text, flags=re.IGNORECASE)
-    text = re.sub(r'(?<!xấp xỉ)\s*≈\s*', ' xấp xỉ ', text, flags=re.IGNORECASE)
-    text = re.sub(r'(?<!khác)\s*≠\s*', ' khác ', text, flags=re.IGNORECASE)
-    text = text.replace('≥', ' lớn hơn hoặc bằng ').replace('≤', ' nhỏ hơn hoặc bằng ')
-
+    # 4. Chuẩn hóa ngoặc kép & ngoặc Đông Á
     text = text.replace('「', '"').replace('」', '"').replace('『', '"').replace('』', '"')
-    text = text.replace('《', '"').replace('》', '"').replace('【', '"').replace('】', '"')
-    text = text.replace('。', '.').replace('，', ',').replace('！？', '?').replace('？！', '?').replace('……', '...')
+    text = text.replace('《', '"').replace('》', '"').replace('【', '[').replace('】', ']')
+    text = text.replace('“', '"').replace('”', '"').replace('„', '"')
+    text = text.replace('‘', "'").replace('’', "'")
+    text = text.replace('。', '. ').replace('，', ', ').replace('！？', '!? ').replace('？！', '!? ')
 
-    text = re.sub(r'[\(\[\{]\s*', ' ', text)
-    text = re.sub(r'\s*[\)\]\}]', ' ', text)
+    # 5. Chuẩn hóa đơn vị đo, chức danh, ký hiệu toán học
+    text = re.sub(r'(^|[ \t])>=[ \t]*', r'\1lớn hơn hoặc bằng ', text)
+    text = re.sub(r'(^|[ \t])<=[ \t]*', r'\1nhỏ hơn hoặc bằng ', text)
+    text = re.sub(r'(^|[ \t])!=[ \t]*', r'\1khác ', text)
+    text = re.sub(r'(^|[ \t])>[ \t]*', r'\1lớn hơn ', text)
+    text = re.sub(r'(^|[ \t])<[ \t]*', r'\1nhỏ hơn ', text)
+    text = re.sub(r'(^|[ \t])~[ \t]*(\d+)', r'\1khoảng \2', text)
+    text = re.sub(r'(\d+)[ \t]*\^[ \t]*(\d+)', r'\1 mũ \2', text)
+    text = re.sub(r'(\d+)[ \t]*[%％]', r'\1 phần trăm', text)
+    text = re.sub(r'([ \t]|\(|\[|^|,)\+[ \t]*(\d+)\b', r'\1cộng \2', text)
+    text = re.sub(r'(?i)\bLv\.?[ \t]*(\d+)\b', r'cấp \1', text)
+    text = re.sub(r'(?i)\bLevel[ \t]*(\d+)\b', r'cấp \1', text)
+    text = re.sub(r'(\d+)[ \t]*(km/h|km/g|m/s)\b', r'\1 km trên giờ', text, flags=re.IGNORECASE)
+    text = re.sub(r'(\d+)[ \t]*(km|cm|mm|kg|mg|ml|m|g|tháng|năm|phút|giây|h|tr|tỷ|V|Hz|W|kW|GB|MB|TB)\b', r'\1 \2', text, flags=re.IGNORECASE)
 
-    text = _convert_roman_numerals(text)
+    text = re.sub(r'\bTP\.?[ \t]*HCM\b', 'Thành phố Hồ Chí Minh', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bTP\.[ \t]*', 'Thành phố ', text)
+    text = re.sub(r'\bPGS\.[ \t]*', 'Phó Giáo sư ', text)
+    text = re.sub(r'\bGS\.[ \t]*', 'Giáo sư ', text)
+    text = re.sub(r'\bTS\.[ \t]*', 'Tiến sĩ ', text)
+    text = re.sub(r'\bThS\.[ \t]*', 'Thạc sĩ ', text)
 
-    text = re.sub(r'\bEXP\b|\bExp\b', 'điểm kinh nghiệm', text)
-    text = re.sub(r'\bHP\b|\bHp\b', 'máu', text)
-    text = re.sub(r'\bMP\b|\bMp\b', 'năng lượng', text)
-    text = re.sub(r'\b(?:Lv|LV|Level)\.?\s*(\d+)\b', r'Cấp \1', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bNPC\b', 'N P C', text)
-    text = re.sub(r'\bVIP\b', 'V I P', text)
-    text = re.sub(r'\bBOSS\b|\bBoss\b', 'Trùm', text)
-    text = re.sub(r'\bBUG\b|\bBug\b', 'lỗi', text)
-    text = re.sub(r'\bPK\b', 'P K', text)
-    text = re.sub(r'\bKO\b|\bK\.O\b', 'K O', text)
-    text = re.sub(r'\bAI\b', 'A I', text)
+    # 6. Tiền xử lý chuỗi biểu cảm cho Edge-TTS (la hét, rên rỉ, cười, khóc, thở dốc, lắp bắp)
+    # NGUYÊN TẮC VÀNG:
+    # - La hét dấu sắc: giới hạn đúng 2 từ "á á" / "Á á" / "é é" (tạo 1 xung to đầu thoải đuôi, tránh vỡ giọng).
+    # - La hét không dấu / rên / cười / khóc: nối liền ("aaa", "ôôô", "hahaha", "huhu", "ưmưm") để tạo 1 cụm âm mượt.
+    # - Lắp bắp (k-không, c-con): chuyển thành "không... không", "con... con" (tránh Edge-TTS đọc chữ cái tiếng Anh).
+    # - Tilde (~): bóc sạch, không chuyển thành ba chấm để không làm đứt gãy nhịp thở.
 
-    text = re.sub(r'(^|[^\w\d\s]|\s)\+(\d+)', r'\1cộng \2', text)
-    text = re.sub(r'(^|[^\w\d\s]|\s)-(\d+)(?=\s*(?:máu|năng lượng|điểm|exp|%|$|\b|\)))', r'\1trừ \2', text)
+    # 6a. Tilde kéo dài âm: "quá~", "sướng~", "ha~ ha~ ha~" → xóa tilde, giữ nguyên chữ
+    text = re.sub(r'([a-zA-ZÀ-ỹ])~+', r'\1', text)
+    text = re.sub(r'[~～]+', '', text)
 
-    text = re.sub(r'\$\s*(\d+(?:[.,]\d+)?)', r'\1 đô la', text)
-    text = re.sub(r'(\d+(?:[.,]\d+)?)\s*\$', r'\1 đô la', text)
-    text = re.sub(r'(\d+(?:[.,]\d+)?)\s*(?:USD|usd)\b', r'\1 đô la', text)
-    text = re.sub(r'(\d+(?:[.,]\d+)?)\s*€', r'\1 ơ-rô', text)
-    text = re.sub(r'(\d+(?:[.,]\d+)?)\s*(?:EUR|eur)\b', r'\1 ơ-rô', text)
-    text = re.sub(r'(\d+(?:[.,]\d+)?)\s*[¥￥]', r'\1 yên', text)
-    text = re.sub(r'(\d+(?:[.,]\d+)?)\s*(?:JPY|jpy)\b', r'\1 yên', text)
-    text = re.sub(r'(\d+(?:[.,]\d+)?)\s*(?:₫|VNĐ|vnd|VND)(?!\w)', r'\1 đồng', text)
+    # 6b. Xử lý lắp bắp cộc lốc tiếng Việt (k-không -> không... không, c-con -> con... con)
+    stutter_pattern = r'\b([a-zA-ZÀ-ỹ])\s*[-–—.]+\s*([a-zA-ZÀ-ỹ]{2,})\b'
+    def _smart_stutter_replace(m):
+        lead_char = m.group(1).lower()
+        word = m.group(2)
+        if word.lower().startswith(lead_char) or (lead_char == 'k' and word.lower().startswith('kh')):
+            return f"{word}... {word}"
+        return m.group(0)
+    text = re.sub(stutter_pattern, _smart_stutter_replace, text)
 
-    text = re.sub(r'-\s*(\d+)\s*°?\s*C\b', r'âm \1 độ C', text)
-    text = re.sub(r'-\s*(\d+)\s*độ\b', r'âm \1 độ', text)
-    text = re.sub(r'(\d+)\s*°\s*C\b', r'\1 độ C', text)
-    text = re.sub(r'(\d+)\s*°\s*F\b', r'\1 độ F', text)
-    text = re.sub(r'(\d+)\s*°(?!\w)', r'\1 độ', text)
+    # 6c. Chuỗi la hét có dấu sắc: bắt buộc chuẩn hóa về đúng 2 từ "á á" / "Á á" / "é é" / "oá oá"
+    def _normalize_acute_scream(m):
+        raw = m.group(0)
+        v = m.group(1)
+        is_upper = raw.strip()[:1].isupper()
+        base_v = v.capitalize() if is_upper else v.lower()
+        return f"{base_v} {base_v.lower()}"
+    text = re.sub(r'(?i)(?<![a-zA-ZÀ-ỹ])([áÁéÉíÍóÓúÚớỚứỨ]|oá|oé)(?:[ \t]*[\-—.,~]*[ \t]*\1)+(?![a-zA-ZÀ-ỹ])', _normalize_acute_scream, text)
+    text = re.sub(r'(?i)([áÁéÉíÍóÓúÚớỚứỨ]|oá|oé)\1+', _normalize_acute_scream, text)
 
-    text = re.sub(r'\b(\d{1,2})/(\d{1,2})/(\d{4})\b', lambda m: f"ngày {int(m.group(1))} tháng {int(m.group(2))} năm {m.group(3)}", text)
+    # 6d. Chuỗi nguyên âm la hét không dấu: a a a -> aaa, e e e -> eee, o o o -> ooo
+    def _merge_plain_vowels(m):
+        v = m.group(1).lower()
+        return v * 3
+    text = re.sub(r'(?i)(?<![a-zA-ZÀ-ỹ])([aeouàèòùảẻỏủãẽõũạẹọụ])(?:[ \t]*[\-—.,~]*[ \t]*\1){1,}(?![a-zA-ZÀ-ỹ])', _merge_plain_vowels, text)
 
-    text = re.sub(r'\b1/2\b', 'một phần hai', text)
-    text = re.sub(r'\b1/3\b', 'một phần ba', text)
-    text = re.sub(r'\b1/4\b', 'một phần tư', text)
-    text = re.sub(r'\b3/4\b', 'ba phần tư', text)
+    # 6e. Chuỗi nguyên âm rên rỉ: ô ô ô -> ôôô, ơ ơ ơ -> ơơơ, ư ư ư -> ưưư, ừ ừ -> ừừ
+    def _merge_moan_vowels(m):
+        v = m.group(1).lower()
+        return v * 3
+    text = re.sub(r'(?i)(?<![a-zA-ZÀ-ỹ])([ôốồổỗộơờởỡợưừửữựêềểễệ])(?:[ \t]*[\-—.,~]*[ \t]*\1){1,}(?![a-zA-ZÀ-ỹ])', _merge_moan_vowels, text)
 
-    text = re.sub(r'(\d+)\s*\+\s*(\d+)', r'\1 cộng \2', text)
-    text = re.sub(r'(?<=\s)\+(?=\s)', 'cộng', text)
-    text = re.sub(r'(\d+)\s*[-–]\s*(\d+)', r'\1 trừ \2', text)
-    text = re.sub(r'(\d+)\s*[xX*×]\s*(\d+)', r'\1 nhân \2', text)
-    text = re.sub(r'(?<=\s)[*×](?=\s)', 'nhân', text)
-    text = re.sub(r'(\d+)\s*[:/÷]\s*(\d+)', r'\1 chia \2', text)
-    text = re.sub(r'(?<=\s)[:÷](?=\s)', 'chia', text)
-    text = re.sub(r'(\d+)\s*=\s*(\d+)', r'\1 bằng \2', text)
-    text = re.sub(r'(?<=\s)=(?=\s)', 'bằng', text)
+    # 6f. Chuỗi từ tượng thanh cười/khóc/rên/thở dốc/cảm thán
+    ONOMA_WORDS = (
+        r'ha|hả|hô|hì|hê|hi|hề|hú|hứ|hừ|hừm|hức|hic|hu|oa|oá|'
+        r'kha|khà|khẹc|khặc|hắc|hặc|phì|hộc|hắt|hự|ực|chẹp|ưm|ừm'
+    )
+    def _merge_onoma(m):
+        word = m.group(1).lower()
+        count = len(re.findall(re.escape(word), m.group(0), re.IGNORECASE))
+        repeat = min(max(count, 2), 3)
+        return word * repeat
+    text = re.sub(rf'(?i)\b({ONOMA_WORDS})(?:[ \t]*[\-—.,~]*[ \t]*\1){{1,}}\b', _merge_onoma, text)
 
-    text = re.sub(r'(\d+(?:[.,]\d+)?)\s*%', r'\1 phần trăm', text)
-    text = re.sub(r'(?<=\s)%([,\s.!?]|$)', r' phần trăm\1', text)
+    # 6g. Cảm thán lặp: ối ối -> ốiối!, trời ơi trời ơi -> trời ơi!
+    def _merge_exclaim(m):
+        word = m.group(1)
+        count = len(re.findall(re.escape(word), m.group(0), re.IGNORECASE))
+        repeat = min(max(count, 2), 2)
+        return word * repeat + "!"
+    text = re.sub(r'(?i)\b(ối|ối dồi ôi|trời ơi)(?:[ \t]*[\-—.,~!]*[ \t]*\1){1,}', _merge_exclaim, text)
 
-    text = re.sub(r'(^|\s)>=\s*', r'\1lớn hơn hoặc bằng ', text)
-    text = re.sub(r'(^|\s)<=\s*', r'\1nhỏ hơn hoặc bằng ', text)
-    text = re.sub(r'(^|\s)!=\s*', r'\1khác ', text)
-    text = re.sub(r'(^|\s)>\s*', r'\1lớn hơn ', text)
-    text = re.sub(r'(^|\s)<\s*', r'\1nhỏ hơn ', text)
-    text = re.sub(r'(^|\s)~\s*(\d+)', r'\1khoảng \2', text)
-    text = re.sub(r'(^|\s)~\s*', r'\1khoảng ', text)
-    text = re.sub(r'(?<=\s)&(?=\s)', 'và', text)
-    text = re.sub(r'(^|\s)@([A-Za-z0-9_]+|\s)', r'\1a còng \2', text)
-    text = re.sub(r'(\d+)\s*\^\s*(\d+)', r'\1 mũ \2', text)
+    # 6h. Cắt tỉa nguyên âm dính liền quá 3 ký tự (aaaaaaa -> aaa, ôôôôô -> ôôô)
+    text = re.sub(r'(?i)([aàảãạeèẻẽẹoòỏõọuùủũụôốồổỗộơớờởỡợưứừửữựêếềểễệ])\1{3,}', r'\1\1\1', text)
 
-    text = re.sub(r'(\d+)\s*(km/h|km/g|m/s)\b', r'\1 km trên giờ', text, flags=re.IGNORECASE)
-    text = re.sub(r'(\d+)\s*(km|cm|mm|kg|mg|ml|m|g|tháng|năm|phút|giây|h|tr|tỷ|V|Hz|W|kW|GB|MB|TB)\b', r'\1 \2', text, flags=re.IGNORECASE)
+    # 7. Chuẩn hóa dấu chấm lửng, ba chấm, ngắt biểu cảm
+    text = re.sub(r'[…]+', '... ', text)
+    text = re.sub(r'\.{4,}', '... ', text)
+    # Lưu ý: ~ đã được xử lý ở bước 6a, không cần chuyển thành "..." nữa
+    text = re.sub(r'[-–—]{3,}', ' — ', text)
 
-    text = re.sub(r'\bTP\.?\s*HCM\b', 'Thành phố Hồ Chí Minh', text, flags=re.IGNORECASE)
-    text = re.sub(r'\bTP\.\s*', 'Thành phố ', text)
-    text = re.sub(r'\bPGS\.\s*', 'Phó Giáo sư ', text)
-    text = re.sub(r'\bGS\.\s*', 'Giáo sư ', text)
-    text = re.sub(r'\bTS\.\s*', 'Tiến sĩ ', text)
-    text = re.sub(r'\bThS\.\s*', 'Thạc sĩ ', text)
-
+    # 8. Chuẩn hóa chuỗi dấu lặp
+    text = re.sub(r'[!]{2,}', '!', text)
+    text = re.sub(r'[?]{2,}', '?', text)
+    text = re.sub(r'[,]{2,}', ', ', text)
+    text = re.sub(r'[;]{2,}', '; ', text)
+    text = re.sub(r'[:]{2,}', ': ', text)
+    text = re.sub(r'(?:\?\!|\!\?)+', '!? ', text)
     text = re.sub(r'["“”]{2,}', '"', text)
-    text = re.sub(r"['’]{2,}", "'", text)
-    text = re.sub(r'[:：]\s*[-–—]?\s*["“”\'’]{1,2}', r': "', text)
-    text = re.sub(r'^\s*[-–—]\s*(?=["“])', '', text, flags=re.MULTILINE)
-    text = re.sub(r'^\s*[-–—]\s+(?=[A-ZÀ-Ỹa-zà-ỹ])', '"', text, flags=re.MULTILINE)
 
-    text = re.sub(r'([aàáảãạăằắẳẵặâầấẩẫậeèéẻẽẹêềếểễệiìíỉĩịoòóỏõọôồốổỗộơờớởỡợuùúủũụưừứửữựyỳýỷỹỵAEIOUYÀÁẢÃẠ])\1{2,}', r'\1\1', text, flags=re.IGNORECASE)
-    text = re.sub(r'([bcdfghjklmnpqrstvwxzBCDFGHJKLMNPQRSTVWXZ])\1{2,}', r'\1', text)
+    # 9. Chuẩn hóa khoảng trắng quanh ngoặc vuông, ngoặc đơn, hai chấm dẫn thoại
+    text = re.sub(r'([\]\)])([A-ZÀ-Ỹa-zà-ỹ0-9])', r'\1 \2', text)
+    text = re.sub(r'([A-ZÀ-Ỹa-zà-ỹ0-9])([\[\(])', r'\1 \2', text)
+    text = re.sub(r'([:])([^\S\r\n]*)(["“])', r': \3', text)
+    text = re.sub(r'([a-zA-Zà-ỹÀ-Ỹ0-9])"([a-zA-Zà-ỹÀ-Ỹ0-9])', r'\1" \2', text)
 
-    text = re.sub(r'\b((?:ha|hà|hả|hạ|he|hê|hề|hi|hì|hí|ho|hò|hó|hu|hù|hú|hư|hừ|kha|khà)\s*){4,}', 
-                  lambda m: ' '.join(m.group(0).split()[:3]) + '.', text, flags=re.IGNORECASE)
+    # 10. Xóa khoảng trắng thừa NGAY TRONG dấu ngoặc / ngoặc kép
+    text = re.sub(r'([(\[{])[ \t]+', r'\1', text)
+    text = re.sub(r'[ \t]+([)\]}])', r'\1', text)
+    text = re.sub(r'(^|[ \t\n])"[ \t]+', r'\1"', text)
+    text = re.sub(r'[ \t]+"([ \t\n.,!?;:]|$)', r'"\1', text)
 
-    text = text.strip()
-    return text
+    # 11. Xóa khoảng trắng thừa TRƯỚC dấu câu
+    text = re.sub(r'[ \t]+([.!?;:,])', r'\1', text)
+
+    # 12. Đảm bảo luôn có đúng 1 khoảng trắng SAU dấu câu trên cùng một dòng
+    text = re.sub(r'([,;:])([A-ZÀ-Ỹa-zà-ỹ0-9])', r'\1 \2', text)
+    text = re.sub(r'([!?])([A-ZÀ-Ỹa-zà-ỹ0-9])', r'\1 \2', text)
+    text = re.sub(r'(\.)([A-ZÀ-Ỹa-zà-ỹ])', r'\1 \2', text)
+    text = re.sub(r'(\.\.\.)([A-ZÀ-Ỹa-zà-ỹ0-9])', r'\1 \2', text)
+
+    # Sửa lỗi chữ Hán dịch lẻ bị viết hoa giữa câu
+    text = re.sub(r'\bbế tử Quan\b', 'bế tử quan', text)
+    text = re.sub(r'\bthổ Nạp\b', 'thổ nạp', text)
+    text = re.sub(r'\blinh Khí\b', 'linh khí', text)
+
+    # 13. Lọc tiêu đề chương, kết thúc chương và lời tác giả
+    chapter_title_pattern = re.compile(
+        r'^(?:===+|---|___|\*\*\*)*[ \t]*(?:\[|\(|\{)?[ \t]*'
+        r'(?:Quyển[ \t]*\d+[ \t]*)?'
+        r'(?:Chương|Hồi|Tiết|Tập|Thứ|Chapter|Chap|Section|Vol|Volume|第)[ \t]*'
+        r'(?:\d+|[IVXLCDM]+|[一二三四五六七八九十百千万]+|[a-zA-Z0-9]+)[ \t]*'
+        r'(?:章)?[ \t]*'
+        r'(?:[:.:\-—\s]|\b).*(?:\]|\)|\})?[ \t]*(?:===+|---|___|\*\*\*)*$',
+        re.IGNORECASE
+    )
+
+    chapter_end_pattern = re.compile(
+        r'^(?:===+|---|___|\*\*\*)*[ \t]*(?:\[|\(|\{|【|（)?[ \t]*'
+        r'(?:Hết[ \t]*chương|Hết[ \t]*hồi|Hết[ \t]*tiết|Hết[ \t]*quyển|Toàn[ \t]*văn[ \t]*hoàn|Hoàn[ \t]*thành[ \t]*toàn[ \t]*văn|Hết[ \t]*bản[ \t]*chính|Chương[ \t]*hoàn|Hết|End[ \t]*Chapter|The[ \t]*End|END)[ \t]*'
+        r'(?:\d+)?[ \t]*(?:\.|\!|\?|…)*[ \t]*(?:\]|\)|\}|】|）)?[ \t]*(?:===+|---|___|\*\*\*)*$',
+        re.IGNORECASE
+    )
+
+    author_call_pattern = re.compile(
+        r'^(?:===+|---|___|\*\*\*)*[ \t]*(?:\[|\(|\{|【|（)?[ \t]*'
+        r'(?:sách[ \t]*mới|cầu[ \t]*sưu[ \t]*tầm|cầu[ \t]*đề[ \t]*cử|cầu[ \t]*nguyệt[ \t]*phiếu|cầu[ \t]*phiếu|cầu[ \t]*hoa|cầu[ \t]*đánh[ \t]*giá|cầu[ \t]*theo[ \t]*dõi|xin[ \t]*phiếu|xin[ \t]*đề[ \t]*cử|xin[ \t]*hoa|ủng[ \t]*hộ[ \t]*sách|vô[ \t]*cùng[ \t]*cảm[ \t]*kích|lời[ \t]*tác[ \t]*giả|p\.?s[ \t]*[:：]).*$',
+        re.IGNORECASE
+    )
+
+    raw_lines = text.split('\n')
+    clean_lines = []
+
+    for line in raw_lines:
+        s = line.strip()
+        if not s or not re.search(r'[\w\dÀ-ỹ]', s):
+            continue
+
+        if chapter_title_pattern.match(s):
+            continue
+
+        if chapter_end_pattern.match(s):
+            continue
+
+        if author_call_pattern.match(s):
+            continue
+
+        clean_lines.append(s)
+
+    # 14. Loại bỏ cụm từ kết thúc chương dính ở cuối đoạn văn cuối cùng (nếu có)
+    if clean_lines:
+        clean_lines[-1] = re.sub(
+            r'[ \t(\[{【（]*(?:Hết[ \t]*chương|Hết[ \t]*hồi|Hết[ \t]*tiết|Hết[ \t]*quyển|Toàn[ \t]*văn[ \t]*hoàn|Hoàn[ \t]*thành|End[ \t]*Chapter|The[ \t]*End)[ \t]*(?:\d+)?[ \t]*(?:\.|\!|\?|…)*[ \t)\]}】）]*$',
+            '',
+            clean_lines[-1],
+            flags=re.IGNORECASE
+        ).strip()
+        if not clean_lines[-1]:
+            clean_lines.pop()
+
+    text = '\n\n'.join(clean_lines)
+    text = re.sub(r'[ \t]+', ' ', text)
+    return text.strip()
 
 
-def split_text_into_chunks(text: str, max_chars: int = 2200) -> List[str]:
+def split_text_into_chunks(text: str, max_chars: int = 650) -> List[str]:
     """
-    Phân tách văn bản thành các chunk kích thước tối ưu (mặc định 2200 ký tự) để Edge-TTS đọc mượt mà,
-    xuyên suốt, tự nhiên, tải song song siêu nhanh gấp 15-20 lần và không bị ngắt ngập vô lý.
+    Phân tách văn bản thành các chunk <= max_chars ký tự:
+    - Giữ nguyên cấu trúc ngắt dòng (\n\n) giữa các đoạn văn để Edge-TTS ngắt nghỉ tự nhiên, có nhịp thở giữa lời thoại và lời dẫn.
+    - Tách câu an toàn theo dấu chấm, hỏi, than, ba chấm (. ! ? ...).
+    - Câu quá dài được tách nhịp theo dấu phẩy / chấm phẩy (, ; :).
     """
     if not text or not text.strip():
         return []
-    
-    text = text.strip()
-    if len(text) <= max_chars:
-        return [text]
-    
-    # 1. Tách theo đoạn văn trước
-    paragraphs = re.split(r'\n\s*\n', text)
-    paragraphs = [p.strip() for p in paragraphs if p.strip()]
-    
-    chunks = []
-    current_chunk = []
-    current_len = 0
-    
-    for para in paragraphs:
+
+    # Tách theo từng đoạn văn
+    raw_paras = [p.strip() for p in re.split(r'\n+', text.strip()) if p.strip()]
+
+    def _split_sentences(para: str) -> List[str]:
+        """Tách đoạn thành các câu hoàn chỉnh, giữ nguyên dấu kết thúc câu."""
+        sents = re.split(r'(?<=[.!?…])\s+', para)
+        return [s.strip() for s in sents if s.strip()]
+
+    def _split_by_comma(sent: str) -> List[str]:
+        """Tách câu dài theo dấu phẩy/chấm phẩy/hai chấm, fallback chia theo từ nếu mảnh vẫn quá dài."""
+        parts = re.split(r'(?<=[,;:])\s+', sent)
+        result = []
+        for p in parts:
+            p = p.strip()
+            if not p:
+                continue
+            if len(p) <= max_chars:
+                result.append(p)
+            else:
+                # Fallback: chia theo khoảng trắng (word-break) khi mảnh không có dấu phẩy mà vẫn dài hơn max_chars
+                words = p.split(' ')
+                buf: List[str] = []
+                buf_len = 0
+                for w in words:
+                    w_len = len(w)
+                    needed = buf_len + w_len + (1 if buf else 0)
+                    if needed > max_chars and buf:
+                        result.append(' '.join(buf))
+                        buf = []
+                        buf_len = 0
+                    buf.append(w)
+                    buf_len += w_len + (1 if len(buf) > 1 else 0)
+                if buf:
+                    result.append(' '.join(buf))
+        return result
+
+    chunks: List[str] = []
+    current_paras: List[str] = []
+    current_len: int = 0
+
+    def _flush():
+        nonlocal current_len
+        if current_paras:
+            joined = '\n\n'.join(current_paras).strip()
+            if joined:
+                chunks.append(joined)
+            current_paras.clear()
+            current_len = 0
+
+    for para in raw_paras:
         para_len = len(para)
-        
-        # Nếu đoạn văn quá dài vượt max_chars, chia theo câu (.!?)
-        if para_len > max_chars:
-            if current_chunk:
-                chunks.append('\n\n'.join(current_chunk))
-                current_chunk = []
-                current_len = 0
-            
-            # Tách đoạn dài thành các câu (giữ kèm dấu ngoặc kép / ngoặc ôm phía sau)
-            sentences = re.split(r'(?<=[.!?]["”’\)\}\]])\s+|\n+|(?<=[.!?])\s+', para)
-            for sent in sentences:
-                sent = sent.strip()
-                if not sent:
-                    continue
-                sent_len = len(sent)
-                
-                if sent_len > max_chars:
-                    if current_chunk:
-                        chunks.append(' '.join(current_chunk))
-                        current_chunk = []
-                        current_len = 0
-                    
-                    start = 0
-                    while start < len(sent):
-                        end = min(start + max_chars, len(sent))
-                        if end < len(sent):
-                            last_space = sent.rfind(' ', start, end)
-                            if last_space > start:
-                                end = last_space
-                        chunks.append(sent[start:end].strip())
-                        start = end
-                    continue
-                
-                if current_len + sent_len + 1 > max_chars:
-                    if current_chunk:
-                        chunks.append(' '.join(current_chunk))
-                    current_chunk = [sent]
-                    current_len = sent_len
-                else:
-                    current_chunk.append(sent)
-                    current_len += sent_len + 1
-            continue
-        
-        # Đoạn văn vừa vặn: gộp vào chunk hiện tại
-        if current_len + para_len + 2 > max_chars:
-            if current_chunk:
-                chunks.append('\n\n'.join(current_chunk))
-            current_chunk = [para]
+        # Nếu đoạn văn ngắn vừa khít vào chunk hiện tại
+        if current_len + para_len + (2 if current_paras else 0) <= max_chars:
+            current_paras.append(para)
+            current_len += para_len + (2 if len(current_paras) > 1 else 0)
+        elif para_len <= max_chars:
+            # Đoạn văn không vừa chunk hiện tại nhưng vừa đủ cho 1 chunk mới
+            _flush()
+            current_paras.append(para)
             current_len = para_len
         else:
-            current_chunk.append(para)
-            current_len += para_len + 2
-            
-    if current_chunk:
-        chunks.append('\n\n'.join(current_chunk))
-        
-    return [c.strip() for c in chunks if c and c.strip()]
+            # Đoạn văn quá dài (> max_chars): chia nhỏ từng câu trong đoạn
+            _flush()
+            sentences = _split_sentences(para)
+            current_sents: List[str] = []
+            sent_accum_len = 0
+
+            for sent in sentences:
+                sent_len = len(sent)
+                if sent_len > max_chars:
+                    # Câu quá dài: chia tiếp theo dấu phẩy
+                    comma_parts = _split_by_comma(sent)
+                    for cp in comma_parts:
+                        cp_len = len(cp)
+                        if sent_accum_len + cp_len + (1 if current_sents else 0) > max_chars:
+                            if current_sents:
+                                chunks.append(' '.join(current_sents).strip())
+                                current_sents.clear()
+                                sent_accum_len = 0
+                        current_sents.append(cp)
+                        sent_accum_len += cp_len + (1 if len(current_sents) > 1 else 0)
+                else:
+                    if sent_accum_len + sent_len + (1 if current_sents else 0) > max_chars:
+                        if current_sents:
+                            chunks.append(' '.join(current_sents).strip())
+                            current_sents.clear()
+                            sent_accum_len = 0
+                    current_sents.append(sent)
+                    sent_accum_len += sent_len + (1 if len(current_sents) > 1 else 0)
+
+            if current_sents:
+                chunks.append(' '.join(current_sents).strip())
+
+    _flush()
+    return [c for c in chunks if c.strip() and re.search(r'[\w\dÀ-ỹ]', c)]
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -410,21 +538,9 @@ def _get_chapter_cache_path(chapters_cache_dir: str, chapter_no: int) -> str:
 
 
 def _is_chapter_cached(chapters_cache_dir: str, chapter_no: int, novel_folder: str = "") -> bool:
-    """Kiểm tra cache mp3 của chương có tồn tại và còn mới hơn tệp văn bản dịch không"""
+    """Kiểm tra cache mp3 của chương có tồn tại và hợp lệ (> 1KB) không"""
     p = _get_chapter_cache_path(chapters_cache_dir, chapter_no)
-    if not (os.path.exists(p) and os.path.getsize(p) > 0):
-        return False
-    if novel_folder:
-        for subf in ["04_KetQua", "04b_VanBanTTS"]:
-            txt_path = os.path.join(BASE_TRANSLATED_DIR, subf, novel_folder, "chapters", f"{chapter_no:06d}.txt")
-            if os.path.exists(txt_path) and os.path.getsize(txt_path) > 0:
-                try:
-                    # Nếu tệp văn bản mới hơn tệp mp3 cache -> cache đã cũ, cần làm lại
-                    if os.path.getmtime(txt_path) > os.path.getmtime(p):
-                        return False
-                except Exception:
-                    pass
-    return True
+    return bool(os.path.exists(p) and os.path.getsize(p) > 1024)
 
 
 def _read_chapter_text(novel_folder: str, chapter_no: int) -> Optional[str]:
@@ -443,8 +559,13 @@ def _read_chapter_text(novel_folder: str, chapter_no: int) -> Optional[str]:
 
 
 async def _read_chapter_text_from_db_or_disk(session, novel_id: int, novel_folder: str, chapter: Chapter) -> Optional[str]:
-    """Đọc nội dung văn bản của chương từ DB hoặc đĩa"""
+    """
+    Luôn đọc nội dung dịch chuẩn mới nhất (FINAL / 04_KetQua) từ DB hoặc đĩa.
+    TUYỆT ĐỐI KHÔNG đọc bản TTS_TEXT cũ để đảm bảo mỗi khi tạo/tạo lại luôn làm sạch tươi mới từ nguồn gốc.
+    """
     from app.services.storage.file_storage import read_version_file_content
+
+    # 1. Đọc bản FINAL từ CSDL
     stmt_ver = select(ChapterVersion).where(
         ChapterVersion.chapter_id == chapter.id,
         ChapterVersion.version_type == "FINAL"
@@ -453,6 +574,8 @@ async def _read_chapter_text_from_db_or_disk(session, novel_id: int, novel_folde
     ver_final = res_ver.scalar_one_or_none()
 
     if ver_final:
+        if ver_final.content and ver_final.content.strip():
+            return ver_final.content
         if ver_final.file_path and os.path.exists(ver_final.file_path) and os.path.getsize(ver_final.file_path) > 0:
             try:
                 txt = read_version_file_content(ver_final.file_path)
@@ -460,8 +583,11 @@ async def _read_chapter_text_from_db_or_disk(session, novel_id: int, novel_folde
                     return txt
             except Exception:
                 pass
-        if ver_final.content and ver_final.content.strip():
-            return ver_final.content
+
+    # 2. Fallback đọc file đĩa 04_KetQua
+    txt_disk = _read_chapter_text(novel_folder, chapter.chapter_no)
+    if txt_disk and txt_disk.strip():
+        return txt_disk
 
     return None
 
@@ -476,7 +602,8 @@ async def tts_chapter_worker(
     tts_rate: str = "-4%",
     tts_pitch: str = "+0Hz",
     proxy_list: Optional[List[str]] = None,
-    silence_sec: float = 0.25
+    silence_sec: float = 0.25,
+    custom_parallel_workers: Optional[int] = None,
 ):
     """
     Worker xử lý TTS từng CHƯƠNG với tốc độ siêu nhanh (song song nhiều sub-chunks).
@@ -499,10 +626,11 @@ async def tts_chapter_worker(
 
         # Làm sạch HTML/thẻ tag và chuẩn hóa văn bản trước khi đưa vào Edge-TTS
         clean_text = sanitize_tts_text(text)
-        clean_text = re.sub(r'\s+', ' ', clean_text).strip()
 
-        # Chia text thành sub-chunks 2000 ký tự từ văn bản đã được làm sạch
-        sub_chunks = split_text_into_chunks(clean_text, max_chars=2000)
+        # Chia text thành sub-chunks từ văn bản đã được làm sạch theo đúng đoạn văn và câu kết thúc
+        chunk_size_str = await get_active_setting("TTS_MAX_CHUNK_SIZE")
+        max_chars = int(chunk_size_str) if (chunk_size_str and chunk_size_str.strip().isdigit()) else 600
+        sub_chunks = split_text_into_chunks(clean_text, max_chars=max_chars)
         if not sub_chunks:
             queue.task_done()
             continue
@@ -513,106 +641,103 @@ async def tts_chapter_worker(
             shutil.rmtree(tmp_dir, ignore_errors=True)
         os.makedirs(tmp_dir, exist_ok=True)
 
-        async def _download_subchunk(sub_idx: int, chunk_text: str) -> Optional[str]:
-            sub_path = os.path.join(tmp_dir, f"sub_{sub_idx:04d}.mp3")
-            sub_wav_path = os.path.join(tmp_dir, f"sub_{sub_idx:04d}.wav")
-            
-            # 1. Ưu tiên sử dụng Giọng đọc Hoài My (Edge-TTS) chuẩn Studio cao cấp
-            for attempt in range(2):
-                async with TTS_CONCURRENCY_SEMAPHORE:
-                    try:
-                        await asyncio.sleep(random.uniform(0.0, 0.05))
-                        proxy_url = random.choice(proxy_list) if (proxy_list and len(proxy_list) > 0) else None
-                        
-                        communicate_kwargs = {
-                            "text": chunk_text,
-                            "voice": voice,
-                            "rate": tts_rate,
-                            "pitch": tts_pitch
-                        }
-                        if proxy_url:
-                            communicate_kwargs["proxy"] = proxy_url
+        # Tổng hợp audio chương - Đa luồng (N workers song song, mỗi worker 1 Proxy riêng)
+        if custom_parallel_workers and custom_parallel_workers >= 1:
+            parallel_workers = min(16, max(1, custom_parallel_workers))
+        else:
+            parallel_workers_str = await get_active_setting("TTS_PARALLEL_WORKERS")
+            try:
+                parallel_workers = min(16, max(1, int(parallel_workers_str or "8")))
+            except Exception:
+                parallel_workers = 8
 
-                        communicate = edge_tts.Communicate(**communicate_kwargs)
-                        await asyncio.wait_for(communicate.save(sub_path), timeout=15.0)
-                        if os.path.exists(sub_path) and os.path.getsize(sub_path) > 0:
-                            _CONSECUTIVE_FAILURES["count"] = 0
-                            return sub_path
-                        if os.path.exists(sub_path) and os.path.getsize(sub_path) == 0:
-                            try: os.remove(sub_path)
-                            except Exception: pass
-                    except Exception:
-                        if os.path.exists(sub_path) and os.path.getsize(sub_path) == 0:
-                            try: os.remove(sub_path)
-                            except Exception: pass
-                        # Áp dụng ngắt âm nhẹ để Hoài My đọc chuẩn 100% từ ngữ 18+ mà Microsoft không chặn
-                        try:
-                            camou_text = re.sub(r'(?i)\blồn\b', 'l-ồn', chunk_text)
-                            camou_text = re.sub(r'(?i)\bcặc\b', 'c-ặc', camou_text)
-                            camou_text = re.sub(r'(?i)\bbuồi\b', 'b-uồi', camou_text)
-                            camou_text = re.sub(r'(?i)\bđịt\b', 'đ-ịt', camou_text)
-                            camou_text = re.sub(r'(?i)\bchịch\b', 'ch-ịch', camou_text)
-                            com_camou = edge_tts.Communicate(camou_text, voice, rate=tts_rate, pitch=tts_pitch)
-                            await asyncio.wait_for(com_camou.save(sub_path), timeout=15.0)
-                            if os.path.exists(sub_path) and os.path.getsize(sub_path) > 0:
-                                _CONSECUTIVE_FAILURES["count"] = 0
-                                return sub_path
-                            if os.path.exists(sub_path) and os.path.getsize(sub_path) == 0:
-                                try: os.remove(sub_path)
-                                except Exception: pass
-                        except Exception:
-                            if os.path.exists(sub_path) and os.path.getsize(sub_path) == 0:
-                                try: os.remove(sub_path)
-                                except Exception: pass
-                        _CONSECUTIVE_FAILURES["count"] += 1
-                        await asyncio.sleep(0.05)
+        pacing_str = await get_active_setting("TTS_PACING_SECONDS")
+        try:
+            pacing_sec = float(pacing_str or "0.2")
+        except Exception:
+            pacing_sec = 0.2
 
-            # 2. Fallback sang Động cơ Offline Piper nếu mạng bị ngắt
-            if is_piper_available():
+        engine = RotatingBatchTTSEngine(
+            voice=voice,
+            rate=tts_rate,
+            pitch=tts_pitch,
+            proxies=proxy_list,
+            auto_fetch_proxy=True,
+            max_parallel_workers=parallel_workers,
+            pacing_sec=pacing_sec,
+            max_retries=4,
+            chunk_timeout=25.0
+        )
+
+        total_sc = len(sub_chunks)
+
+        def on_subchunk_done(idx, ok, dur, out_p, worker_id=0, *args):
+            if ok and os.path.exists(out_p):
+                job_info["done_subchunks"] = job_info.get("done_subchunks", 0) + 1
+                done_count = job_info["done_subchunks"]
+                tot = max(1, job_info.get("total_subchunks", 1))
+                curr_pct = round((done_count / tot) * 100, 1)
+                job_info["percent"] = min(99.9, curr_pct)
+                job_info["progress_pct"] = job_info["percent"]
+                sz_kb = os.path.getsize(out_p) / 1024
+                audio_dur = sz_kb * 1024 * 8 / 128_000
+                rtf = audio_dur / dur if dur > 0 else 0
+                snippet = sub_chunks[idx].replace("\n", " ")[:30] + "..."
+                log_line = f"[{idx+1:02d}/{total_sc}] | {sz_kb:5.1f} KB | {dur:4.1f}s | 🚀 {rtf:4.1f}x RTF | \"{snippet}\""
+                job_info["last_chunk_log"] = log_line
+                
+                # Cập nhật mảng logs realtime để FE hiển thị bảng log
+                if "logs" not in job_info:
+                    job_info["logs"] = []
+                job_info["logs"].append(log_line)
+                if len(job_info["logs"]) > 50:
+                    job_info["logs"] = job_info["logs"][-50:]
+                    
+                safe_print(f"⚡ [TTS CH{chapter_no}] {log_line} (Tiến độ toàn lô: {done_count}/{tot} đoạn - {job_info['percent']}%)", flush=True)
+
+        results = await engine.synthesize_all(
+            chunks=sub_chunks,
+            output_dir=tmp_dir,
+            on_chunk_done=on_subchunk_done
+        )
+
+        # Kiểm tra tính toàn vẹn 100%: bắt buộc tất cả các sub-chunks phải tồn tại và > 1KB
+        sub_mp3s = []
+        for i in range(total_sc):
+            sc_path = os.path.join(tmp_dir, f"chunk_{i:04d}.mp3")
+            if os.path.exists(sc_path) and os.path.getsize(sc_path) > 1024:
+                sub_mp3s.append(sc_path)
+
+        if sub_mp3s and len(sub_mp3s) == total_sc:
+            if len(sub_mp3s) == 1:
                 try:
-                    piper_ok = await synthesize_text_piper_async(chunk_text, sub_wav_path)
-                    if piper_ok and os.path.exists(sub_wav_path) and os.path.getsize(sub_wav_path) > 0:
-                        cmd_ffmpeg = [get_ffmpeg_cmd(), "-y", "-i", sub_wav_path, "-ar", "44100", "-ac", "2", "-b:a", "192k", sub_path]
-                        proc_conv = subprocess.run(cmd_ffmpeg, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        if proc_conv.returncode == 0 and os.path.exists(sub_path) and os.path.getsize(sub_path) > 0:
-                            try: os.remove(sub_wav_path)
-                            except Exception: pass
-                            _CONSECUTIVE_FAILURES["count"] = 0
-                            return sub_path
-                except Exception as ex_piper:
-                    print(f"[PIPER-FALLBACK] Lỗi Piper: {ex_piper}")
-
-            return None
-
-        # Tải tất cả sub-chunk của chương song song (tuân thủ Concurrency Semaphore)
-        valid_chunks = [
-            (idx, c.strip()) for idx, c in enumerate(sub_chunks)
-            if c and c.strip() and re.search(r'\w', c)
-        ]
-        
-        if valid_chunks:
-            download_tasks = [_download_subchunk(idx, ctext) for idx, ctext in valid_chunks]
-            results = await asyncio.gather(*download_tasks, return_exceptions=True)
-            
-            sub_mp3s = []
-            for r in results:
-                if isinstance(r, str) and r and os.path.exists(r) and os.path.getsize(r) > 0:
-                    sub_mp3s.append(r)
-            
-            # Chỉ cần có các phần sub_mp3s hợp lệ là tiến hành ghép nối chương ngay
-            if sub_mp3s:
-                if len(sub_mp3s) == 1:
+                    if os.path.exists(chapter_mp3):
+                        os.remove(chapter_mp3)
+                    shutil.copyfile(sub_mp3s[0], chapter_mp3)
+                    success = os.path.exists(chapter_mp3) and os.path.getsize(chapter_mp3) > 10240
+                except Exception:
+                    success = False
+            else:
+                success = await asyncio.to_thread(merge_audio_files, sub_mp3s, chapter_mp3, 0.0, False)
+                if not success:
                     try:
-                        if os.path.exists(chapter_mp3):
-                            os.remove(chapter_mp3)
-                        shutil.copyfile(sub_mp3s[0], chapter_mp3)
-                        success = os.path.exists(chapter_mp3) and os.path.getsize(chapter_mp3) > 0
+                        with open(chapter_mp3, "wb") as out_f:
+                            for part in sub_mp3s:
+                                with open(part, "rb") as in_f:
+                                    out_f.write(in_f.read())
+                        success = os.path.exists(chapter_mp3) and os.path.getsize(chapter_mp3) > 10240
                     except Exception as e:
-                        success = merge_audio_files(sub_mp3s, chapter_mp3, add_silence_sec=0.0)
-                else:
-                    success = merge_audio_files(sub_mp3s, chapter_mp3, add_silence_sec=0.0)
+                        print(f"[TTS-MERGE] Ghép file thất bại: {e}")
+                        success = False
+        else:
+            # Log chi tiết nếu vẫn thiếu
+            missing_count = total_sc - len(sub_mp3s)
+            try:
+                print(f"[TTS-CH-WARN] Chuong {chapter_no}: thieu {missing_count}/{total_sc} sub-chunks.", flush=True)
+            except Exception:
+                pass
 
-        # Dọn dẹp temp
+        # Luôn cleanup tmp dir dù thành công hay thất bại
         try:
             shutil.rmtree(tmp_dir, ignore_errors=True)
         except Exception:
@@ -621,11 +746,44 @@ async def tts_chapter_worker(
         if success:
             job_info["done_chapters"] += 1
             job_info["recent_successes"] += 1
-            print(f"✅ [TTS-CH] Chương {chapter_no} → {os.path.basename(chapter_mp3)}", flush=True)
+            job_info["last_completed_chapter"] = chapter_no
+            sz_mb = os.path.getsize(chapter_mp3) / (1024 * 1024)
+            
+            # Lưu vĩnh viễn bản ghi AUDIO vào CSDL ngay khi chương vừa hoàn tất
+            try:
+                async with AsyncSessionLocal() as session:
+                    stmt_ch = select(Chapter).where(Chapter.novel_id == job_info.get("novel_id"), Chapter.chapter_no == chapter_no)
+                    res_ch = await session.execute(stmt_ch)
+                    db_ch = res_ch.scalar_one_or_none()
+                    if db_ch:
+                        stmt_v = select(ChapterVersion).where(
+                            ChapterVersion.chapter_id == db_ch.id,
+                            ChapterVersion.version_type == "AUDIO"
+                        )
+                        res_v = await session.execute(stmt_v)
+                        v_audio = res_v.scalar_one_or_none()
+                        if v_audio:
+                            v_audio.file_path = chapter_mp3
+                        else:
+                            session.add(ChapterVersion(
+                                chapter_id=db_ch.id,
+                                version_type="AUDIO",
+                                file_path=chapter_mp3
+                            ))
+                        await session.commit()
+            except Exception as e_db:
+                pass
+
+            safe_print(f"[TTS-CH OK] Chuong {chapter_no} -> {os.path.basename(chapter_mp3)} ({sz_mb:.2f} MB) [ĐÃ LƯU ĐĨA & DB]", flush=True)
         else:
             job_info["failed_chapters"] += 1
             job_info["recent_failures"] += 1
-            print(f"❌ [TTS-CH] Chương {chapter_no} thất bại sau 5 lần thử.", flush=True)
+            safe_print(f"[TTS-CH FAIL] Chuong {chapter_no} khong the tong hop.", flush=True)
+
+        # Thu hồi bộ nhớ + cooldown giữa các chương để Edge-TTS không rate-limit
+        del engine
+        gc.collect()
+        await asyncio.sleep(1.0)  # Cooldown 1s giữa các chương
 
         queue.task_done()
 
@@ -634,30 +792,44 @@ def generate_range_mp3(
     chapters_cache_dir: str,
     chapter_nos: List[int],
     output_path: str,
-    silence_sec: float = 0.25
+    silence_sec: float = 0.0,
+    apply_mastering: bool = False
 ) -> bool:
     """
     Tạo file mp3 khoảng (Range) bằng FFmpeg concat từ các chapter-cache mp3.
-    Trả về True nếu thành công.
+    Mặc định sử dụng stream copy để hoàn thành siêu tốc dưới 0.5s.
     """
     files = [_get_chapter_cache_path(chapters_cache_dir, c) for c in chapter_nos]
     # Lọc bỏ file không tồn tại hoặc rỗng
     files = [f for f in files if os.path.exists(f) and os.path.getsize(f) > 0]
     if not files:
         return False
-    return merge_audio_files(files, output_path, add_silence_sec=silence_sec)
+    return merge_audio_files(files, output_path, add_silence_sec=silence_sec, apply_mastering=apply_mastering)
 
 
 def normalize_final_audio(input_path: str, output_path: str) -> bool:
     """
-    Bảo toàn 100% độ thoáng và chi tiết tự nhiên nguyên bản của giọng đọc Neural.
-    Loại bỏ bộ lọc acompressor/loudnorm nén đè gây méo tiếng/ồm giọng/chói tai.
+    Hậu xử lý Audio DSP Mastering toàn diện cho file thành phẩm:
+    - Khử 100% tiếng rè dải âm cao (De-essing + High-frequency shaping).
+    - Tăng độ nét bóc tách phụ âm (Voice Presence) giúp tua nhanh 1.5x - 2.0x vẫn rõ từng chữ.
+    - Chuẩn hóa âm lượng EBU R128 (-16 LUFS) và khóa trần True-Peak -1.0 dBFS chống clipping vỡ tiếng.
     """
+    if not (os.path.exists(input_path) and os.path.getsize(input_path) > 1024):
+        return False
     try:
-        if os.path.abspath(input_path) == os.path.abspath(output_path):
-            return os.path.exists(input_path) and os.path.getsize(input_path) > 0
-        import shutil
-        shutil.copyfile(input_path, output_path)
+        cmd = [
+            get_ffmpeg_cmd(), "-y", "-i", input_path,
+            "-af", AUDIOBOOK_MASTERING_FILTERS,
+            "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "24000",
+            output_path
+        ]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="ignore")
+        if res.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
+            return True
+            
+        # Fallback: sao chép nếu FFmpeg filter gặp lỗi
+        if os.path.abspath(input_path) != os.path.abspath(output_path):
+            shutil.copyfile(input_path, output_path)
         return True
     except Exception as e:
         print(f"[TTS-NORMALIZE] Lỗi xử lý tệp âm thanh: {e}")
@@ -668,15 +840,18 @@ async def run_tts_volume_pipeline(
     novel_id: int,
     volume_no: int,
     chapters_per_volume: int,
-    voice_profile: str = "default"
+    voice_profile: str = "default",
+    force_regenerate: bool = False,
+    custom_workers: Optional[int] = None,
 ):
     """
     Pipeline TTS per-chapter cache hoàn chỉnh:
     1. Xác định danh sách chương cần xử lý
-    2. Quét chapter-cache mp3 → chỉ TTS chương chưa có
+    2. Quét chapter-cache mp3 → chỉ TTS chương chưa có (nếu force_regenerate=True sẽ tạo mới toàn bộ)
     3. Worker pool TTS song song
     4. FFmpeg concat tất cả chapter mp3 → file output cuối
     """
+    import gc
     from sqlalchemy import delete
 
     job_key = f"{novel_id}_{volume_no}"
@@ -690,6 +865,7 @@ async def run_tts_volume_pipeline(
         job_info["status"] = "failed"
         job_info["status_msg"] = "❌ Không tìm thấy truyện trong CSDL."
         job_info["is_running"] = False
+        gc.collect()
         return
 
     novel_folder = sanitize_filename(novel.title_rough if novel.title_rough else novel.title_raw)
@@ -709,17 +885,18 @@ async def run_tts_volume_pipeline(
             select(Chapter).where(Chapter.novel_id == novel_id).order_by(Chapter.chapter_no)
         )).scalars().all()
 
+    short_title = novel_folder[:30].strip() if len(novel_folder) > 30 else novel_folder
     if volume_no >= 1000000:
         rem = volume_no - 1000000
         start_ch = rem // 10000
         end_ch = rem % 10000
         volume_chapters = [ch for ch in all_chapters if start_ch <= ch.chapter_no <= end_ch]
-        final_name = f"{novel_folder}_Ch{start_ch}_to_Ch{end_ch}.mp3"
+        final_name = f"{short_title}_Ch{start_ch}_to_Ch{end_ch}.mp3"
     else:
         start_idx = (volume_no - 1) * chapters_per_volume
         end_idx = min(start_idx + chapters_per_volume, len(all_chapters))
         volume_chapters = all_chapters[start_idx:end_idx]
-        final_name = f"{novel_folder}_Vol{volume_no:03d}.mp3"
+        final_name = f"{short_title}_Vol{volume_no:03d}.mp3"
 
     if not volume_chapters:
         err = "⚠️ Không tìm thấy chương nào hợp lệ trong khoảng đã chọn."
@@ -727,6 +904,7 @@ async def run_tts_volume_pipeline(
         job_info["status"] = "failed"
         job_info["status_msg"] = err
         job_info["is_running"] = False
+        gc.collect()
         return
 
     chapter_nos = [ch.chapter_no for ch in volume_chapters]
@@ -734,31 +912,112 @@ async def run_tts_volume_pipeline(
     job_info["total_chapters"] = total_chapters
     job_info["total_chunks"] = total_chapters  # backward-compat cho UI
 
+    # Nếu người dùng chọn Tạo lại (Force Regenerate) -> Xóa sạch cache cũ của các chương này
+    if force_regenerate:
+        print(f"🔄 [TTS-FORCE] Xóa cache cũ cho {total_chapters} chương để tạo mới hoàn toàn...", flush=True)
+        for c_no in chapter_nos:
+            # 1. Xóa cache mp3 của chương
+            old_c = _get_chapter_cache_path(chapters_cache_dir, c_no)
+            if os.path.exists(old_c):
+                try: os.remove(old_c)
+                except Exception: pass
+            # 2. Xóa thư mục tạm của chương nếu có
+            tmp_c_dir = os.path.join(chapters_cache_dir, f"_tmp_ch{c_no:06d}")
+            if os.path.exists(tmp_c_dir):
+                try: shutil.rmtree(tmp_c_dir, ignore_errors=True)
+                except Exception: pass
+            # 3. Xóa file 04b_VanBanTTS cũ để chắc chắn làm sạch lại từ đầu
+            old_tts_txt = os.path.join(r"D:\NENGHIA0980\AIREAD\Output\04b_VanBanTTS", novel_folder, "chapters", f"{c_no:06d}.txt")
+            if os.path.exists(old_tts_txt):
+                try: os.remove(old_tts_txt)
+                except Exception: pass
+
     # ── 3. Quét chapter-cache: tìm chương nào chưa có mp3 ────────────────────
+    cached_chapters = []
+    missing_untranslated = []
     need_tts = []
     need_text = {}  # chapter_no → text
 
     async with AsyncSessionLocal() as session:
         for ch in volume_chapters:
-            if _is_chapter_cached(chapters_cache_dir, ch.chapter_no, novel_folder=novel_folder):
-                continue  # Đã có cache và mới hơn văn bản dịch → bỏ qua
-            # Đọc text ngay để tránh mở nhiều DB session sau
+            is_cached = _is_chapter_cached(chapters_cache_dir, ch.chapter_no, novel_folder=novel_folder)
+            
+            # Đọc text của chương
             txt = await _read_chapter_text_from_db_or_disk(session, novel_id, novel_folder, ch)
-            if txt:
+            if txt and txt.strip():
                 clean = sanitize_tts_text(txt)
                 if clean and clean.strip():
-                    # Lưu văn bản đã qua tiền xử lý chuẩn vào 04b_VanBanTTS
+                    # Lưu văn bản đã qua tiền xử lý chuẩn vào 04b_VanBanTTS và ghi vào DB
                     try:
-                        save_tts_text_file(novel_folder, ch.chapter_no, clean)
+                        tts_fp = save_tts_text_file(novel_folder, ch.chapter_no, clean)
+                        stmt_v_tts = select(ChapterVersion).where(
+                            ChapterVersion.chapter_id == ch.id,
+                            ChapterVersion.version_type == "TTS_TEXT"
+                        )
+                        res_v_tts = await session.execute(stmt_v_tts)
+                        v_tts = res_v_tts.scalar_one_or_none()
+                        if v_tts:
+                            v_tts.file_path = tts_fp
+                            v_tts.content = clean
+                        else:
+                            session.add(ChapterVersion(
+                                chapter_id=ch.id,
+                                version_type="TTS_TEXT",
+                                file_path=tts_fp,
+                                content=clean
+                            ))
+                        await session.commit()
                     except Exception as e_save:
                         print(f"⚠️ Không thể lưu tệp 04b_VanBanTTS ch{ch.chapter_no}: {e_save}")
-                    need_tts.append(ch.chapter_no)
-                    need_text[ch.chapter_no] = clean
 
-    cached_count = total_chapters - len(need_tts)
-    print(
+                    if is_cached:
+                        cached_chapters.append(ch.chapter_no)
+                    else:
+                        need_tts.append(ch.chapter_no)
+                        need_text[ch.chapter_no] = clean
+                else:
+                    if is_cached:
+                        cached_chapters.append(ch.chapter_no)
+                    else:
+                        missing_untranslated.append(ch.chapter_no)
+            else:
+                if is_cached:
+                    cached_chapters.append(ch.chapter_no)
+                else:
+                    missing_untranslated.append(ch.chapter_no)
+
+    valid_chapters_to_process = cached_chapters + need_tts
+    if not valid_chapters_to_process:
+        err = f"⚠️ Chưa có chương nào trong khoảng đã chọn (Chương {volume_chapters[0].chapter_no} - {volume_chapters[-1].chapter_no}) được dịch hoàn tất (FINAL). Vui lòng dịch truyện trước khi tạo Audio!"
+        print(f"[TTS-ERROR] {err}")
+        job_info["status"] = "failed"
+        job_info["status_msg"] = err
+        job_info["is_running"] = False
+        gc.collect()
+        return
+
+    if missing_untranslated:
+        print(f"⚠️ [TTS-NOTICE] Phát hiện {len(missing_untranslated)} chương chưa có bản dịch ({missing_untranslated[:5]}...), hệ thống sẽ chỉ tổng hợp {len(valid_chapters_to_process)} chương đã dịch.", flush=True)
+
+    total_chapters = len(valid_chapters_to_process)
+    cached_count = len(cached_chapters)
+    job_info["total_chapters"] = total_chapters
+    job_info["total_chunks"] = total_chapters  # backward-compat cho UI
+    
+    # Tính toán tổng số subchunks ước tính để tính phần trăm mượt mà theo thời gian thực
+    total_subchunks_est = 0
+    for ch_no in need_tts:
+        chunk_size_str = await get_active_setting("TTS_MAX_CHUNK_SIZE")
+        max_chars = int(chunk_size_str) if (chunk_size_str and chunk_size_str.strip().isdigit()) else 600
+        sub_c = split_text_into_chunks(need_text[ch_no], max_chars=max_chars)
+        total_subchunks_est += max(1, len(sub_c))
+        
+    job_info["total_subchunks"] = max(1, total_subchunks_est)
+    job_info["done_subchunks"] = 0
+
+    safe_print(
         f"🔊 [TTS-START] Truyện '{novel_folder}' | Tập {volume_no} | "
-        f"{total_chapters} chương | Đã cache: {cached_count} | Cần TTS: {len(need_tts)}",
+        f"{total_chapters} chương hợp lệ ({total_subchunks_est} sub-chunks) | Đã cache: {cached_count} | Cần TTS: {len(need_tts)}",
         flush=True
     )
 
@@ -783,11 +1042,11 @@ async def run_tts_volume_pipeline(
         proxy_list_str = await get_active_setting("TTS_PROXY_LIST")
         
         try:
-            num_workers = min(int(tts_workers_str), 6) if (tts_workers_str and tts_workers_str.strip()) else 6
+            num_workers = min(int(tts_workers_str), 4) if (tts_workers_str and tts_workers_str.strip()) else 1
             if num_workers < 1:
-                num_workers = 6
+                num_workers = 1
         except Exception:
-            num_workers = 6
+            num_workers = 1
 
         try:
             silence_sec = max(0.0, float(silence_ms_str) / 1000.0) if silence_ms_str else 0.25
@@ -807,7 +1066,8 @@ async def run_tts_volume_pipeline(
                 t = asyncio.create_task(
                     tts_chapter_worker(
                         queue, voice, novel_folder, chapters_cache_dir, job_info, AsyncSessionLocal,
-                        tts_rate=tts_rate, tts_pitch=tts_pitch, proxy_list=proxy_list, silence_sec=silence_sec
+                        tts_rate=tts_rate, tts_pitch=tts_pitch, proxy_list=proxy_list, silence_sec=silence_sec,
+                        custom_parallel_workers=custom_workers
                     )
                 )
                 workers.append(t)
@@ -829,7 +1089,7 @@ async def run_tts_volume_pipeline(
                     job_info["done_chunks"] = done  # backward-compat
 
                 if (done + failed) >= total_chapters or (queue.empty() and done >= cached_count + len(need_tts) - failed):
-                    print(f"🎉 [TTS-MONITOR] Đã hoàn thành {done}/{total_chapters} chương.", flush=True)
+                    safe_print(f"🎉 [TTS-MONITOR] Đã hoàn thành {done}/{total_chapters} chương.", flush=True)
                     break
 
             # Dừng tất cả worker
@@ -838,65 +1098,40 @@ async def run_tts_volume_pipeline(
             await asyncio.gather(*workers, return_exceptions=True)
 
         except asyncio.CancelledError:
-            print(f"[TTS-PIPELINE] Job {job_key} bị hủy bởi người dùng.")
+            safe_print(f"[TTS-PIPELINE] Job {job_key} bị hủy bởi người dùng.")
             for w in workers:
                 if not w.done():
                     w.cancel()
-            
-            # Gộp ngay tất cả các chương đã làm xong cache cho tới thời điểm ngắt
-            try:
-                cached_files = [c for c in chapter_nos if _is_chapter_cached(chapters_cache_dir, c, novel_folder=novel_folder)]
-                if cached_files:
-                    partial_final_name = f"{novel_folder}_Ch{cached_files[0]}_to_Ch{cached_files[-1]}.mp3"
-                    partial_final_path = os.path.join(out_dir, partial_final_name)
-                    generate_range_mp3(chapters_cache_dir, cached_files, partial_final_path)
-                    print(f"🎬 [TTS-CANCEL-MERGE] Đã tự động gộp {len(cached_files)} chương đã tạo thành {partial_final_name}", flush=True)
-            except Exception as ex_merge:
-                print(f"[TTS-CANCEL-MERGE-ERROR] {ex_merge}")
 
             job_info["status"] = "cancelled"
             job_info["is_running"] = False
+            gc.collect()
             return
 
         except Exception as e:
-            print(f"[TTS-PIPELINE ERROR] {e}")
+            safe_print(f"[TTS-PIPELINE ERROR] {e}")
             for w in workers:
                 if not w.done():
                     w.cancel()
             job_info["status"] = "failed"
             job_info["is_running"] = False
+            gc.collect()
             raise e
     else:
         job_info["worker_count"] = 0
         job_info["percent"] = 100.0
-        print(f"⚡ [TTS-FAST] Tất cả {total_chapters} chương đã có cache. Chuyển thẳng FFmpeg...", flush=True)
+        safe_print(f"⚡ [TTS-FAST] Tất cả {total_chapters} chương đã có sẵn Audio.", flush=True)
 
-    # ── 5. FFmpeg concat tất cả chapter mp3 → output cuối ────────────────────
-    final_path = os.path.join(out_dir, final_name)
-    job_info["status_msg"] = f"🎬 Đang ghép nối {total_chapters} chương → FFmpeg..."
-    print(f"[TTS-MERGE] Bắt đầu FFmpeg concat {total_chapters} chapter mp3...", flush=True)
-
-    success_merge = generate_range_mp3(chapters_cache_dir, chapter_nos, final_path)
-
-    if success_merge:
-        # Chuẩn hóa âm lượng + giảm chói/vỡ tiếng trên file cuối
-        normalized_path = final_path.replace(".mp3", "_norm.mp3")
-        if normalize_final_audio(final_path, normalized_path):
-            try:
-                os.replace(normalized_path, final_path)
-            except Exception:
-                pass
-        job_info["status"] = "completed"
-        job_info["percent"] = 100.0
-        job_info["done_chunks"] = total_chapters
-        job_info["status_msg"] = f"✅ Hoàn tất! Đã lưu tại {final_name}"
-        print(f"🎉 [TTS-DONE] Audiobook lưu tại: {final_path}", flush=True)
-    else:
-        job_info["status"] = "failed"
-        job_info["status_msg"] = "❌ FFmpeg ghép nối thất bại."
-        print(f"❌ [TTS-MERGE-FAIL] Không thể ghép nối file cuối.", flush=True)
+    # ── 5. Hoàn tất tiến trình TTS lô (Chỉ tạo & lưu file từng chương riêng biệt, gộp khi người dùng bấm tải) ──
+    done_count = job_info.get("done_chapters", total_chapters)
+    job_info["status"] = "completed"
+    job_info["percent"] = 100.0
+    job_info["done_chunks"] = done_count
+    job_info["status_msg"] = f"✅ Hoàn tất tạo Audio cho {done_count}/{total_chapters} chương!"
+    safe_print(f"🎉 [TTS-DONE] Đã lưu xong Audio các chương trong lô ({done_count}/{total_chapters} chương).", flush=True)
 
     job_info["is_running"] = False
+    gc.collect()
 
 
 async def cleanup_tts_volume(novel_id: int, volume_no: int, temp_dir: str = ""):

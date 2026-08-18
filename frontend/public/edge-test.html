@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bảng Thử Nghiệm Từ Lóng Sai Chính Tả / Đồng Âm - Edge-TTS Hoài My</title>
+    <style>
+        :root {
+            --bg-main: #0b0f19;
+            --bg-card: #151d30;
+            --border: #243049;
+            --text-main: #f8fafc;
+            --text-sub: #94a3b8;
+            --accent: #38bdf8;
+            --accent-hover: #7dd3fc;
+            --success: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+            background: var(--bg-main);
+            color: var(--text-main);
+            margin: 0;
+            padding: 24px;
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            width: 100%;
+            max-width: 1100px;
+        }
+        h1 {
+            color: var(--accent);
+            font-size: 26px;
+            margin: 0 0 8px 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .desc {
+            color: var(--text-sub);
+            font-size: 15px;
+            line-height: 1.6;
+            margin-bottom: 24px;
+        }
+        .control-panel {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 24px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .voice-box {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        select {
+            background: #0b1120;
+            color: #38bdf8;
+            border: 1px solid var(--border);
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: bold;
+            outline: none;
+        }
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .badge-success { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+        .badge-danger { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+        .badge-warn { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+
+        .section-title {
+            font-size: 19px;
+            color: #facc15;
+            margin: 28px 0 14px 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 8px;
+        }
+
+        .test-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+            gap: 16px;
+        }
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            transition: 0.2s ease;
+        }
+        .card:hover {
+            border-color: #38bdf8;
+            box-shadow: 0 4px 16px rgba(56, 189, 248, 0.1);
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .word-original {
+            font-size: 13px;
+            color: var(--text-sub);
+        }
+        .word-target {
+            font-size: 20px;
+            font-weight: bold;
+            color: #38bdf8;
+        }
+        .sentence-preview {
+            background: #0b1120;
+            border: 1px solid #1e293b;
+            padding: 10px 12px;
+            border-radius: 8px;
+            font-size: 13.5px;
+            color: #cbd5e1;
+            line-height: 1.5;
+            margin-bottom: 12px;
+            min-height: 52px;
+        }
+        .sentence-preview mark {
+            background: rgba(250, 204, 21, 0.3);
+            color: #fef08a;
+            padding: 2px 5px;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .card-action {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .btn-play {
+            background: #2563eb;
+            color: #fff;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-weight: bold;
+            font-size: 14px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: 0.15s;
+        }
+        .btn-play:hover {
+            background: #3b82f6;
+        }
+        .btn-play:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .status-tag {
+            font-size: 13px;
+            font-family: monospace;
+        }
+
+        .custom-tester {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 24px;
+        }
+        textarea {
+            width: 100%;
+            height: 90px;
+            background: #0b1120;
+            color: #fff;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 15px;
+            box-sizing: border-box;
+            resize: vertical;
+            outline: none;
+        }
+        textarea:focus {
+            border-color: var(--accent);
+        }
+        .btn-custom {
+            background: var(--accent);
+            color: #0b0f19;
+            border: none;
+            padding: 10px 22px;
+            font-size: 15px;
+            font-weight: bold;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-top: 10px;
+            transition: 0.2s;
+        }
+        .btn-custom:hover {
+            background: var(--accent-hover);
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>🎙️ Thử Nghiệm Từ Lóng Sai Chính Tả / Đồng Âm Cho Edge-TTS</h1>
+    <div class="desc">
+        Hệ thống gửi trực tiếp câu văn chứa các biến thể từ lóng (viết không gạch nối, sai chính tả nhẹ / đồng âm) qua backend Python gọi máy chủ <b>Microsoft Neural Voice (Hoài My)</b>. 
+        Bấm <b>▶️ Nghe Thử</b> để kiểm tra chất lượng giọng đọc và xem từ có bị Microsoft kiểm duyệt chặn không.
+    </div>
+
+    <div class="control-panel">
+        <div class="voice-box">
+            <label style="font-weight:bold; color:var(--text-sub);">Giọng đọc:</label>
+            <select id="voiceSelect">
+                <option value="vi-VN-HoaiMyNeural">👩 Nữ Hoài My (vi-VN-HoaiMyNeural)</option>
+                <option value="vi-VN-NamMinhNeural">👨 Nam Nam Minh (vi-VN-NamMinhNeural)</option>
+            </select>
+        </div>
+        <div>
+            <button class="btn-play" style="background:#059669;" onclick="testAllCards()">⚡ Tự Động Test Toàn Bộ Danh Sách</button>
+        </div>
+    </div>
+
+    <!-- DANH SÁCH TỪ LÓNG & CÂU TEST -->
+    <div class="section-title">🔥 1. Nhóm Từ Lóng Vùng Kín & Bộ Phận Cơ Thể</div>
+    <div class="test-grid" id="grid-body"></div>
+
+    <div class="section-title">💥 2. Nhóm Hành Động Sắc Hiệp & Làm Tình 18+</div>
+    <div class="test-grid" id="grid-action"></div>
+
+    <div class="section-title">💦 3. Nhóm Dịch Thể & Trạng Thái Kích Thích</div>
+    <div class="test-grid" id="grid-fluid"></div>
+
+    <!-- TỰ NHẬP TEST TÙY CHỌN -->
+    <div class="custom-tester">
+        <h3 style="margin-top:0; color:#facc15;">✍️ 4. Tự Nhập Đoạn Văn Thực Chiến Để Nghe Thử</h3>
+        <textarea id="customInput">Hắn nắm chặt eo nàng, thúc mạnh kặc vào sâu trong lỗ lồnn khiến nàng khẽ rên rỉ vì quá zâm đãng. Hai người trịch nhau cuồng nhiệt suốt cả đêm.</textarea>
+        <div style="display:flex; gap:12px; align-items:center;">
+            <button class="btn-custom" id="btnCustomPlay" onclick="playCustomText()">▶️ Tạo & Nghe Đoạn Này</button>
+            <span id="customStatus" style="font-size:14px; font-family:monospace; color:#94a3b8;"></span>
+        </div>
+    </div>
+</div>
+
+<script>
+const TEST_ITEMS = [
+    // 1. Vùng kín & Hạ bộ Nam/Nữ
+    { category: "body", original: "lồn", target: "lồnn", sentence: "Nàng xấu hổ khép chặt hai chân nhưng miệng khe <mark>lồnn</mark> vẫn không ngừng tiết dịch zâm." },
+    { category: "body", original: "lỗ lồn", target: "lỗ lồnn", sentence: "Hắn tách rộng hai đùi nàng ra rồi cắm ngập vào tận đáy <mark>lỗ lồnn</mark> non mềm mại." },
+    { category: "body", original: "mép lồn", target: "mép lồnn", sentence: "Từng ngón tay hắn khẽ mân mê hai cánh <mark>mép lồnn</mark> ướt đẫm nước nhờn." },
+    { category: "body", original: "khe lồn", target: "khe lồnn", sentence: "Chiếc váy bị xé toạc để lộ ra <mark>khe lồnn</mark> hồng hào đang co thắt liên hồi." },
+    { category: "body", original: "cặc", target: "kặc", sentence: "Cây <mark>kặc</mark> to lớn gân guốc nóng rực thúc mạnh vào tận cùng hoa huyệt." },
+    { category: "body", original: "con cặc", target: "con kặc", sentence: "Nàng mở to hai mắt khi nhìn thấy <mark>con kặc</mark> khổng lồ đang dựng đứng trước mặt." },
+    { category: "body", original: "buồi", target: "buồii", sentence: "Cảm giác cây <mark>buồii</mark> thô dài chen chúc bên trong làm nàng sướng đến phát điên." },
+    { category: "body", original: "đầu vú", target: "đầu vú", sentence: "Hắn cúi xuống ngậm chặt lấy <mark>đầu vú</mark> hồng hào rồi mút thật mạnh." },
+    { category: "body", original: "núm vú", target: "núm vú", sentence: "Hai bên <mark>núm vú</mark> cương cứng lên vì kích thích tột độ." },
+    { category: "body", original: "hột le", target: "hột le", sentence: "Hắn dùng đầu lưỡi liên tục day đi day lại trên <mark>hột le</mark> mẫn cảm của nàng." },
+
+    // 2. Hành động Sắc Hiệp & Làm Tình 18+
+    { category: "action", original: "địt", target: "địtt", sentence: "Hai cơ thể trần như nhộng lao vào <mark>địtt</mark> nhau say đắm suốt cả đêm." },
+    { category: "action", original: "địt nhau", target: "địtt nhau", sentence: "Tiếng da thịt va chạm chát chúa vang lên khi hai người <mark>địtt nhau</mark> cuồng nhiệt." },
+    { category: "action", original: "chịch", target: "trịch", sentence: "Hắn đè nghiến nàng xuống bàn rồi <mark>trịch</mark> liên hồi không một chút thương tiếc." },
+    { category: "action", original: "chịch nhau", target: "trịch nhau", sentence: "Cả căn phòng tràn ngập mùi hương xác thịt khi họ <mark>trịch nhau</mark> như dã thú." },
+    { category: "action", original: "đụ", target: "đụu", sentence: "Hắn muốn <mark>đụu</mark> cho nàng không còn sức để van xin mới thôi." },
+    { category: "action", original: "bú cặc", target: "bú kặc", sentence: "Nàng quỳ gối ngoan ngoãn há miệng ra <mark>bú kặc</mark> cho hắn đến tận cuống họng." },
+    { category: "action", original: "liếm lồn", target: "liếm lồnn", sentence: "Hắn vùi đầu vào giữa hai chân nàng để <mark>liếm lồnn</mark> và thưởng thức từng giọt dâm dịch." },
+    { category: "action", original: "móc lồn", target: "móc lồnn", sentence: "Hắn dùng hai ngón tay <mark>móc lồnn</mark> liên tục làm nước bắn tung tóe ra ngoài." },
+    { category: "action", original: "nhấp cặc", target: "nhấp kặc liên tục", sentence: "Hắn giữ chặt eo nàng rồi điên cuồng <mark>nhấp kặc liên tục</mark> hàng trăm cái." },
+    { category: "action", original: "thao trộm", target: "thao trộm", sentence: "Nhân lúc nàng trúng thuốc mê ngủ say, hắn đã lẻn vào phòng để <mark>thao trộm</mark> mỹ nhân." },
+
+    // 3. Dịch thể & Trạng thái dâm dục
+    { category: "fluid", original: "dâm", target: "zâm", sentence: "Khuôn mặt thanh thuần ngày nào giờ chỉ còn lại vẻ <mark>zâm</mark> đãng và thèm khát." },
+    { category: "fluid", original: "dâm dục", target: "zâm dục", sentence: "Ánh mắt ngập tràn dục vọng <mark>zâm dục</mark> khiến nàng hoàn toàn mất đi lý trí." },
+    { category: "fluid", original: "nứng", target: "nứngg", sentence: "Cả cơ thể nàng run rẩy vì cảm giác <mark>nứngg</mark> ngập tràn không sao kìm nén được." },
+    { category: "fluid", original: "bắn tinh", target: "bắn tyh vào lồnn", sentence: "Hắn gầm lên một tiếng thỏa mãn rồi <mark>bắn tyh vào lồnn</mark> nàng ngập tràn tinh dịch ấm nóng." },
+    { category: "fluid", original: "nước lồn", target: "nước lồnn", sentence: "Dòng <mark>nước lồnn</mark> dâm đãng tuôn xối xả làm ướt đẫm cả ga trải giường." }
+];
+
+async function synthesizeEdgeTTS(rawText, voice) {
+    const cleanText = rawText.replace(/<\/?mark>/g, '').trim();
+    const backendUrl = `/api/tts/synthesize?text=${encodeURIComponent(cleanText)}&voice=${encodeURIComponent(voice)}`;
+    const fallbackUrl = `http://localhost:8001/api/tts/synthesize?text=${encodeURIComponent(cleanText)}&voice=${encodeURIComponent(voice)}`;
+    
+    let res;
+    try {
+        res = await fetch(backendUrl);
+    } catch (e) {
+        res = await fetch(fallbackUrl);
+    }
+
+    if (!res.ok) {
+        let errDetail = "Bị chặn hoặc lỗi kết nối";
+        try {
+            const errJson = await res.json();
+            errDetail = errJson.detail || errDetail;
+        } catch (_) {}
+        throw new Error(errDetail);
+    }
+
+    const blob = await res.blob();
+    if (blob.size < 200) {
+        throw new Error("NoAudioReceived (Bị chặn 18+)");
+    }
+    return blob;
+}
+
+function renderCards() {
+    const grids = {
+        body: document.getElementById('grid-body'),
+        action: document.getElementById('grid-action'),
+        fluid: document.getElementById('grid-fluid')
+    };
+
+    TEST_ITEMS.forEach((item, index) => {
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.id = `card-${index}`;
+        card.innerHTML = `
+            <div>
+                <div class="card-header">
+                    <div>
+                        <span class="word-original">Từ gốc: <s>${item.original}</s></span>
+                        <div class="word-target">${item.target}</div>
+                    </div>
+                    <span id="badge-${index}" class="badge badge-warn">Chưa test</span>
+                </div>
+                <div class="sentence-preview">${item.sentence}</div>
+            </div>
+            <div class="card-action">
+                <button class="btn-play" id="btn-${index}" onclick="playItem(${index})">▶️ Nghe Thử</button>
+                <span id="status-${index}" class="status-tag" style="color:var(--text-sub)">-</span>
+            </div>
+        `;
+        if (grids[item.category]) {
+            grids[item.category].appendChild(card);
+        }
+    });
+}
+
+let currentAudio = null;
+
+async function playItem(index) {
+    const item = TEST_ITEMS[index];
+    const voice = document.getElementById('voiceSelect').value;
+    const btn = document.getElementById(`btn-${index}`);
+    const badge = document.getElementById(`badge-${index}`);
+    const status = document.getElementById(`status-${index}`);
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Đang gọi...';
+    status.textContent = 'Kết nối...';
+
+    if (currentAudio) {
+        currentAudio.pause();
+    }
+
+    try {
+        const blob = await synthesizeEdgeTTS(item.sentence, voice);
+        const url = URL.createObjectURL(blob);
+        currentAudio = new Audio(url);
+        currentAudio.play();
+
+        badge.className = 'badge badge-success';
+        badge.textContent = '✅ ĐÃ QUA';
+        status.style.color = '#34d399';
+        status.textContent = `${(blob.size / 1024).toFixed(1)} KB`;
+    } catch (err) {
+        badge.className = 'badge badge-danger';
+        badge.textContent = '❌ BỊ CHẶN';
+        status.style.color = '#f87171';
+        status.textContent = err.message;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '▶️ Nghe Lại';
+    }
+}
+
+async function testAllCards() {
+    for (let i = 0; i < TEST_ITEMS.length; i++) {
+        await playItem(i);
+        await new Promise(r => setTimeout(r, 400));
+    }
+}
+
+async function playCustomText() {
+    const text = document.getElementById('customInput').value.trim();
+    const voice = document.getElementById('voiceSelect').value;
+    const btn = document.getElementById('btnCustomPlay');
+    const status = document.getElementById('customStatus');
+
+    if (!text) return;
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Đang tạo...';
+    status.textContent = 'Đang gửi Microsoft...';
+
+    if (currentAudio) {
+        currentAudio.pause();
+    }
+
+    try {
+        const blob = await synthesizeEdgeTTS(text, voice);
+        const url = URL.createObjectURL(blob);
+        currentAudio = new Audio(url);
+        currentAudio.play();
+
+        status.style.color = '#34d399';
+        status.textContent = `✅ Thành công! (${(blob.size / 1024).toFixed(1)} KB)`;
+    } catch (err) {
+        status.style.color = '#f87171';
+        status.textContent = `❌ Thất bại: ${err.message}`;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '▶️ Tạo & Nghe Đoạn Này';
+    }
+}
+
+renderCards();
+</script>
+
+</body>
+</html>

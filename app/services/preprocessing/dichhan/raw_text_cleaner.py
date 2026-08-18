@@ -25,13 +25,19 @@ FULL_LINE_AD_PATTERNS = [
 
 def sanitize_chinese_raw_text(text: str) -> str:
     """
-    Giữ 100% VĂN BẢN GỐC tiếng Trung (RAW) trước khi gửi LLM.
-    Đảm bảo tuyệt đối không xóa bớt dòng, không lọc chữ/quảng cáo/PS gây mất đoạn.
-    Chỉ chuẩn hóa kiểu xuống dòng giữa Windows và Linux/Mac.
+    Chuẩn hóa văn bản gốc tiếng Trung (RAW) trước khi gửi LLM.
+    Lọc bỏ rác crawler metadata (icon web, số từ, thời gian cào web, tên tác giả crawler rác) để AI không dịch nhầm vào truyện.
     """
     if not text:
         return text
 
-    # Chỉ chuẩn hóa xuống dòng để đảm bảo tương thích hệ thống
-    return text.replace('\r\n', '\n').replace('\r', '\n')
+    t = text.replace('\r\n', '\n').replace('\r', '\n')
+    
+    # Loại bỏ các dòng rác crawler website Trung Quốc
+    t = re.sub(r'(?m)^\s*[]\s*\n?', '', t)
+    t = re.sub(r'(?m)^\s*(?:蘑菇面要加蛋|Mì\s+nấm\s+.*)\s*\n?', '', t)
+    t = re.sub(r'(?m)^\s*\d+\s*(?:字|Chữ|từ)\s*\n?', '', t)
+    t = re.sub(r'(?m)^\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s*\n?', '', t)
+    
+    return t
 

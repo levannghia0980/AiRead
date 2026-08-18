@@ -46,7 +46,7 @@ async def extract_entities_via_llm(raw_text: str) -> List[Dict[str, Any]]:
     clean_text = await _remove_sensitive_words_for_extraction(raw_text)
 
     prompt = f"""
-Nhiệm vụ: Trích xuất danh sách các danh từ riêng (tên nhân vật, địa danh, môn phái, võ công/chiêu thức) từ đoạn văn bản tiểu thuyết tiếng Trung sau.
+Nhiệm vụ: Trích xuất danh sách các danh từ riêng (tên nhân vật, địa danh, môn phái, võ công/chiêu thức, pháp bảo) từ đoạn văn bản tiểu thuyết tiếng Trung sau.
 
 Văn bản tiếng Trung:
 \"\"\"
@@ -54,16 +54,21 @@ Văn bản tiếng Trung:
 \"\"\"
 
 Quy tắc phân loại (entity_type):
-- 'PERSON': Tên nhân vật (ví dụ: "莫雅依", "叶凡").
-- 'LOCATION': Địa danh, sông, núi, thành trì (ví dụ: "青云宗" nếu là địa điểm, "天玄山").
-- 'SECT_SKILL': Tông môn, bang phái, pháp bảo, tên võ công chiêu thức (ví dụ: "青云宗" nếu là môn phái, "天玄剑诀").
+- 'PERSON': Tên nhân vật (ví dụ: "莫雅依", "周佐", "苏浅浅", "刘震", "萧七修").
+- 'LOCATION': Địa danh, sông, núi, thành trì (ví dụ: "青云宗" nếu là địa điểm, "天玄山", "灵法阁").
+- 'SECT_SKILL': Tông môn, bang phái, pháp bảo, tên võ công chiêu thức (ví dụ: "青云宗" nếu là môn phái, "天玄剑诀", "紫光雷翼").
 - 'OTHER': Các thuật ngữ danh từ riêng đặc thù khác.
 
-Hãy dịch thô nghĩa Hán-Việt chuẩn cho từng từ này vào cột 'rough_translation' (Ví dụ: "莫雅依" -> "Mạc Nhã Y").
+QUY TẮC ĐỐI CHIẾU ÂM HÁN-VIỆT CHUẨN XÁC TỪNG CHỮ (BẮT BUỘC):
+- Dịch chuẩn âm Hán-Việt từng chữ vào cột 'rough_translation'.
+- Phân biệt chính xác: 佐 = 'Tá' (Chu Tá), 修 = 'Tu' (Thất Tu), 事 = 'Sự' (Linh Sự Các), 浅 = 'Thiển' (Tô Thiển Thiển), 阁 = 'Các' (Linh Pháp Các), 震 = 'Chấn' (Lưu Chấn).
+- TUYỆT ĐỐI NGHIÊM CẤM trả về tên dính chữ Hán lai tạp (CẤM 'Tô T浅浅', CẤM 'Linh Pháp C阁', CẤM 'L岚'). Cột rough_translation phải là 100% chữ tiếng Việt có dấu.
 
 Yêu cầu trả về kết quả định dạng JSON Array chứa các object có cấu trúc như ví dụ sau:
 [
   {{"chinese_name": "莫雅依", "rough_translation": "Mạc Nhã Y", "entity_type": "PERSON"}},
+  {{"chinese_name": "周佐", "rough_translation": "Chu Tá", "entity_type": "PERSON"}},
+  {{"chinese_name": "苏浅浅", "rough_translation": "Tô Thiển Thiển", "entity_type": "PERSON"}},
   {{"chinese_name": "青云宗", "rough_translation": "Thanh Vân Tông", "entity_type": "SECT_SKILL"}}
 ]
 CHỈ trả về JSON Array, không kèm giải thích.
@@ -101,7 +106,8 @@ CHỈ trả về JSON Array, không kèm giải thích.
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"}
             ]
         }
         async with httpx.AsyncClient(timeout=180.0) as client:
@@ -112,12 +118,22 @@ CHỈ trả về JSON Array, không kèm giải thích.
         text_response = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
 
     try:
+        from app.services.preprocessing.dichhan.hanviet_data import sanitize_entity_vietnamese
         entities = safe_json_loads(text_response)
+        raw_list = []
         if isinstance(entities, list):
-            return entities
+            raw_list = entities
         elif isinstance(entities, dict) and "entities" in entities:
-            return entities["entities"]
-        return []
+            raw_list = entities["entities"]
+
+        cleaned_result = []
+        for item in raw_list:
+            if isinstance(item, dict) and "chinese_name" in item:
+                ch_n = item.get("chinese_name", "").strip()
+                r_tr = item.get("rough_translation", "").strip()
+                item["rough_translation"] = sanitize_entity_vietnamese(r_tr, ch_n)
+                cleaned_result.append(item)
+        return cleaned_result
     except Exception as e:
         raise Exception(f"Thất bại khi phân tích JSON trả về từ LLM: {str(e)}. Response: {text_response[:500]}")
 
@@ -246,6 +262,25 @@ CHỈ trả về JSON, không kèm giải thích.
             for c in corrections:
                 if "correct_vietnamese" in c and c["correct_vietnamese"]:
                     c["correct_vietnamese"] = unmask_text_with_dictionary(c["correct_vietnamese"], mapping_table)
+
+        # === KHỬ SẠCH 100% HÁN TỰ SÓT VÀ KÝ TỰ RÁC TRONG TÊN THỰC THỂ (VD: 'Phương Hân L岚' -> 'Phương Hân Lam') ===
+        from app.services.preprocessing.dichhan.hanviet_data import sanitize_entity_vietnamese
+        for e in entities:
+            if not isinstance(e, dict):
+                continue
+            vn_name = e.get("vietnamese_name", "").strip()
+            ch_name = e.get("chinese_name", "").strip()
+            cleaned_vn = sanitize_entity_vietnamese(vn_name, ch_name)
+            if cleaned_vn != vn_name:
+                print(f"[PREPROCESS LLM] ✅ Đã chuẩn hóa tên thực thể '{vn_name}' -> '{cleaned_vn}' cho '{ch_name}'")
+            e["vietnamese_name"] = cleaned_vn
+
+        for c in corrections:
+            if not isinstance(c, dict):
+                continue
+            corr_vi = c.get("correct_vietnamese", "").strip()
+            if corr_vi:
+                c["correct_vietnamese"] = sanitize_entity_vietnamese(corr_vi)
 
         # Lọc corrections: Chỉ giữ những từ sửa đổi thành tên nhân vật/thực thể chuẩn (không sửa pronoun bừa bãi)
         from app.services.preprocessing.dichhan.candidate_mining import is_likely_foreign_or_pinyin

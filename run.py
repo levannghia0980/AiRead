@@ -1,3 +1,4 @@
+
 import os
 import sys
 import time
@@ -76,7 +77,8 @@ def run_services():
     print("Đang khởi chạy dịch vụ trên CỔNG 8000...\n")
 
     # Command khởi chạy Backend FastAPI trên cổng 8001 (Nội bộ / Proxied)
-    be_cmd = [venv_py, "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
+    # --reload-dir app: Chỉ theo dõi mã nguồn trong thư mục app/, hoàn toàn bỏ qua Output/ và audio files
+    be_cmd = [venv_py, "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload", "--reload-dir", "app"]
     
     # Command khởi chạy Frontend Vite trên CỔNG 8000
     import shutil

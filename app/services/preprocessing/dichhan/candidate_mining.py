@@ -8,7 +8,7 @@ from app.services.preprocessing.dichhan.common_lists import (
     HONORIFICS,
     VIETNAMESE_STOPWORDS
 )
-from app.services.unblock.unblock_pipeline import is_sensitive_text
+from app.services.unblock.unblock_pipeline import is_exact_sensitive_word
 
 def can_split_pinyin(s: str) -> bool:
     """Kiểm tra xem chuỗi có thể tách hoàn toàn thành các âm tiết pinyin hợp lệ hay không (DP)"""
@@ -152,7 +152,7 @@ async def mine_candidates(
             if not (is_foreign_pinyin or is_honorific or in_db):
                 continue
 
-            if await is_sensitive_text(cleaned_text):
+            if await is_exact_sensitive_word(cleaned_text):
                 continue
                 
             if cleaned_text not in raw_candidates:
@@ -211,7 +211,7 @@ async def mine_candidates(
             )
             
             if aligned_chinese:
-                if await is_sensitive_text(aligned_chinese):
+                if await is_exact_sensitive_word(aligned_chinese):
                     continue
 
                 score += 100

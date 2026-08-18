@@ -16,6 +16,29 @@ from app.services.tts.pipeline import (
 )
 
 router = APIRouter(prefix="/novels/{novel_id}/audio", tags=["Audiobook"])
+test_router = APIRouter(prefix="/tts", tags=["TTS Testing"])
+
+@test_router.get("/synthesize")
+@test_router.post("/synthesize")
+async def test_synthesize_audio(text: str = Query(...), voice: str = Query("vi-VN-HoaiMyNeural")):
+    """Tổng hợp âm thanh trực tiếp qua Microsoft Edge-TTS bằng Python backend"""
+    import edge_tts
+    from fastapi import Response
+    try:
+        comm = edge_tts.Communicate(text, voice)
+        audio_data = b""
+        async for chunk in comm.stream():
+            if chunk.get("type") == "audio":
+                audio_data += chunk["data"]
+        
+        if not audio_data or len(audio_data) < 200:
+            raise HTTPException(status_code=400, detail="NoAudioReceived: Bị Microsoft Safety Filter chặn nội dung 18+")
+            
+        return Response(content=audio_data, media_type="audio/mpeg")
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
 
 def format_file_size(size_in_bytes: int) -> str:
     if size_in_bytes < 1024:
@@ -160,7 +183,14 @@ async def get_audio_volumes(
                     vol_cached_count += 1
 
         filename = f"{novel_folder}_Vol{vol_no:03d}.mp3"
+        alt_filename = f"{novel_folder}_Ch{start_chapter}_to_Ch{end_chapter}.mp3"
         file_path = os.path.join(out_dir, filename)
+        alt_file_path = os.path.join(out_dir, alt_filename)
+
+        if not (os.path.exists(file_path) and os.path.getsize(file_path) > 0) and (os.path.exists(alt_file_path) and os.path.getsize(alt_file_path) > 0):
+            filename = alt_filename
+            file_path = alt_file_path
+
         is_created = os.path.exists(file_path) and os.path.getsize(file_path) > 0
         
         # Tự động gộp file tập nếu tất cả các chương trong tập đã được cache
@@ -187,6 +217,7 @@ async def get_audio_volumes(
             "start_chapter": start_chapter,
             "end_chapter": end_chapter,
             "chapter_count": chapter_count,
+            "translated_chapters_count": final_count,
             "cached_chapters_count": vol_cached_count,
             "word_count": word_count,
             "estimated_hours": estimated_hours,
@@ -226,7 +257,7 @@ async def get_audio_volumes(
                     vol_no = 1000000 + start_ch * 10000 + end_ch
                     
                     # Tránh thêm trùng nếu đã có trong danh sách
-                    if any(v["volume_no"] == vol_no for v in volumes):
+                    if any(v["volume_no"] == vol_no or v.get("filename") == f for v in volumes):
                         continue
                         
                     file_path = os.path.join(out_dir, f)
@@ -272,95 +303,148 @@ async def get_audio_volumes(
     return {
         "novel_title": novel.title_rough or novel.title_raw,
         "total_chapters": total_ch,
+        "total_volumes": len(volumes),
+        "max_translated_chapter": max_completed_ch,
         "chapters_per_volume": chapters_per_volume,
         "created_volumes_count": created_count,
         "volumes": volumes
     }
 
-@router.get("/status")
-async def get_audio_status(novel_id: int = Path(...)):
-    """Kiểm tra trạng thái hàng đợi và tiến độ tác vụ sinh audio cho truyện"""
-    from app.models.schema import TTSChunk
+from fastapi.responses import FileResponse, StreamingResponse
+import json
 
+@router.get("/events")
+async def audio_events_stream(novel_id: int = Path(...)):
+    """Server-Sent Events (SSE) stream đẩy tiến độ TTS trực tiếp về Frontend theo thời gian thực (Zero Polling)"""
+    async def event_generator():
+        while True:
+            job_found = False
+            for key, job in ACTIVE_TTS_JOBS.items():
+                if key.startswith(f"{novel_id}_"):
+                    job_found = True
+                    is_running = job.get("is_running", False)
+                    status = job.get("status", "processing")
+                    status_msg = job.get("status_msg")
+                    total = job.get("total_chapters") or job.get("total_chunks", 0)
+                    vol_no = job.get("volume_no", 1)
+                    worker_count = job.get("worker_count") or 8
+                    done = job.get("done_chapters") if "done_chapters" in job else job.get("done_chunks", 0)
+                    
+                    # Ưu tiên lấy % tính theo subchunks thời gian thực từ pipeline (0% -> 99.9% -> 100%)
+                    percent = job.get("percent", 0.0)
+                    if percent == 0.0 and total > 0 and done > 0:
+                        percent = round((done / total) * 100, 1)
+                    
+                    speed = job.get("speed_chunks_per_min", 0.0)
+                    eta_sec = job.get("eta_seconds", 0)
+                    
+                    if total > 0 and done > 0 and eta_sec > 0:
+                        eta_m = int(eta_sec // 60)
+                        eta_s = int(eta_sec % 60)
+                        eta_display = f"{eta_m} phút {eta_s} giây" if eta_m > 0 else f"{eta_s} giây"
+                    else:
+                        eta_display = "Đang tính toán..."
+                        
+                    vol_label = f"Tập {vol_no}" if vol_no < 1000000 else "Khoảng chương"
+                    done_sc = job.get("done_subchunks", 0)
+                    total_sc = job.get("total_subchunks", 0)
+                    
+                    if status_msg:
+                        msg = status_msg
+                    elif done == 0 and total > 0:
+                        if total_sc > 0 and done_sc > 0:
+                            msg = f"🚀 Đang xử lý {vol_label}: {done_sc}/{total_sc} đoạn ({percent}%)"
+                        else:
+                            msg = f"🚀 Đang khởi động {worker_count} Workers tổng hợp audio {vol_label}..."
+                    elif done > 0 and total > 0:
+                        msg = f"Đang tổng hợp audio {vol_label}: {done_sc}/{total_sc} đoạn ({percent}%)"
+                    else:
+                        msg = "Đang quét cache chương..."
+                        
+                    payload = {
+                        "is_running": is_running,
+                        "novel_id": novel_id,
+                        "volume_no": vol_no,
+                        "progress_pct": percent,
+                        "msg": msg,
+                        "eta_display": eta_display,
+                        "last_chunk_log": job.get("last_chunk_log", ""),
+                        "logs": job.get("logs", []),
+                        "progress": {
+                            "total_chunks": total,
+                            "done_chunks": done,
+                            "done_subchunks": done_sc,
+                            "total_subchunks": total_sc,
+                            "failed_chapters": job.get("failed_chapters", 0),
+                            "failed_chunks": job.get("failed_chunks", 0),
+                            "status": status,
+                            "eta_seconds": eta_sec,
+                            "percent": percent,
+                            "worker_count": worker_count,
+                            "speed_chunks_per_min": speed
+                        }
+                    }
+                    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                    break
+                    
+            if not job_found:
+                yield f"data: {json.dumps({'is_running': False, 'progress_pct': 0}, ensure_ascii=False)}\n\n"
+                
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+@router.get("/job_status")
+async def get_audio_job_status(novel_id: int = Path(...)):
+    """Lấy trạng thái tiến trình tạo audio tức thì theo novel_id"""
     for key, job in ACTIVE_TTS_JOBS.items():
         if key.startswith(f"{novel_id}_"):
-            is_running = job.get("is_running", False)
-            status = job.get("status", "processing")
-            status_msg = job.get("status_msg")
-
-            total = job.get("total_chunks", 0)
-            vol_no = job.get("volume_no", 1)
-            worker_count = job.get("worker_count") or 6
-            done = job.get("done_chunks", 0)
-
-            percent = round((done / total) * 100, 1) if total > 0 else 0.0
-            job["percent"] = percent
-
-            speed = job.get("speed_chunks_per_min", 0.0)
+            percent = job.get("percent", 0.0)
+            done_sc = job.get("done_subchunks", 0)
+            total_sc = job.get("total_subchunks", 0)
             eta_sec = job.get("eta_seconds", 0)
-            
-            if total > 0 and done > 0 and eta_sec > 0:
-                eta_m = int(eta_sec // 60)
-                eta_s = int(eta_sec % 60)
-                eta_display = f"{eta_m} phút {eta_s} giây" if eta_m > 0 else f"{eta_s} giây"
-            else:
-                eta_display = "Đang tính toán..."
-            
-            vol_label = f"Tập {vol_no}" if vol_no < 1000000 else "Khoảng chương tùy chỉnh"
-            if status_msg:
-                msg = status_msg
-            elif done == 0 and total > 0:
-                msg = f"🚀 Đang khởi động {worker_count} Workers tổng hợp audio {vol_label}..."
-            elif done > 0 and total > 0:
-                msg = f"Đang tổng hợp audio {vol_label}: {done}/{total} chương ({percent}%)"
-            else:
-                msg = "Đang quét cache chương..."
-
-            if is_running:
-                return {
-                    "is_running": True,
-                    "novel_id": novel_id,
-                    "volume_no": vol_no,
-                    "progress_pct": percent,
-                    "msg": msg,
-                    "eta_display": eta_display,
-                    "progress": {
-                        "total_chunks": total,
-                        "done_chunks": done,
-                        "failed_chunks": job.get("failed_chunks", 0),
-                        "status": status,
-                        "eta_seconds": eta_sec,
-                        "percent": percent,
-                        "worker_count": worker_count,
-                        "ram_usage_percent": job.get("ram_usage_percent", 0.0),
-                        "speed_chunks_per_min": speed
-                    },
-                    "stats": {
-                        "speed_chapters_per_min": round(speed / 5, 1) if speed > 0 else 0
-                    }
-                }
-            elif status == "failed" or status_msg:
-                return {
-                    "is_running": False,
-                    "status": "failed",
-                    "novel_id": novel_id,
-                    "volume_no": vol_no,
-                    "progress_pct": percent,
-                    "msg": status_msg or "❌ Tạo audio thất bại.",
-                    "error": status_msg or "❌ Tạo audio thất bại."
-                }
-
-    return {"is_running": False}
+            eta_m = int(eta_sec // 60)
+            eta_s = int(eta_sec % 60)
+            eta_display = f"{eta_m} phút {eta_s} giây" if eta_m > 0 else (f"{eta_s} giây" if eta_s > 0 else "Đang tính...")
+            return {
+                "is_running": job.get("is_running", False),
+                "novel_id": novel_id,
+                "progress_pct": percent,
+                "msg": job.get("status_msg") or f"Đang tạo audio: {done_sc}/{total_sc} đoạn ({percent}%)",
+                "eta_display": eta_display,
+                "last_chunk_log": job.get("last_chunk_log", ""),
+                "logs": job.get("logs", []),
+                "done_subchunks": done_sc,
+                "total_subchunks": total_sc
+            }
+    return {"is_running": False, "progress_pct": 0}
 
 @router.post("/generate_volume/{volume_no}")
 async def generate_volume(
     novel_id: int = Path(...),
     volume_no: int = Path(...),
     voice_profile: str = Query("default"),
-    chapters_per_volume: int = Query(50, ge=1)
+    chapters_per_volume: int = Query(50, ge=1),
+    force_regenerate: bool = Query(False),
+    workers: Optional[int] = Query(None, ge=1, le=16)
 ):
     """Kích hoạt tiến trình sinh tệp audiobook bất đồng bộ cho một tập cụ thể"""
-    # 1. Đảm bảo không có job tts nào khác đang chạy cho novel này
+    import gc
+    # 1. Dọn dẹp các job cũ không còn chạy của novel này để giải phóng bộ nhớ
+    to_del = [k for k, j in ACTIVE_TTS_JOBS.items() if k.startswith(f"{novel_id}_") and not j.get("is_running", False)]
+    for k in to_del:
+        ACTIVE_TTS_JOBS.pop(k, None)
+    gc.collect()
+
+    # 2. Đảm bảo không có job tts nào khác đang chạy cho novel này
     for key, job in ACTIVE_TTS_JOBS.items():
         if key.startswith(f"{novel_id}_") and job.get("is_running", False):
             raise HTTPException(
@@ -370,7 +454,7 @@ async def generate_volume(
             
     job_key = f"{novel_id}_{volume_no}"
     
-    # 2. Khởi tạo trạng thái job mới
+    # 3. Khởi tạo trạng thái job mới
     job_info = {
         "novel_id": novel_id,
         "volume_no": volume_no,
@@ -381,7 +465,7 @@ async def generate_volume(
         "status": "processing",
         "eta_seconds": 0,
         "percent": 0.0,
-        "worker_count": 0,
+        "worker_count": workers or 8,
         "ram_usage_percent": 0.0,
         "speed_chunks_per_min": 0.0,
         "recent_successes": 0,
@@ -389,9 +473,9 @@ async def generate_volume(
     }
     ACTIVE_TTS_JOBS[job_key] = job_info
     
-    # 3. Kích hoạt task chạy nền
+    # 4. Kích hoạt task chạy nền
     task = asyncio.create_task(
-        run_tts_volume_pipeline(novel_id, volume_no, chapters_per_volume, voice_profile)
+        run_tts_volume_pipeline(novel_id, volume_no, chapters_per_volume, voice_profile, force_regenerate=force_regenerate, custom_workers=workers)
     )
     job_info["task"] = task
     
@@ -401,17 +485,27 @@ async def generate_volume(
     }
 
 @router.post("/generate_range")
+@router.post("/generate_custom_range")
 async def generate_range(
     novel_id: int = Path(...),
     start_chapter: int = Query(..., ge=1),
     end_chapter: int = Query(..., ge=1),
-    voice_profile: str = Query("default")
+    voice_profile: str = Query("default"),
+    force_regenerate: bool = Query(False),
+    workers: Optional[int] = Query(None, ge=1, le=16)
 ):
     """Kích hoạt tiến trình sinh tệp audiobook cho khoảng chương tùy chỉnh (luồng tương tự dịch truyện)"""
+    import gc
     if start_chapter > end_chapter:
         raise HTTPException(status_code=400, detail="Chương bắt đầu không được lớn hơn chương kết thúc.")
         
-    # 1. Đảm bảo không có job tts nào khác đang chạy cho novel này
+    # 1. Dọn dẹp các job cũ không còn chạy của novel này để giải phóng bộ nhớ
+    to_del = [k for k, j in ACTIVE_TTS_JOBS.items() if k.startswith(f"{novel_id}_") and not j.get("is_running", False)]
+    for k in to_del:
+        ACTIVE_TTS_JOBS.pop(k, None)
+    gc.collect()
+
+    # 2. Đảm bảo không có job tts nào khác đang chạy cho novel này
     for key, job in ACTIVE_TTS_JOBS.items():
         if key.startswith(f"{novel_id}_") and job.get("is_running", False):
             raise HTTPException(
@@ -423,7 +517,7 @@ async def generate_range(
     volume_no = 1000000 + start_chapter * 10000 + end_chapter
     job_key = f"{novel_id}_{volume_no}"
     
-    # 2. Khởi tạo trạng thái job mới
+    # 3. Khởi tạo trạng thái job mới
     job_info = {
         "novel_id": novel_id,
         "volume_no": volume_no,
@@ -434,7 +528,7 @@ async def generate_range(
         "status": "processing",
         "eta_seconds": 0,
         "percent": 0.0,
-        "worker_count": 0,
+        "worker_count": workers or 8,
         "ram_usage_percent": 0.0,
         "speed_chunks_per_min": 0.0,
         "recent_successes": 0,
@@ -442,9 +536,9 @@ async def generate_range(
     }
     ACTIVE_TTS_JOBS[job_key] = job_info
     
-    # 3. Kích hoạt task chạy nền
+    # 4. Kích hoạt task chạy nền
     task = asyncio.create_task(
-        run_tts_volume_pipeline(novel_id, volume_no, chapters_per_volume=99999, voice_profile=voice_profile)
+        run_tts_volume_pipeline(novel_id, volume_no, chapters_per_volume=99999, voice_profile=voice_profile, force_regenerate=force_regenerate, custom_workers=workers)
     )
     job_info["task"] = task
     
@@ -483,6 +577,59 @@ async def cancel_audio_job(novel_id: int = Path(...)):
         return {"status": "success", "message": "Đã hủy bỏ tiến trình sinh audio và dọn sạch dữ liệu tạm dở dang."}
     return {"status": "warning", "message": "Không tìm thấy tiến trình sinh audio nào đang hoạt động."}
 
+@router.post("/merge_range")
+async def merge_custom_range(
+    novel_id: int = Path(...),
+    start_chapter: int = Query(..., ge=1),
+    end_chapter: int = Query(..., ge=1)
+):
+    """Ghép nối nhanh bằng FFmpeg các chương MP3 đã có sẵn trong cache thành một file gộp duy nhất"""
+    if start_chapter > end_chapter:
+        raise HTTPException(status_code=400, detail="Chương bắt đầu không được lớn hơn chương kết thúc.")
+        
+    async with AsyncSessionLocal() as session:
+        stmt = select(Novel).where(Novel.id == novel_id)
+        res = await session.execute(stmt)
+        novel = res.scalar_one_or_none()
+        if not novel:
+            raise HTTPException(status_code=404, detail="Không tìm thấy truyện.")
+
+    base_audio_dir = r"D:\NENGHIA0980\AIREAD\Output\05_Audio_TTS"
+    novel_folder = sanitize_filename(novel.title_rough if novel.title_rough else novel.title_raw)
+    out_dir = os.path.join(base_audio_dir, novel_folder)
+    chapters_cache_dir = os.path.join(out_dir, "chapters")
+    
+    chapter_nos = list(range(start_chapter, end_chapter + 1))
+    from app.services.tts.pipeline import generate_range_mp3, get_audio_duration_ffmpeg
+    cached_chapters = []
+    for c in chapter_nos:
+        f_p = _find_chapter_audio_path(chapters_cache_dir, c)
+        if f_p and os.path.exists(f_p) and os.path.getsize(f_p) > 1024:
+            cached_chapters.append(c)
+    
+    if not cached_chapters:
+        raise HTTPException(status_code=400, detail="Chưa có chương nào trong khoảng này có tệp Audio MP3. Vui lòng bấm 'Tạo Audio' trước!")
+        
+    short_title = novel_folder[:30].strip() if len(novel_folder) > 30 else novel_folder
+    final_name = f"{short_title}_Ch{cached_chapters[0]}_to_Ch{cached_chapters[-1]}.mp3"
+    final_path = os.path.join(out_dir, final_name)
+    
+    success = await asyncio.to_thread(generate_range_mp3, chapters_cache_dir, cached_chapters, final_path)
+    if not success:
+        raise HTTPException(status_code=500, detail="Lỗi khi ghép nối âm thanh bằng FFmpeg.")
+        
+    dur_str = await asyncio.to_thread(get_audio_duration_ffmpeg, final_path)
+    sz = os.path.getsize(final_path) if os.path.exists(final_path) else 0
+    
+    return {
+        "status": "success",
+        "message": f"Ghép thành công {len(cached_chapters)} chương vào tệp {final_name}!",
+        "filename": final_name,
+        "download_url": f"/api/novels/{novel_id}/audio/download/{final_name}",
+        "file_size": format_file_size(sz),
+        "duration": dur_str
+    }
+
 @router.get("/download/{filename}")
 async def download_audio_file(
     novel_id: int = Path(...),
@@ -511,7 +658,7 @@ async def delete_audio_file(
     novel_id: int = Path(...),
     filename: str = Path(...)
 ):
-    """Xóa một tệp âm thanh cụ thể trên đĩa + dọn dẹp bộ nhớ đệm chương để ép đọc bản dịch mới"""
+    """Xóa một tệp âm thanh cụ thể trên đĩa + dọn dẹp bộ nhớ đệm chương & text TTS để ép đọc bản dịch mới"""
     async with AsyncSessionLocal() as session:
         stmt = select(Novel).where(Novel.id == novel_id)
         res = await session.execute(stmt)
@@ -519,32 +666,240 @@ async def delete_audio_file(
         if not novel:
             raise HTTPException(status_code=404, detail="Không tìm thấy truyện.")
             
-    base_audio_dir = r"D:\NENGHIA0980\AIREAD\Output\05_Audio_TTS"
-    base_tts_text_dir = r"D:\NENGHIA0980\AIREAD\Output\04b_VanBanTTS"
-    novel_folder = sanitize_filename(novel.title_rough if novel.title_rough else novel.title_raw)
-    file_path = os.path.join(base_audio_dir, novel_folder, filename)
-    chapters_cache_dir = os.path.join(base_audio_dir, novel_folder, "chapters")
-    tts_text_novel_dir = os.path.join(base_tts_text_dir, novel_folder)
-    
-    if os.path.exists(file_path):
-        try:
-            os.remove(file_path)
-            # Dọn dẹp sạch cache chương để khi tạo lại Audio bắt buộc phải đọc bản dịch mới nhất
-            if os.path.exists(chapters_cache_dir):
-                shutil.rmtree(chapters_cache_dir, ignore_errors=True)
-                os.makedirs(chapters_cache_dir, exist_ok=True)
-            if os.path.exists(tts_text_novel_dir):
-                shutil.rmtree(tts_text_novel_dir, ignore_errors=True)
-            return {"status": "success", "message": f"Đã xóa thành công tệp {filename} và làm sạch bộ nhớ đệm audio."}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Lỗi khi xóa tệp: {str(e)}")
+        base_audio_dir = r"D:\NENGHIA0980\AIREAD\Output\05_Audio_TTS"
+        base_tts_text_dir = r"D:\NENGHIA0980\AIREAD\Output\04b_VanBanTTS"
+        novel_folder = sanitize_filename(novel.title_rough if novel.title_rough else novel.title_raw)
+        file_path = os.path.join(base_audio_dir, novel_folder, filename)
+        chapters_cache_dir = os.path.join(base_audio_dir, novel_folder, "chapters")
+        tts_text_novel_dir = os.path.join(base_tts_text_dir, novel_folder)
+        
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
+
+        # Dọn dẹp sạch cache chương và text 04b_VanBanTTS
+        if os.path.exists(chapters_cache_dir):
+            shutil.rmtree(chapters_cache_dir, ignore_errors=True)
+            os.makedirs(chapters_cache_dir, exist_ok=True)
+        if os.path.exists(tts_text_novel_dir):
+            shutil.rmtree(tts_text_novel_dir, ignore_errors=True)
+
+        # Xóa các bản ghi TTS_TEXT và AUDIO trong DB
+        from sqlalchemy import delete
+        stmt_ch_ids = select(Chapter.id).where(Chapter.novel_id == novel_id)
+        ch_res = await session.execute(stmt_ch_ids)
+        c_ids = ch_res.scalars().all()
+        if c_ids:
+            stmt_del_ver = delete(ChapterVersion).where(
+                ChapterVersion.chapter_id.in_(c_ids),
+                ChapterVersion.version_type.in_(["TTS_TEXT", "AUDIO"])
+            )
+            await session.execute(stmt_del_ver)
+            await session.commit()
+
+        return {"status": "success", "message": f"Đã xóa thành công tệp {filename} và làm sạch toàn bộ bộ nhớ đệm audio & text TTS."}
+
+@router.delete("/chapters/{chapter_no}")
+@router.post("/delete_chapter/{chapter_no}")
+async def delete_single_chapter_audio(
+    novel_id: int = Path(...),
+    chapter_no: int = Path(...)
+):
+    """Xóa file Audio MP3 và file 04b_VanBanTTS của 1 chương lẻ để chuẩn bị tạo lại từ bản dịch mới nhất"""
+    async with AsyncSessionLocal() as session:
+        stmt = select(Novel).where(Novel.id == novel_id)
+        res = await session.execute(stmt)
+        novel = res.scalar_one_or_none()
+        if not novel:
+            raise HTTPException(status_code=404, detail="Không tìm thấy truyện.")
             
-    raise HTTPException(status_code=404, detail="Tệp không tồn tại.")
+        base_audio_dir = r"D:\NENGHIA0980\AIREAD\Output\05_Audio_TTS"
+        base_tts_text_dir = r"D:\NENGHIA0980\AIREAD\Output\04b_VanBanTTS"
+        novel_folder = sanitize_filename(novel.title_rough if novel.title_rough else novel.title_raw)
+        
+        # 1. Xóa file mp3 chương
+        chapters_cache_dir = os.path.join(base_audio_dir, novel_folder, "chapters")
+        found_p = _find_chapter_audio_path(chapters_cache_dir, chapter_no)
+        if found_p and os.path.exists(found_p):
+            try:
+                os.remove(found_p)
+            except Exception:
+                pass
+                
+        # 2. Xóa file 04b_VanBanTTS
+        tts_txt_p = os.path.join(base_tts_text_dir, novel_folder, "chapters", f"{chapter_no:06d}.txt")
+        if os.path.exists(tts_txt_p):
+            try:
+                os.remove(tts_txt_p)
+            except Exception:
+                pass
+                
+        # 3. Xóa thư mục tạm _tmp_ch nếu có
+        tmp_ch = os.path.join(chapters_cache_dir, f"_tmp_ch{chapter_no:06d}")
+        if os.path.exists(tmp_ch):
+            try:
+                shutil.rmtree(tmp_ch, ignore_errors=True)
+            except Exception:
+                pass
+                
+        # 4. Xóa bản ghi trong DB
+        stmt_ch = select(Chapter.id).where(Chapter.novel_id == novel_id, Chapter.chapter_no == chapter_no)
+        res_ch = await session.execute(stmt_ch)
+        db_ch_id = res_ch.scalar_one_or_none()
+        if db_ch_id:
+            from sqlalchemy import delete
+            stmt_del = delete(ChapterVersion).where(
+                ChapterVersion.chapter_id == db_ch_id,
+                ChapterVersion.version_type.in_(["TTS_TEXT", "AUDIO"])
+            )
+            await session.execute(stmt_del)
+            await session.commit()
+            
+        return {"status": "success", "message": f"Đã xóa Audio và văn bản TTS chương {chapter_no} thành công!"}
 
 @router.delete("/files")
 @router.post("/delete_all")
 async def delete_all_audio_files(novel_id: int = Path(...)):
-    """Xóa toàn bộ các tệp âm thanh + cache chương của truyện"""
+    """Xóa toàn bộ các tệp âm thanh + cache chương và text TTS của truyện"""
+    async with AsyncSessionLocal() as session:
+        stmt = select(Novel).where(Novel.id == novel_id)
+        res = await session.execute(stmt)
+        novel = res.scalar_one_or_none()
+        if not novel:
+            raise HTTPException(status_code=404, detail="Không tìm thấy truyện.")
+            
+        base_audio_dir = r"D:\NENGHIA0980\AIREAD\Output\05_Audio_TTS"
+        base_tts_text_dir = r"D:\NENGHIA0980\AIREAD\Output\04b_VanBanTTS"
+        novel_folder = sanitize_filename(novel.title_rough if novel.title_rough else novel.title_raw)
+        novel_audio_dir = os.path.join(base_audio_dir, novel_folder)
+        tts_text_novel_dir = os.path.join(base_tts_text_dir, novel_folder)
+        
+        if os.path.exists(novel_audio_dir) or os.path.exists(tts_text_novel_dir):
+            try:
+                if os.path.exists(novel_audio_dir):
+                    shutil.rmtree(novel_audio_dir, ignore_errors=True)
+                if os.path.exists(tts_text_novel_dir):
+                    shutil.rmtree(tts_text_novel_dir, ignore_errors=True)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Lỗi khi xóa thư mục: {str(e)}")
+
+        # Xóa các bản ghi TTS_TEXT và AUDIO trong DB
+        from sqlalchemy import delete
+        stmt_ch_ids = select(Chapter.id).where(Chapter.novel_id == novel_id)
+        ch_res = await session.execute(stmt_ch_ids)
+        c_ids = ch_res.scalars().all()
+        if c_ids:
+            stmt_del_ver = delete(ChapterVersion).where(
+                ChapterVersion.chapter_id.in_(c_ids),
+                ChapterVersion.version_type.in_(["TTS_TEXT", "AUDIO"])
+            )
+            await session.execute(stmt_del_ver)
+            await session.commit()
+            
+        return {"status": "success", "message": "Đã xóa toàn bộ thư mục âm thanh và bộ nhớ đệm của truyện thành công."}
+
+
+def _find_chapter_audio_path(chapters_dir: str, c_no: int) -> Optional[str]:
+    if not os.path.exists(chapters_dir):
+        return None
+    candidates = [
+        f"{c_no:06d}.mp3",
+        f"{c_no:05d}.mp3",
+        f"{c_no:04d}.mp3",
+        f"{c_no}.mp3"
+    ]
+    for c in candidates:
+        p = os.path.join(chapters_dir, c)
+        if os.path.exists(p) and os.path.getsize(p) > 100:
+            return p
+    return None
+
+
+@router.get("/playlist")
+async def get_audio_playlist(novel_id: int = Path(...)):
+    """
+    Trả về danh sách Playlist đầy đủ tất cả các chương của truyện từ đầu đến cuối
+    kèm trạng thái file audio từng chương.
+    """
+    async with AsyncSessionLocal() as session:
+        stmt_nov = select(Novel).where(Novel.id == novel_id)
+        res_nov = await session.execute(stmt_nov)
+        novel = res_nov.scalar_one_or_none()
+        if not novel:
+            raise HTTPException(status_code=404, detail="Không tìm thấy truyện.")
+            
+        base_audio_dir = r"D:\NENGHIA0980\AIREAD\Output\05_Audio_TTS"
+        novel_folder = sanitize_filename(novel.title_rough if novel.title_rough else novel.title_raw)
+        chapters_audio_dir = os.path.join(base_audio_dir, novel_folder, "chapters")
+
+        # 1. Lấy tất cả chương của truyện
+        stmt_ch = select(Chapter).where(Chapter.novel_id == novel_id).order_by(Chapter.chapter_no.asc())
+        res_ch = await session.execute(stmt_ch)
+        all_chapters = res_ch.scalars().all()
+        ch_ids = [c.id for c in all_chapters]
+
+        # 2. Lấy danh sách chapter_id có bản dịch ĐÃ HOÀN TẤT KẾT QUẢ (FINAL / AUDIO)
+        trans_chapter_ids = set()
+        if ch_ids:
+            stmt_ver = select(ChapterVersion.chapter_id).where(
+                ChapterVersion.chapter_id.in_(ch_ids),
+                ChapterVersion.version_type.in_(["FINAL", "AUDIO"])
+            )
+            res_ver = await session.execute(stmt_ver)
+            trans_chapter_ids = set(res_ver.scalars().all())
+
+        ketqua_dir = os.path.join(r"D:\NENGHIA0980\AIREAD\Output\04_KetQua", novel_folder, "chapters")
+
+        playlist = []
+        created_count = 0
+        for ch in all_chapters:
+            found_p = _find_chapter_audio_path(chapters_audio_dir, ch.chapter_no)
+            has_audio = found_p is not None
+            if has_audio:
+                created_count += 1
+                f_size = os.path.getsize(found_p)
+                size_str = format_file_size(f_size)
+            else:
+                f_size = 0
+                size_str = None
+
+            # Chỉ đưa vào Playlist các chương đã có kết quả dịch (FINAL / file 04_KetQua) hoặc đã có audio
+            has_ketqua_file = False
+            if os.path.exists(ketqua_dir):
+                k_path = os.path.join(ketqua_dir, f"{ch.chapter_no:06d}.txt")
+                has_ketqua_file = os.path.exists(k_path) and os.path.getsize(k_path) > 0
+
+            is_completed_translation = (
+                ch.id in trans_chapter_ids
+                or has_ketqua_file
+                or has_audio
+            )
+            if not is_completed_translation:
+                continue
+                
+            playlist.append({
+                "chapter_no": ch.chapter_no,
+                "title": ch.title_rough or ch.title_raw or f"Chương {ch.chapter_no}",
+                "has_audio": has_audio,
+                "audio_url": f"/api/novels/{novel_id}/audio/stream_chapter/{ch.chapter_no}" if has_audio else None,
+                "file_size": size_str,
+                "size_bytes": f_size
+            })
+            
+        return {
+            "status": "success",
+            "novel_title": novel.title_rough or novel.title_raw,
+            "total_chapters": len(playlist),
+            "created_audio_count": created_count,
+            "playlist": playlist
+        }
+
+
+@router.get("/stream_chapter/{chapter_no}")
+async def stream_chapter_audio(novel_id: int = Path(...), chapter_no: int = Path(...)):
+    """Phát trực tiếp tệp audio của một chương cụ thể hỗ trợ Range Stream"""
     async with AsyncSessionLocal() as session:
         stmt = select(Novel).where(Novel.id == novel_id)
         res = await session.execute(stmt)
@@ -553,19 +908,12 @@ async def delete_all_audio_files(novel_id: int = Path(...)):
             raise HTTPException(status_code=404, detail="Không tìm thấy truyện.")
             
     base_audio_dir = r"D:\NENGHIA0980\AIREAD\Output\05_Audio_TTS"
-    base_tts_text_dir = r"D:\NENGHIA0980\AIREAD\Output\04b_VanBanTTS"
     novel_folder = sanitize_filename(novel.title_rough if novel.title_rough else novel.title_raw)
-    novel_audio_dir = os.path.join(base_audio_dir, novel_folder)
-    tts_text_novel_dir = os.path.join(base_tts_text_dir, novel_folder)
+    chapters_dir = os.path.join(base_audio_dir, novel_folder, "chapters")
+    file_path = _find_chapter_audio_path(chapters_dir, chapter_no)
     
-    if os.path.exists(novel_audio_dir) or os.path.exists(tts_text_novel_dir):
-        try:
-            if os.path.exists(novel_audio_dir):
-                shutil.rmtree(novel_audio_dir)
-            if os.path.exists(tts_text_novel_dir):
-                shutil.rmtree(tts_text_novel_dir, ignore_errors=True)
-            return {"status": "success", "message": "Đã xóa toàn bộ thư mục âm thanh và bộ nhớ đệm của truyện thành công."}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Lỗi khi xóa toàn bộ thư mục: {str(e)}")
-            
-    return {"status": "success", "message": "Thư mục âm thanh trống."}
+    if not file_path:
+        raise HTTPException(status_code=404, detail=f"Chưa có tệp âm thanh cho chương {chapter_no}.")
+        
+    return FileResponse(file_path, media_type="audio/mpeg", filename=f"chapter_{chapter_no}.mp3")
+

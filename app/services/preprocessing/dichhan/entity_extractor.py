@@ -3,8 +3,8 @@ from typing import Dict, List, Set, Tuple, Optional
 from sqlalchemy import select
 from app.core.database import AsyncSessionLocal
 from app.models.schema import NamesDictionary, NovelEntity
-from app.services.preprocessing.dichhan.common_lists import CHINESE_SURNAMES, TITLE_SUFFIXES
-from app.services.unblock.unblock_pipeline import is_sensitive_text
+from app.services.preprocessing.dichhan.common_lists import CHINESE_SURNAMES, TITLE_SUFFIXES, TITLE_PREFIXES, ENTITY_COMPOUND_SUFFIXES
+from app.services.unblock.unblock_pipeline import is_exact_sensitive_word
 
 # Các ký tự tiếng Trung thông dụng không dùng làm tên riêng
 CHINESE_STOP_CHARS = set([
@@ -82,7 +82,7 @@ async def extract_ner_branch(novel_id: int, raw_text: str) -> List[dict]:
 
         # b. Quét Heuristics theo Họ (Chỉ lấy khi không thuộc DB và là tên thực sự)
         for surname in CHINESE_SURNAMES:
-            for match in re.finditer(rf"{surname}[\u4e00-\u9fff]{{1,2}}", line):
+            for match in re.finditer(rf"{surname}[\u4e00-\u9fff]{{1,3}}", line):
                 m = match.group()
                 idx_start = match.start()
                 
@@ -107,9 +107,22 @@ async def extract_ner_branch(novel_id: int, raw_text: str) -> List[dict]:
                         "char_end": match.end()
                     })
 
-        # c. Quét Heuristics theo Hậu tố chức danh
+        # c. Quét Heuristics theo Tiền tố thân mật / biệt danh (小, 老, 阿, 大)
+        for prefix in TITLE_PREFIXES:
+            for match in re.finditer(rf"{prefix}[\u4e00-\u9fff]{{1,3}}", line):
+                m = match.group()
+                if is_valid_chinese_term(m) and not any(c in CHINESE_STOP_CHARS for c in m[1:]):
+                    if m not in found_terms:
+                        found_terms[m] = []
+                    found_terms[m].append({
+                        "line_index": line_idx,
+                        "char_start": match.start(),
+                        "char_end": match.end()
+                    })
+
+        # d. Quét Heuristics theo Hậu tố chức danh / gia đình / biệt danh (哥, 姐, 弟, 妹, 叔, 伯, 姨, 嫂, 师兄...)
         for suffix in TITLE_SUFFIXES:
-            for match in re.finditer(rf"[\u4e00-\u9fff]{{1,2}}{suffix}", line):
+            for match in re.finditer(rf"[\u4e00-\u9fff]{{1,3}}{re.escape(suffix)}", line):
                 m = match.group()
                 if is_valid_chinese_term(m):
                     if m not in found_terms:
@@ -120,9 +133,23 @@ async def extract_ner_branch(novel_id: int, raw_text: str) -> List[dict]:
                         "char_end": match.end()
                     })
 
+        # e. Quét Compound Entities (Địa danh, Tông môn, Vật phẩm, Chiêu thức)
+        for etype_compound, suffixes_compound in ENTITY_COMPOUND_SUFFIXES.items():
+            for suffix_c in suffixes_compound:
+                for match in re.finditer(rf"[\u4e00-\u9fff]{{2,5}}{re.escape(suffix_c)}", line):
+                    m = match.group()
+                    if is_valid_chinese_term(m) and m not in found_terms and m not in db_examples_map:
+                        if not any(c in CHINESE_STOP_CHARS for c in m[:2]):
+                            found_terms[m] = []
+                            found_terms[m].append({
+                                "line_index": line_idx,
+                                "char_start": match.start(),
+                                "char_end": match.end()
+                            })
+
     ner_results = []
     for term, positions in found_terms.items():
-        if await is_sensitive_text(term):
+        if await is_exact_sensitive_word(term):
             continue
 
         db_info = db_examples_map.get(term)

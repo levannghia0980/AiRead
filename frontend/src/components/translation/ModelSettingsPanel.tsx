@@ -12,6 +12,7 @@ interface ModelSettingsPanelProps {
   endChapter: number | null
   translationStyle?: string
   enableUnblock?: boolean
+  enableErotic?: boolean
   enableLlmExtract?: boolean
   enableNamesDict?: boolean
   enableGgCorrections?: boolean
@@ -70,6 +71,7 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
   endChapter,
   translationStyle = 'draft_only',
   enableUnblock = true,
+  enableErotic = true,
   forceRetranslate = false,
   setSettings,
   handleTestKey,
@@ -157,17 +159,6 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
           <option value="original_only">🔤 Dịch Tiếng Trung Trực Tiếp (RAWT)</option>
           <option value="draft_only">📝 Biên Tập Văn Phong & Chuẩn Xưng Hô (CONTEXTT)</option>
         </select>
-      </div>
-
-      {/* Nút gạt Chống Nhạy Cảm (Bọc từ) dùng chung cho 2 luồng dịch */}
-      <div>
-        <ToggleSwitch
-          icon="🛡️"
-          label="Giấu / Bọc Từ Nhạy Cảm (Chống AI Block)"
-          sublabel="Tự động mã hóa bọc từ nhạy cảm trước khi gửi AI (áp dụng cho cả RAWT & CONTEXTT)"
-          checked={enableUnblock}
-          onChange={(val) => setSettings({ enableUnblock: val })}
-        />
       </div>
 
       {/* API Keys Input */}
@@ -330,6 +321,22 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
         onChange={(val) => setSettings({ forceRetranslate: val })}
         icon="🔄"
       />
+
+      {/* 2 Nút gạt độc lập thu nhỏ gọn */}
+      <div className="grid grid-cols-2 gap-2">
+        <ToggleSwitch
+          icon="🔞"
+          label="Phong Cách"
+          checked={enableErotic}
+          onChange={(val) => setSettings({ enableErotic: val })}
+        />
+        <ToggleSwitch
+          icon="🛡️"
+          label="Giấu Từ"
+          checked={enableUnblock}
+          onChange={(val) => setSettings({ enableUnblock: val })}
+        />
+      </div>
 
       {/* Custom Prompt Input */}
       <div>

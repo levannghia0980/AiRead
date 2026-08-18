@@ -265,21 +265,17 @@ def _generate_placeholder(index: int) -> str:
     return f"§XH_{index:04d}§"
 
 
-EROTIC_SENSITIVE_ZH = {
-    # Bộ phận cơ thể & Tục từ Hán
-    "乳房", "乳头", "奶头", "巨乳", "双峰", "美乳", "嫩乳", "酥胸", "玉乳", "胸部", "大胸", "丰胸", "奶子",
-    "阴道", "阴户", "嫩穴", "小穴", "花穴", "蜜穴", "肉穴", "私处", "下体", "子宫", "阴唇", "阴部", "肉便器",
-    "肉棒", "龟头", "阴茎", "鸡巴", "大鸡巴", "巨棒", "巴子", "阳具", "肉芽", "睾丸", "蛋蛋", "肉洞", "肉缝",
-    "淫水", "蜜汁", "淫液", "精液", "精子", "白浊", "爱液", "潮吹", "内射", "中出", "射精",
-    "屁股", "臀部", "玉臀", "美臀", "翘臀", "丰臀", "肛门", "菊穴", "后穴", "后庭", "肛交", "口交",
-    "逼", "屌", "操", "肏", "幹", "肏穴", "肉便", "肉体", "裸体", "身体",
-    
-    # Hành vi & Trạng thái 18+
-    "做爱", "性交", "迷奸", "轮奸", "强奸", "奸淫", "暴奸", "性奴", "催眠", "调教", "凌辱", "母狗",
-    "发情", "淫乱", "强暴", "迷药", "迷魂", "无惨", "触手", "恶堕", "破处", "阿威十八式", "春药",
-    "性虐", "自慰", "淫荡", "骚货", "母猪", "熟妇", "人妻", "痴汉", "调戏", "高潮", "呻吟", "乱伦",
-    "侵犯", "玩弄", "亵渎", "抽插", "插入", "挺进", "摩擦", "揉捏", "抚摸", "吮吸", "舔舐"
-}
+from app.services.unblock.common.dictionary_loader import load_zh_erotic_map
+
+class _EroticZHSetProxy(set):
+    def __contains__(self, item):
+        return item in load_zh_erotic_map()
+    def __iter__(self):
+        return iter(load_zh_erotic_map().keys())
+    def __len__(self):
+        return len(load_zh_erotic_map())
+
+EROTIC_SENSITIVE_ZH = _EroticZHSetProxy()
 
 def protect_pronouns(raw_text: str, profile: str = "xianxia", chapter_no: int = 0) -> Tuple[str, Dict[str, str]]:
     """
@@ -348,8 +344,6 @@ def restore_pronouns(gg_text: str, mapping: Dict[str, str]) -> str:
         trans_word = (match.group(2) or "").strip()
         orig_word = mapping.get(tag_id, "")
         if orig_word:
-            if trans_word and orig_word != trans_word:
-                return f"‹{tag_id.upper()}: {orig_word} | {trans_word}›"
             return f"‹{tag_id.upper()}: {orig_word}›"
         return f"‹{tag_id.upper()}: {trans_word}›" if trans_word else ""
 
@@ -362,8 +356,6 @@ def restore_pronouns(gg_text: str, mapping: Dict[str, str]) -> str:
         tag_id = match.group(2).strip()
         orig_word = mapping.get(tag_id, "")
         if orig_word:
-            if word and orig_word != word:
-                return f"‹{tag_id.upper()}: {orig_word} | {word}›"
             return f"‹{tag_id.upper()}: {orig_word}›"
         return f"‹{tag_id.upper()}: {word}›" if word else ""
 
@@ -376,8 +368,6 @@ def restore_pronouns(gg_text: str, mapping: Dict[str, str]) -> str:
         gt_trans = match.group(2).strip()
         orig_word = mapping.get(tag_id, "")
         if orig_word:
-            if orig_word != gt_trans:
-                return f"‹{tag_id.upper()}: {orig_word} | {gt_trans}›"
             return f"‹{tag_id.upper()}: {orig_word}›"
         return f"‹{tag_id.upper()}: {gt_trans}›"
 

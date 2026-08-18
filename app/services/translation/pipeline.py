@@ -141,58 +141,79 @@ async def _process_evidence_and_save(
             entities = llm_res.get("entities", [])
             corrections = llm_res.get("corrections", [])
             
-            # Validate: Ép tên đã có trong DB → bỏ qua, chỉ chấp nhận tên MỚI từ LLM
-            existing_db = evidence_payload.get("existing_db_entities", {})
-            validated_entities = []
-            for ent in entities:
-                ch_name = ent.get("chinese_name")
-                if ch_name and ch_name in existing_db:
-                    # Entity ĐÃ CÓ trong DB → skip, không ghi đè
-                    print(f"[PREPROCESS] ⏭️ Bỏ qua entity đã có trong DB: {ch_name} = {existing_db[ch_name].get('vietnamese_name', '?')}")
-                    continue
-                validated_entities.append(ent)
-            
-            skipped_count = len(entities) - len(validated_entities)
-            if skipped_count > 0:
-                msg_skip_ent = f"[PREPROCESS] 🛡️ Đã bảo vệ {skipped_count} entity đã có trong DB, chỉ chấp nhận {len(validated_entities)} entity MỚI từ LLM."
-                print(msg_skip_ent)
-                add_system_log(msg_skip_ent, "pre")
-            entities = validated_entities
-            
-            # Áp dụng Entities nếu bật Từ điển Thực thể
-            if enable_names_dict and entities:
-                from app.models.schema import ChapterEntityLink
+            # Áp dụng Entities & Lưu liên kết ChapterEntityLink cho TẤT CẢ thực thể có mặt trong chương (cả cũ lẫn mới)
+            if enable_names_dict:
+                from app.models.schema import ChapterEntityLink, NovelEntity
+                all_candidates = set()
+                # 1. Gom tất cả các từ Hán xuất hiện trong nhánh NER & kết quả LLM
+                for item in evidence_payload.get("branch_1_ner_candidates", []):
+                    if item.get("han"):
+                        all_candidates.add(item["han"].strip())
+                for item in entities:
+                    if item.get("chinese_name"):
+                        all_candidates.add(item["chinese_name"].strip())
+
+                async with AsyncSessionLocal() as session:
+                    # Tra cứu toàn bộ entity có sẵn trong DB matching với all_candidates
+                    stmt_ex = select(NovelEntity).where(
+                        NovelEntity.novel_id == novel_id,
+                        NovelEntity.chinese_name.in_(list(all_candidates))
+                    )
+                    res_ex = await session.execute(stmt_ex)
+                    existing_entity_map = {e.chinese_name: e for e in res_ex.scalars().all()}
+
+                    # A. Liên kết thực thể ĐÃ CÓ trong DB với các chương trong lô
+                    for ch_name, e_obj in existing_entity_map.items():
+                        for cid in batch:
+                            stmt_link = select(ChapterEntityLink).where(
+                                ChapterEntityLink.chapter_id == cid,
+                                ChapterEntityLink.entity_id == e_obj.id
+                            )
+                            link_res = await session.execute(stmt_link)
+                            if not link_res.scalars().first():
+                                session.add(ChapterEntityLink(chapter_id=cid, entity_id=e_obj.id))
+                    await session.commit()
+
+                # B. Tạo mới & liên kết thực thể MỚI chưa có trong DB
                 for ent in entities:
-                    ch_name = ent.get("chinese_name")
-                    vi_trans = ent.get("vietnamese_name", ent.get("rough_translation", ""))
+                    ch_name = ent.get("chinese_name", "").strip()
+                    vi_trans = ent.get("vietnamese_name", ent.get("rough_translation", "")).strip()
                     e_type = ent.get("entity_type", "NAME")
                     gender = ent.get("gender")
                     role = ent.get("role")
-                        
-                    req = UpdateNovelEntityRequest(
-                        chinese_name=ch_name,
-                        rough_translation=vi_trans,
-                        entity_type=e_type,
-                        gender=gender,
-                        role=role
-                    )
-                    try:
-                        res_save = await update_novel_entity_and_apply(novel_id, req)
-                        ent_id = res_save.get("entity_id") if isinstance(res_save, dict) else None
-                        
-                        if ent_id:
-                            async with AsyncSessionLocal() as session:
-                                for cid in batch:
-                                    stmt_link = select(ChapterEntityLink).where(
-                                        ChapterEntityLink.chapter_id == cid,
-                                        ChapterEntityLink.entity_id == ent_id
-                                    )
-                                    link_res = await session.execute(stmt_link)
-                                    if not link_res.scalars().first():
-                                        session.add(ChapterEntityLink(chapter_id=cid, entity_id=ent_id))
-                                await session.commit()
-                    except Exception as e:
-                        print(f"[PREPROCESS] Lỗi update entity {ent}: {e}")
+                    
+                    if ch_name and ch_name not in existing_entity_map:
+                        req = UpdateNovelEntityRequest(
+                            chinese_name=ch_name,
+                            rough_translation=vi_trans,
+                            entity_type=e_type,
+                            gender=gender,
+                            role=role
+                        )
+                        try:
+                            res_save = await update_novel_entity_and_apply(novel_id, req)
+                            ent_id = res_save.get("entity_id") if isinstance(res_save, dict) else None
+                            
+                            if ent_id:
+                                async with AsyncSessionLocal() as session:
+                                    for cid in batch:
+                                        stmt_link = select(ChapterEntityLink).where(
+                                            ChapterEntityLink.chapter_id == cid,
+                                            ChapterEntityLink.entity_id == ent_id
+                                        )
+                                        link_res = await session.execute(stmt_link)
+                                        if not link_res.scalars().first():
+                                            session.add(ChapterEntityLink(chapter_id=cid, entity_id=ent_id))
+                                    await session.commit()
+                        except Exception as e:
+                            print(f"[PREPROCESS] Lỗi update entity {ent}: {e}")
+
+                # Sync ra file JSON metadata từng chương (Output/06_Metadata/.../chapters/*.json)
+                try:
+                    from app.services.storage.metadata_cache import sync_novel_metadata
+                    await sync_novel_metadata(novel_id)
+                except Exception as sync_err:
+                    print(f"[PREPROCESS] ⚠️ Không thể sync metadata cache: {sync_err}")
                     
             # Lưu ChapterCorrection vào CSDL và áp dụng làm sạch file GG Text
             if enable_gg_corrections and corrections:
@@ -313,11 +334,12 @@ async def _translate_batch(translation_flow: str, batch: List[int], enable_names
     try:
         from app.services.postprocessing.post_processor import process_and_split_batch
         enable_unblock = kwargs.get("enable_unblock", True)
+        enable_erotic = kwargs.get("enable_erotic", False)
         if is_rawt:
-            res = await translate_batch_llm(batch, enable_names_dict=enable_names_dict, enable_unblock=enable_unblock)
+            res = await translate_batch_llm(batch, enable_names_dict=enable_names_dict, enable_unblock=enable_unblock, enable_erotic=enable_erotic)
             ver_type = "LLM"
         else:
-            res = await edit_context_batch_llm(batch, enable_names_dict=enable_names_dict, enable_unblock=enable_unblock)
+            res = await edit_context_batch_llm(batch, enable_names_dict=enable_names_dict, enable_unblock=enable_unblock, enable_erotic=enable_erotic)
             ver_type = "CONTEXTT"
             
         if "status" in res and res["status"] == "success":
@@ -341,8 +363,8 @@ async def _translate_batch(translation_flow: str, batch: List[int], enable_names
                 batch_name = f"batch_ch{'_'.join(map(str, res_chap_nos))}.txt"
                 raw_llm_path = os.path.join(llm_out_dir, batch_name)
 
-                # Unmask giải mã sơ bộ để đọc tiếng Việt (bật nâng cấp sắc văn cho luồng CONTEXTT)
-                unmasked_text = unmask_text_with_dictionary(res["translated_text_masked"], res.get("mapping_table", {}), is_draft_only=not is_rawt)
+                # Unmask giải mã sơ bộ để đọc tiếng Việt (bật nâng cấp sắc văn theo thiết lập)
+                unmasked_text = unmask_text_with_dictionary(res["translated_text_masked"], res.get("mapping_table", {}), is_draft_only=not is_rawt, enable_erotic=enable_erotic, flow=translation_flow.lower())
 
                 with open(raw_llm_path, "w", encoding="utf-8") as f:
                     f.write(f"=== KẾT QUẢ LLM TRẢ VỀ CHO CHƯƠNG {res_chap_nos} (TRƯỚC HẬU XỬ LÝ) ===\n\n")
@@ -363,7 +385,8 @@ async def _translate_batch(translation_flow: str, batch: List[int], enable_names
                 translated_text_masked=res["translated_text_masked"],
                 mapping_table=res.get("mapping_table", {}),
                 chapter_map=res["chapter_map"],
-                version_type=ver_type
+                version_type=ver_type,
+                enable_erotic=enable_erotic
             )
             res["saved_files"] = saved_files
             
@@ -500,7 +523,8 @@ async def run_translation_batch_pipeline(
                 tasks.append(asyncio.create_task(_translate_batch(
                     translation_flow, current_batch,
                     enable_names_dict=enable_names_dict,
-                    enable_unblock=kwargs.get("enable_unblock", True)
+                    enable_unblock=kwargs.get("enable_unblock", True),
+                    enable_erotic=kwargs.get("enable_erotic", False)
                 )))
                 
                 # Task 2: Tiền xử lý gối đầu Batch N+1

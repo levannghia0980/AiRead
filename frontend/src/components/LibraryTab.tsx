@@ -1,4 +1,5 @@
-import React, { useState, useMemo, useDeferredValue } from 'react'
+import React, { useState, useMemo, useDeferredValue, useRef } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import {
   BookOpen,
   RefreshCw,
@@ -33,36 +34,9 @@ const splitParagraphs = (text: string): string[] => {
 
 const formatChapterTextForReader = (text: string) => {
   if (!text) return ''
-
-  let clean = text.normalize("NFC")
-  clean = clean.replace(/([\u00c0-\u024f\u1ea0-\u1eff])\s+([\u0300-\u036f]+)/gi, '$1$2')
-  clean = clean.normalize("NFC")
-
-  const vietVowels = "[aáàảãạăắằẳẵặâấầẩẫậeéèẻẽẹêếềểễệiíìỉĩịoóòỏõọôốồổỗộơớờởỡợuúùủũụưứừửữựyýỳỷỹỵAÁÀẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬEẾỀỂỄỆIÍÌỈĨỊOÓÒỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢUÚÙỦŨỤƯỨỪỬỮỰYÝỲỶỸỴ]"
-  const vietEndings = "(?:ng|nh|ch|c|t|n|m|p|u|y)"
-  const brokenSyllableRegex = new RegExp(`(${vietVowels}+)[\\t ]+(${vietEndings})(?![a-zà-ỹá-ỵă-ặâ-ậê-ệô-ộơ-ợư-ựA-ZÁ-Ỵ])`, "gi")
-  clean = clean.replace(brokenSyllableRegex, "$1$2")
-  clean = clean.normalize("NFC")
-
-  clean = clean.replace(/<br\s*\/?>/gi, '\n\n')
-  clean = clean.replace(/<\/?p[^>]*>/gi, '\n\n')
-  clean = clean.replace(/<\/?div[^>]*>/gi, '\n\n')
-
-  clean = clean
-    .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-
-  let rawParagraphs = clean.split(/\n+/).map(p => p.trim()).filter(Boolean)
-
-  if (rawParagraphs.length <= 2 && clean.length > 300) {
-    const autoSplit = clean.replace(/([.!?…”"])\s+([A-ZÁÀẢÃẠĂẮẶẲẴÂẤẬẨẪÉÈẺẼẸÊẾỆỂỄÍÌỈĨỊÓÒỎÕỌÔỐỘỔỖƠỚỢỞỠÚÙỦŨỤƯỨỰỬỮÝỲỶỸỴĐ“"«])/g, '$1\n\n$2')
-    rawParagraphs = autoSplit.split(/\n+/).map(p => p.trim()).filter(Boolean)
-  }
-
-  return rawParagraphs
-    .map(p => `<p class="mb-5 leading-relaxed text-base font-sans text-slate-200" style="letter-spacing: normal;">${p}</p>`)
+  const paragraphs = splitParagraphs(text)
+  return paragraphs
+    .map((p, idx) => `<p data-para-idx="${idx}" class="mb-4 leading-relaxed text-slate-200">${p}</p>`)
     .join('\n')
 }
 
@@ -84,8 +58,8 @@ export interface LibraryTabProps {
   isResetting: boolean
   chapterSearch: string
   setChapterSearch: (v: string) => void
-  showChaptersList: boolean
-  setShowChaptersList: (v: boolean) => void
+  showChaptersList?: boolean
+  setShowChaptersList?: (v: boolean) => void
   saveResult: any
   handleQuickFixAll: (novelId: number) => void
   isFixingAll: boolean
@@ -114,8 +88,6 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
   isResetting,
   chapterSearch,
   setChapterSearch,
-  showChaptersList,
-  setShowChaptersList,
   saveResult,
   handleQuickFixAll,
   isFixingAll,
@@ -141,14 +113,14 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
   const yellowChaptersCount = useMemo(() => {
     if (!selectedNovel?.chapters) return 0
     return selectedNovel.chapters.filter((ch: any) => 
-      (ch.status === 'COMPLETED' || ch.status === 'RESCUED') && ch.translated_text && ch.translated_text.includes('class="fallback-word"')
+      (ch.status === 'COMPLETED' || ch.status === 'RESCUED') && (ch.has_fallback_words || (ch.translated_text && ch.translated_text.includes('class="fallback-word"')))
     ).length
   }, [selectedNovel?.chapters])
 
   const redChaptersCount = useMemo(() => {
     if (!selectedNovel?.chapters) return 0
     return selectedNovel.chapters.filter((ch: any) => 
-      (ch.status === 'COMPLETED' || ch.status === 'RESCUED') && ch.has_swept_errors
+      (ch.status === 'COMPLETED' || ch.status === 'RESCUED') && (ch.has_swept_errors || (ch.translated_text && (ch.translated_text.includes('class="swept-error"') || ch.translated_text.includes('class="swept-chinese"'))))
     ).length
   }, [selectedNovel?.chapters])
 
@@ -162,15 +134,39 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
     )
   }, [selectedNovel?.chapters, deferredSearch])
 
+  const chapterListParentRef = useRef<HTMLDivElement>(null)
+  const chapterVirtualizer = useVirtualizer({
+    count: filteredChapters.length,
+    getScrollElement: () => chapterListParentRef.current,
+    estimateSize: () => 52,
+    overscan: 10,
+  })
+
+  const scrollContainerRef = React.useRef<HTMLDivElement>(null)
+  const scrollPosRef = React.useRef<number>(0)
+
+  const handleToggleEdit = (editing: boolean) => {
+    if (scrollContainerRef.current) {
+      scrollPosRef.current = scrollContainerRef.current.scrollTop
+    }
+    setIsEditing(editing)
+  }
+
+  React.useLayoutEffect(() => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = scrollPosRef.current
+    }
+  }, [isEditing])
+
   // 1. EMBEDDED READER VIEW
   if (readingChapter) {
     const prevChapter = selectedNovel?.chapters.find((c: any) => c.chapter_no === readingChapter.chapter_no - 1 && (c.status === 'COMPLETED' || c.status === 'RESCUED'))
     const nextChapter = selectedNovel?.chapters.find((c: any) => c.chapter_no === readingChapter.chapter_no + 1 && (c.status === 'COMPLETED' || c.status === 'RESCUED'))
 
     return (
-      <div className="relative flex flex-col h-full overflow-hidden bg-slate-950/60 rounded-2xl border border-cyber-border/40 reader-container">
+      <div className="relative flex flex-col h-full w-full overflow-hidden bg-slate-950/60 rounded-2xl border border-cyber-border/40 reader-container">
         {/* Reader Header Controls */}
-        <div className="flex-shrink-0 border-b border-cyber-border/40 px-5 py-3.5 flex items-center justify-between bg-slate-950/95 z-30 flex-wrap gap-2 reader-header">
+        <div className="flex-shrink-0 border-b border-cyber-border/40 px-4 sm:px-6 py-3.5 flex items-center justify-between bg-slate-950/95 z-30 flex-wrap gap-2 reader-header">
           <div className="flex items-center gap-3">
             <button
               onClick={() => {
@@ -220,7 +216,7 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
                   Lưu Chỉnh Sửa
                 </button>
                 <button
-                  onClick={() => setIsEditing(false)}
+                  onClick={() => handleToggleEdit(false)}
                   disabled={isSavingEdit}
                   className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 border border-cyber-border transition-all"
                   title="Hủy bỏ chỉnh sửa"
@@ -231,7 +227,7 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
               </div>
             ) : (
               <button
-                onClick={() => setIsEditing(true)}
+                onClick={() => handleToggleEdit(true)}
                 className="border border-cyber-accent/40 bg-cyber-accent/10 hover:bg-cyber-accent/20 text-cyber-accent font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition-all"
               >
                 <Wand2 className="w-3.5 h-3.5" />
@@ -258,47 +254,27 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
         </div>
 
         {/* Reader Content Body */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 text-slate-200 leading-relaxed font-sans text-base pb-44 md:pb-32 reader-content-body">
+        <div 
+          ref={scrollContainerRef}
+          onScroll={(e) => {
+            scrollPosRef.current = (e.target as HTMLDivElement).scrollTop
+          }}
+          className="flex-1 overflow-y-auto px-4 sm:px-8 py-5 text-slate-200 leading-relaxed font-sans text-base pb-44 md:pb-32 reader-content-body w-full"
+        >
           {isEditing ? (
-            <div className="max-w-4xl mx-auto space-y-3 my-2">
-              <div className="flex items-center justify-between p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs">
-                <div className="flex items-center gap-2">
-                  <span className="animate-pulse font-bold">✏️ Chế độ chỉnh sửa trực tiếp:</span>
-                  <span>Bạn có thể click trực tiếp vào văn bản bên dưới để sửa chữ, sau đó bấm <strong>"Lưu Chỉnh Sửa"</strong>.</span>
-                </div>
-                <button
-                  onClick={() => setIsEditing(false)}
-                  className="text-[11px] underline hover:text-white font-semibold"
-                >
-                  Đóng chế độ sửa
-                </button>
-              </div>
-              <div
-                ref={editorRef}
-                contentEditable
-                suppressContentEditableWarning
-                className="focus:outline-none min-h-[500px] border border-cyber-accent/50 focus:border-cyber-accent rounded-2xl p-6 sm:p-10 bg-slate-900/70 leading-relaxed font-sans text-base shadow-inner text-slate-100 reader-paper-sheet"
-                style={{ letterSpacing: 'normal' }}
-                dangerouslySetInnerHTML={{ __html: formatChapterTextForReader(readingChapter.translated_text) }}
-              />
-            </div>
+            <div
+              ref={editorRef}
+              contentEditable
+              suppressContentEditableWarning
+              className="focus:outline-none min-h-[500px] w-full leading-relaxed font-sans text-base text-slate-200"
+              style={{ letterSpacing: 'normal' }}
+              dangerouslySetInnerHTML={{ __html: formatChapterTextForReader(readingChapter.translated_text) }}
+            />
           ) : (
-            <div className="max-w-4xl mx-auto reader-paper-sheet p-6 sm:p-10 rounded-2xl border border-cyber-border/30 shadow-md my-2">
-              <div className="mb-6 pb-4 border-b border-cyber-border/30">
-                <h1 className="text-xl sm:text-2xl font-bold reader-title text-cyber-accent mb-2">
-                  Chương {readingChapter.chapter_no}: {readingChapter.title}
-                </h1>
-                <p className="text-xs text-cyber-muted flex items-center gap-2">
-                  <span>{selectedNovel?.novel.title}</span>
-                  <span>•</span>
-                  <span>{splitParagraphs(readingChapter.translated_text).length} đoạn văn</span>
-                </p>
-              </div>
-              <div className="prose max-w-none leading-relaxed text-slate-200 font-sans text-base">
-                {splitParagraphs(readingChapter.translated_text).map((pText, idx) => (
-                  <ParagraphItem key={idx} htmlContent={pText} />
-                ))}
-              </div>
+            <div className="w-full leading-relaxed text-slate-200 font-sans text-base">
+              {splitParagraphs(readingChapter.translated_text).map((pText, idx) => (
+                <ParagraphItem key={idx} htmlContent={pText} paraIdx={idx} />
+              ))}
             </div>
           )}
         </div>
@@ -519,7 +495,7 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
           </div>
         </div>
 
-        {/* Search & Toggle Chapter List Bar */}
+        {/* Search & Chapter Count Bar */}
         <div className="flex items-center gap-3 bg-slate-950/40 p-2.5 rounded-xl border border-cyber-border/40 mt-1">
           <div className="relative flex-1">
             <span className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500">🔍</span>
@@ -527,26 +503,14 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
               type="text"
               placeholder="Tìm nhanh số chương hoặc tiêu đề..."
               value={chapterSearch}
-              onChange={(e) => {
-                setChapterSearch(e.target.value)
-                if (e.target.value.trim() !== '') {
-                  setShowChaptersList(true)
-                }
-              }}
+              onChange={(e) => setChapterSearch(e.target.value)}
               className="w-full glass-input rounded-lg pl-9 pr-3 py-1.5 text-xs"
             />
           </div>
-          <button
-            onClick={() => setShowChaptersList(!showChaptersList)}
-            className={`px-3 py-1.5 border rounded-lg text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 ${
-              showChaptersList
-                ? 'border-cyber-accent bg-cyber-accent/10 text-cyber-accent'
-                : 'border-cyber-border/60 hover:border-cyber-accent text-slate-300'
-            }`}
-          >
-            <span>{showChaptersList ? '📂 Ẩn Chương' : '📁 Hiện Chương'}</span>
-            <span className="text-[10px] opacity-75">({selectedNovel.chapters.length})</span>
-          </button>
+          <span className="px-3 py-1.5 border border-cyber-accent/30 bg-cyber-accent/10 text-cyber-accent rounded-lg text-xs font-bold whitespace-nowrap flex items-center gap-1">
+            <span>📚 Danh Sách Chương</span>
+            <span className="text-[10px] opacity-80 font-mono">({filteredChapters.length})</span>
+          </span>
         </div>
       </div>
 
@@ -562,93 +526,107 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
         </div>
       )}
 
-      {/* Chapter List */}
-      {showChaptersList ? (
-        <div className="flex-grow lg:flex-1 lg:min-h-0 overflow-y-auto p-5 min-h-0">
-          <div className="flex flex-col gap-1.5">
-            {filteredChapters.map((ch: any) => {
+      {/* Chapter List (VIRTUALIZED) - Always Visible */}
+      <div ref={chapterListParentRef} className="flex-grow lg:flex-1 lg:min-h-0 overflow-y-auto p-4 min-h-0">
+          <div
+            style={{
+              height: `${chapterVirtualizer.getTotalSize()}px`,
+              width: '100%',
+              position: 'relative',
+            }}
+          >
+            {chapterVirtualizer.getVirtualItems().map((virtualRow) => {
+              const ch = filteredChapters[virtualRow.index]
+              if (!ch) return null
+
               const isRescued = ch.status === 'RESCUED'
               const isCompleted = ch.status === 'COMPLETED' || isRescued
               const isFailed = ch.status === 'FAILED'
-              const hasYellowText = isCompleted && ch.translated_text && ch.translated_text.includes('class="fallback-word"')
-              const hasRedText = isCompleted && ch.has_swept_errors
+              const hasYellowText = isCompleted && Boolean(ch.has_fallback_words || (ch.translated_text && ch.translated_text.includes('class="fallback-word"')))
+              const hasRedText = isCompleted && Boolean(ch.has_swept_errors || (ch.translated_text && (ch.translated_text.includes('class="swept-error"') || ch.translated_text.includes('class="swept-chinese"'))))
 
               return (
                 <div
-                  key={ch.id}
-                  className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl text-xs border transition-all duration-150 group ${
-                    hasRedText
-                      ? 'border-rose-500/50 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 font-medium'
-                      : hasYellowText
-                        ? 'border-amber-500/50 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 font-medium'
-                        : isFailed
-                        ? 'border-cyber-danger/40 bg-cyber-danger/10 hover:bg-cyber-danger/20 text-cyber-danger'
-                        : isRescued
-                          ? 'border-purple-500/30 bg-purple-950/20 hover:bg-purple-950/30 text-purple-300'
-                          : isCompleted
-                            ? 'border-cyber-border/20 bg-slate-900/30 hover:bg-slate-900/60 hover:border-cyber-border/40 text-slate-200'
-                            : 'border-cyber-border/10 hover:bg-slate-900/40 hover:border-cyber-border/30 text-slate-500'
-                  }`}
+                  key={ch.id || virtualRow.index}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    height: `${virtualRow.size}px`,
+                    transform: `translateY(${virtualRow.start}px)`,
+                  }}
+                  className="pb-1.5"
                 >
-                  <button
-                    onClick={() => isCompleted && handleReadChapter(selectedNovel.novel.id, ch.chapter_no)}
-                    disabled={!isCompleted}
-                    className={`flex-1 text-left flex items-center gap-3 min-w-0 ${isCompleted ? 'cursor-pointer' : 'cursor-default'}`}
-                  >
-                    <span className={`w-8 h-8 rounded-lg flex items-center justify-center text-[10px] font-bold flex-shrink-0 ${
+                  <div
+                    className={`w-full h-full flex items-center justify-between px-4 py-1.5 rounded-xl text-xs border transition-all duration-150 group ${
                       hasRedText
-                        ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                        ? 'border-rose-500/50 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 font-medium'
                         : hasYellowText
-                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                        : isFailed
-                          ? 'bg-cyber-danger/15 text-cyber-danger border border-cyber-danger/30'
+                          ? 'border-amber-500/50 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 font-medium'
+                          : isFailed
+                          ? 'border-cyber-danger/40 bg-cyber-danger/10 hover:bg-cyber-danger/20 text-cyber-danger'
                           : isRescued
-                            ? 'bg-purple-500/15 text-purple-400 border border-purple-500/30'
+                            ? 'border-purple-500/30 bg-purple-950/20 hover:bg-purple-950/30 text-purple-300'
                             : isCompleted
-                              ? 'bg-cyber-success/15 text-cyber-success border border-cyber-success/30'
-                              : 'bg-slate-900/60 text-slate-500 border border-cyber-border/30'
-                    }`}>
-                      {ch.chapter_no}
-                    </span>
-                    <div className="min-w-0">
-                      <p className={`font-medium truncate ${
-                        hasRedText ? 'text-rose-300 font-bold' : hasYellowText ? 'text-amber-300 font-bold' : isFailed ? 'text-cyber-danger font-bold' : isRescued ? 'text-purple-300 font-bold' : isCompleted ? 'text-slate-200' : 'text-slate-500'
-                      }`}>{ch.title}</p>
-                      <p className={`text-[10px] mt-0.5 ${hasRedText ? 'text-rose-400 font-bold' : hasYellowText ? 'text-amber-400 font-bold' : isFailed ? 'text-cyber-danger/80' : isRescued ? 'text-purple-400' : 'text-cyber-muted'}`}>
-                        {hasRedText ? '🔴 Cần sửa Hán tự' : hasYellowText ? '🟡 Cần sửa chữ vàng' : isFailed ? '❌ Lỗi dịch' : isRescued ? '💜 Dịch cứu hộ' : isCompleted ? '✅ Đã dịch' : '⏳ Chờ dịch'}
-                      </p>
-                    </div>
-                  </button>
-                  <div className="flex items-center gap-2 ml-2 flex-shrink-0">
-                    {isCompleted && (
-                      <button
-                        onClick={() => handleReadChapter(selectedNovel.novel.id, ch.chapter_no)}
-                        className="px-2.5 py-1 bg-cyber-success/15 hover:bg-cyber-success/30 border border-cyber-success/30 hover:border-cyber-success text-cyber-success hover:text-white text-[10px] font-bold rounded-lg transition-all"
-                      >
-                        Xem & Đọc
-                      </button>
-                    )}
-
+                              ? 'border-cyber-border/20 bg-slate-900/30 hover:bg-slate-900/60 hover:border-cyber-border/40 text-slate-200'
+                              : 'border-cyber-border/10 hover:bg-slate-900/40 hover:border-cyber-border/30 text-slate-500'
+                    }`}
+                  >
                     <button
-                      onClick={() => handleResetChapters(selectedNovel.novel.id, [ch.chapter_no])}
-                      title="Xóa bản dịch, cache và cào dịch lại chương này"
-                      className="p-1.5 hover:bg-cyber-danger/20 text-slate-500 hover:text-cyber-danger rounded-lg transition-all"
+                      onClick={() => isCompleted && handleReadChapter(selectedNovel.novel.id, ch.chapter_no)}
+                      disabled={!isCompleted}
+                      className={`flex-1 text-left flex items-center gap-3 min-w-0 ${isCompleted ? 'cursor-pointer' : 'cursor-default'}`}
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
+                      <span className={`w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-bold flex-shrink-0 ${
+                        hasRedText
+                          ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                          : hasYellowText
+                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                          : isFailed
+                            ? 'bg-cyber-danger/15 text-cyber-danger border border-cyber-danger/30'
+                            : isRescued
+                              ? 'bg-purple-500/15 text-purple-400 border border-purple-500/30'
+                              : isCompleted
+                                ? 'bg-cyber-success/15 text-cyber-success border border-cyber-success/30'
+                                : 'bg-slate-900/60 text-slate-500 border border-cyber-border/30'
+                      }`}>
+                        {ch.chapter_no}
+                      </span>
+                      <div className="min-w-0">
+                        <p className={`font-medium truncate ${
+                          hasRedText ? 'text-rose-300 font-bold' : hasYellowText ? 'text-amber-300 font-bold' : isFailed ? 'text-cyber-danger font-bold' : isRescued ? 'text-purple-300 font-bold' : isCompleted ? 'text-slate-200' : 'text-slate-500'
+                        }`}>{ch.title}</p>
+                        <p className={`text-[10px] mt-0.5 ${hasRedText ? 'text-rose-400 font-bold' : hasYellowText ? 'text-amber-400 font-bold' : isFailed ? 'text-cyber-danger/80' : isRescued ? 'text-purple-400' : 'text-cyber-muted'}`}>
+                          {hasRedText ? '🔴 Cần sửa Hán tự' : hasYellowText ? '🟡 Cần sửa chữ vàng' : isFailed ? '❌ Lỗi dịch' : isRescued ? '💜 Dịch cứu hộ' : isCompleted ? '✅ Đã dịch' : '⏳ Chờ dịch'}
+                        </p>
+                      </div>
                     </button>
+                    <div className="flex items-center gap-2 ml-2 flex-shrink-0">
+                      {isCompleted && (
+                        <button
+                          onClick={() => handleReadChapter(selectedNovel.novel.id, ch.chapter_no)}
+                          className="px-2.5 py-1 bg-cyber-success/15 hover:bg-cyber-success/30 border border-cyber-success/30 hover:border-cyber-success text-cyber-success hover:text-white text-[10px] font-bold rounded-lg transition-all"
+                        >
+                          Xem & Đọc
+                        </button>
+                      )}
+
+                      <button
+                        onClick={() => handleResetChapters(selectedNovel.novel.id, [ch.chapter_no])}
+                        title="Xóa bản dịch, cache và cào dịch lại chương này"
+                        className="p-1.5 hover:bg-cyber-danger/20 text-slate-500 hover:text-cyber-danger rounded-lg transition-all"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               )
             })}
           </div>
         </div>
-      ) : (
-        <div className="flex-grow lg:flex-1 flex flex-col items-center justify-center p-8 text-center text-xs text-cyber-muted">
-          <BookOpen className="w-8 h-8 text-slate-600 mb-2 opacity-50" />
-          <span>Danh sách chương đang ẩn. Bấm <strong className="text-cyber-accent">"Hiện Chương"</strong> hoặc nhập ô tìm kiếm để xem.</span>
-        </div>
-      )}
-    </div>
+      </div>
 
       {/* === RESTART CONFIRMATION DIALOG === */}
       {showRestartConfirm && selectedNovel && (

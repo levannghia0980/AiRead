@@ -85,58 +85,62 @@ async def get_novel_detail(novel_id: int = Path(...)) -> Dict[str, Any]:
         res_ch = await session.execute(stmt_ch)
         chapters = res_ch.scalars().all()
 
-        # Lấy tất cả ChapterVersions thuộc truyện để map translated_text / raw_text
-        stmt_ver = select(ChapterVersion).join(Chapter).where(Chapter.novel_id == novel_id)
+        stmt_ver = select(
+            ChapterVersion.chapter_id,
+            ChapterVersion.version_type,
+            ChapterVersion.content,
+            ChapterVersion.file_path
+        ).join(Chapter).where(Chapter.novel_id == novel_id)
         res_ver = await session.execute(stmt_ver)
-        versions = res_ver.scalars().all()
+        rows_ver = res_ver.all()
 
-        # Map version theo (chapter_id, version_type)
-        version_map: Dict[int, Dict[str, ChapterVersion]] = {}
-        for v in versions:
-            if v.chapter_id not in version_map:
-                version_map[v.chapter_id] = {}
-            version_map[v.chapter_id][v.version_type] = v
+        version_types_map: Dict[int, set] = {}
+        fallback_map: Dict[int, bool] = {}
+        swept_error_map: Dict[int, bool] = {}
 
-        from app.services.storage.file_storage import read_version_file_content
+        # Ưu tiên phiên bản dịch hiển thị thực tế: FINAL -> EDITED -> CONTEXTT -> LLM -> GG
+        version_priority = {"FINAL": 1, "EDITED": 2, "CONTEXTT": 3, "LLM": 4, "GG": 5}
+        best_version_map: Dict[int, tuple] = {}
+
+        for ch_id, v_type, content, f_path in rows_ver:
+            if ch_id not in version_types_map:
+                version_types_map[ch_id] = set()
+            version_types_map[ch_id].add(v_type)
+
+            prio = version_priority.get(v_type, 99)
+            if prio < 99:
+                if ch_id not in best_version_map or prio < best_version_map[ch_id][0]:
+                    best_version_map[ch_id] = (prio, content, f_path)
+
+        for ch_id, (prio, content, f_path) in best_version_map.items():
+            text_to_check = ""
+            if content:
+                text_to_check = content
+            elif f_path and os.path.exists(f_path):
+                try:
+                    with open(f_path, "r", encoding="utf-8", errors="ignore") as f:
+                        text_to_check = f.read(50000)
+                except Exception:
+                    pass
+
+            if text_to_check:
+                if 'fallback-word' in text_to_check:
+                    fallback_map[ch_id] = True
+                if 'swept-error' in text_to_check or 'swept-chinese' in text_to_check:
+                    swept_error_map[ch_id] = True
 
         chapters_list = []
         for c in chapters:
-            c_vers = version_map.get(c.id, {})
-            raw_text = None
-            translated_text = None
-
-            # Lấy RAW
-            if "RAW" in c_vers:
-                v_raw = c_vers["RAW"]
-                raw_text = v_raw.content
-                if not raw_text and v_raw.file_path and os.path.exists(v_raw.file_path):
-                    try:
-                        raw_text = read_version_file_content(v_raw.file_path)
-                    except Exception:
-                        pass
-
-            # Lấy bản dịch ưu tiên: FINAL -> CONTEXTT -> LLM -> GG
-            for v_type in ["FINAL", "CONTEXTT", "LLM", "GG"]:
-                if v_type in c_vers:
-                    v_trans = c_vers[v_type]
-                    translated_text = v_trans.content
-                    if not translated_text and v_trans.file_path and os.path.exists(v_trans.file_path):
-                        try:
-                            translated_text = read_version_file_content(v_trans.file_path)
-                        except Exception:
-                            pass
-                    if translated_text:
-                        break
-
+            c_vtypes = version_types_map.get(c.id, set())
+            
             # Xác định status chuẩn cho Frontend ('COMPLETED', 'RESCUED', 'WAIT', etc.)
             final_status = c.status
             if final_status in ["FINAL_DONE", "DONE", "TRANSLATED"]:
                 final_status = "COMPLETED"
 
-            # Kiểm tra xem có Hán tự lọt lưới bị bọc gạch chân xanh không (class="swept-chinese")
-            has_swept_errors = False
-            if translated_text and 'class="swept-chinese"' in translated_text:
-                has_swept_errors = True
+            has_translation = any(k in c_vtypes for k in ["FINAL", "CONTEXTT", "LLM", "GG"])
+            if has_translation and final_status == "WAIT":
+                final_status = "COMPLETED"
 
             chapters_list.append({
                 "id": c.id,
@@ -144,11 +148,12 @@ async def get_novel_detail(novel_id: int = Path(...)) -> Dict[str, Any]:
                 "chapter_no": c.chapter_no,
                 "title": c.title_rough or c.title_raw,
                 "source_url": getattr(c, "url", ""),
-                "raw_text": raw_text,
-                "translated_text": translated_text,
+                "raw_text": None,
+                "translated_text": None,
                 "status": final_status,
                 "error_msg": c.error_message,
-                "has_swept_errors": has_swept_errors,
+                "has_fallback_words": fallback_map.get(c.id, False),
+                "has_swept_errors": swept_error_map.get(c.id, False),
                 "token_count": 0,
                 "updated_at": c.updated_at.isoformat() if c.updated_at else ""
             })
@@ -362,12 +367,18 @@ async def update_novel_entity_and_apply(
     Khi đổi tên → tự động thay thế tên cũ → tên mới trong mọi chương đã dịch.
     """
     try:
-        from app.services.unblock.unblock_pipeline import is_sensitive_text
+        from app.services.unblock.unblock_pipeline import is_exact_sensitive_word
+        from app.services.preprocessing.dichhan.hanviet_data import sanitize_entity_vietnamese
         from app.services.preprocessing.dichhan.translator import clear_translator_caches
         import re
         
-        if await is_sensitive_text(payload.chinese_name) or await is_sensitive_text(payload.rough_translation):
-            raise HTTPException(status_code=400, detail="Tên hoặc từ dịch trùng với từ nhạy cảm trong danh sách Unblock, không thể lưu.")
+        # Chỉ chặn khi tên thực thể là từ nhạy cảm nguyên cụm chính xác (không so khớp chuỗi con)
+        if await is_exact_sensitive_word(payload.chinese_name) or await is_exact_sensitive_word(payload.rough_translation):
+            raise HTTPException(status_code=400, detail="Tên hoặc từ dịch là từ khóa nhạy cảm trong danh sách Unblock, không thể lưu.")
+        
+        # Tự động chuẩn hóa Hán-Việt nếu tên còn dính Hán tự lai tạp
+        if payload.rough_translation:
+            payload.rough_translation = sanitize_entity_vietnamese(payload.rough_translation, payload.chinese_name)
         
         old_translation = None
         saved_entity_id = None
@@ -575,6 +586,12 @@ async def reset_novel_translations(novel_id: int = Path(...)):
                         pass
                 await session.delete(ver)
                 
+            # Lấy thông tin truyện để xóa đúng tên thư mục
+            stmt_novel = select(Novel).where(Novel.id == novel_id)
+            res_novel = await session.execute(stmt_novel)
+            novel = res_novel.scalar_one_or_none()
+            novel_title = novel.title_rough or novel.title_raw if novel else ""
+            
             stmt_chaps = select(Chapter).where(Chapter.novel_id == novel_id)
             res_chaps = await session.execute(stmt_chaps)
             chaps = res_chaps.scalars().all()
@@ -583,16 +600,10 @@ async def reset_novel_translations(novel_id: int = Path(...)):
                 
             await session.commit()
             
-        output_dirs = [
-            r"D:\NENGHIA0980\AIREAD\Output\02_DichGG_Sanitized",
-            r"D:\NENGHIA0980\AIREAD\Output\03_DichAI_LLM",
-            r"D:\NENGHIA0980\AIREAD\Output\04_KetQua",
-            r"D:\NENGHIA0980\AIREAD\Output\04_DichAI_Context"
-        ]
-        for base_dir in output_dirs:
-            target_dir = os.path.join(base_dir, f"novel_{novel_id}")
-            if os.path.exists(target_dir):
-                shutil.rmtree(target_dir, ignore_errors=True)
+        if novel_title:
+            from app.services.storage.file_storage import delete_version_disk_files
+            for v_type in ["GG", "LLM", "FINAL", "TTS_TEXT", "AUDIO"]:
+                delete_version_disk_files(v_type, novel_title)
                 
         return {
             "status": "success",
@@ -616,6 +627,11 @@ async def reset_chapter_translations(chapter_id: int = Path(...)):
             if not chap:
                 raise HTTPException(status_code=404, detail="Không tìm thấy chương.")
                 
+            stmt_novel = select(Novel).where(Novel.id == chap.novel_id)
+            res_novel = await session.execute(stmt_novel)
+            novel = res_novel.scalar_one_or_none()
+            novel_title = novel.title_rough or novel.title_raw if novel else ""
+
             stmt_vers = select(ChapterVersion).where(
                 ChapterVersion.chapter_id == chapter_id,
                 ChapterVersion.version_type != "RAW"
@@ -633,6 +649,23 @@ async def reset_chapter_translations(chapter_id: int = Path(...)):
                 
             chap.status = "CRAWLED"
             await session.commit()
+
+            # Dọn dẹp các tệp đĩa liên quan đến chương này trong các thư mục Output
+            if novel_title:
+                from app.services.storage.file_storage import OUTPUT_ROOT, VERSION_FOLDER_MAP, sanitize_filename
+                folder_novel = sanitize_filename(novel_title)
+                for folder_type in VERSION_FOLDER_MAP.values():
+                    if folder_type == "01_BanGoc":
+                        continue
+                    for sub in ["", "chapters"]:
+                        p_txt = OUTPUT_ROOT / folder_type / folder_novel / sub / f"{chap.chapter_no:06d}.txt" if sub else OUTPUT_ROOT / folder_type / folder_novel / f"{chap.chapter_no:06d}.txt"
+                        if p_txt.exists():
+                            try: p_txt.unlink()
+                            except Exception: pass
+                        p_mp3 = OUTPUT_ROOT / folder_type / folder_novel / sub / f"{chap.chapter_no:06d}.mp3" if sub else OUTPUT_ROOT / folder_type / folder_novel / f"{chap.chapter_no:06d}.mp3"
+                        if p_mp3.exists():
+                            try: p_mp3.unlink()
+                            except Exception: pass
             
         return {
             "status": "success",

@@ -285,14 +285,20 @@ async def delete_novel_version(novel_id: int, version_type: str) -> Dict[str, An
         ch_ids = ch_ids_res.scalars().all()
 
         if ch_ids:
+            v_types = [version_type.upper()]
+            if version_type.upper() == "FINAL":
+                v_types.extend(["TTS_TEXT", "AUDIO"])
             stmt_del = delete(ChapterVersion).where(
                 ChapterVersion.chapter_id.in_(ch_ids),
-                ChapterVersion.version_type == version_type.upper()
+                ChapterVersion.version_type.in_(v_types)
             )
             await session.execute(stmt_del)
             await session.commit()
 
     delete_version_disk_files(version_type, novel_title_rough)
+    if version_type.upper() == "FINAL":
+        delete_version_disk_files("TTS_TEXT", novel_title_rough)
+        delete_version_disk_files("AUDIO", novel_title_rough)
 
     return {
         "novel_id": novel_id,

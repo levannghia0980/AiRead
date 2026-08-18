@@ -20,9 +20,13 @@ class NameItem(BaseModel):
 @router.post("/phrase")
 async def add_phrase(payload: PhraseItem):
     """Thêm cụm từ ghép vào từ điển dùng chung"""
-    from app.services.unblock.unblock_pipeline import is_sensitive_text
-    if await is_sensitive_text(payload.chinese_phrase) or await is_sensitive_text(payload.vietnamese_phrase):
-        raise HTTPException(status_code=400, detail="Từ ngữ trùng với danh sách nhạy cảm Unblock, không thể thêm vào từ điển.")
+    from app.services.unblock.unblock_pipeline import is_exact_sensitive_word
+    from app.services.preprocessing.dichhan.hanviet_data import sanitize_entity_vietnamese
+    if await is_exact_sensitive_word(payload.chinese_phrase) or await is_exact_sensitive_word(payload.vietnamese_phrase):
+        raise HTTPException(status_code=400, detail="Từ ngữ là từ khóa nhạy cảm trong danh sách Unblock, không thể thêm vào từ điển.")
+
+    if payload.vietnamese_phrase:
+        payload.vietnamese_phrase = sanitize_entity_vietnamese(payload.vietnamese_phrase, payload.chinese_phrase)
 
     async with AsyncSessionLocal() as session:
         stmt = select(PhraseDictionary).where(PhraseDictionary.chinese_phrase == payload.chinese_phrase)
@@ -46,9 +50,13 @@ async def add_phrase(payload: PhraseItem):
 @router.post("/name")
 async def add_name(payload: NameItem):
     """Thêm tên nhân vật hoặc thuật ngữ riêng (Novel-specific hoặc Global)"""
-    from app.services.unblock.unblock_pipeline import is_sensitive_text
-    if await is_sensitive_text(payload.chinese_name) or await is_sensitive_text(payload.vietnamese_name):
-        raise HTTPException(status_code=400, detail="Tên hoặc từ dịch trùng với từ nhạy cảm Unblock, không thể thêm vào từ điển.")
+    from app.services.unblock.unblock_pipeline import is_exact_sensitive_word
+    from app.services.preprocessing.dichhan.hanviet_data import sanitize_entity_vietnamese
+    if await is_exact_sensitive_word(payload.chinese_name) or await is_exact_sensitive_word(payload.vietnamese_name):
+        raise HTTPException(status_code=400, detail="Tên hoặc từ dịch là từ khóa nhạy cảm trong danh sách Unblock, không thể thêm vào từ điển.")
+
+    if payload.vietnamese_name:
+        payload.vietnamese_name = sanitize_entity_vietnamese(payload.vietnamese_name, payload.chinese_name)
 
     async with AsyncSessionLocal() as session:
         stmt = select(NamesDictionary).where(

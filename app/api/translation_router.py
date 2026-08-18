@@ -87,6 +87,7 @@ class StartTranslationRequest(BaseModel):
     end_chapter: Optional[int] = None
     translation_style: Optional[str] = "draft_only"
     enable_unblock: Optional[bool] = True
+    enable_erotic: Optional[bool] = False
     enable_llm_extract: Optional[bool] = True
     enable_names_dict: Optional[bool] = True
     enable_gg_corrections: Optional[bool] = True
@@ -133,7 +134,9 @@ async def _bg_translation_worker(payload: StartTranslationRequest):
             enable_names_dict=payload.enable_names_dict if payload.enable_names_dict is not None else True,
             enable_gg_corrections=payload.enable_gg_corrections if payload.enable_gg_corrections is not None else True,
             enable_unblock=payload.enable_unblock if payload.enable_unblock is not None else True,
-            force_retranslate=bool(payload.force_retranslate)
+            enable_erotic=payload.enable_erotic if payload.enable_erotic is not None else False,
+            force_retranslate=bool(payload.force_retranslate),
+            custom_prompt=payload.prompt or ""
         )
 
         if res.get("status") == "completed":
@@ -292,6 +295,7 @@ class PipelineRunRequest(BaseModel):
     batch_size: int = 3
     delay_sec: float = 2.0
     enable_unblock: Optional[bool] = False
+    enable_erotic: Optional[bool] = False
 
 @router.post("/novel/{novel_id}/pipeline/start")
 async def start_translation_pipeline(novel_id: int, payload: PipelineRunRequest):
@@ -308,7 +312,8 @@ async def start_translation_pipeline(novel_id: int, payload: PipelineRunRequest)
             delay_sec=payload.delay_sec,
             start_chapter=payload.start_chapter,
             end_chapter=payload.end_chapter,
-            enable_unblock=payload.enable_unblock or False
+            enable_unblock=payload.enable_unblock or False,
+            enable_erotic=payload.enable_erotic or False
         )
         return result
     except Exception as e:
@@ -330,8 +335,17 @@ async def batch_fix_swept_errors(novel_id: int, payload: Optional[BatchFixErrors
         result = await batch_fix_swept_errors_llm(novel_id, model=req_model)
         if result.get("status") == "success":
             fixed_count = result.get("fixed_count", 0)
+            details = result.get("details", [])
             if fixed_count > 0:
                 add_system_log(f"✅ Sửa thành công {fixed_count} lỗi Hán tự gạch chân xanh!", "success")
+                for d in details[:10]:
+                    raw_cn = d.get('raw_chinese', '')
+                    faulty = d.get('faulty_term', '')
+                    corr = d.get('corrected_term', '')
+                    ch_no = d.get('chapter_no', '')
+                    add_system_log(f"  • [Ch.{ch_no}] '{raw_cn}' ({faulty}) ➔ '{corr}'", "info")
+                if len(details) > 10:
+                    add_system_log(f"  • ... và {len(details) - 10} từ khác đã được chuẩn hóa!", "info")
             else:
                 add_system_log(f"ℹ️ Không tìm thấy lỗi gạch chân xanh nào cần sửa.", "info")
         else:

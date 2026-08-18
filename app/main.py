@@ -29,7 +29,7 @@ from app.api.settings_router import router as settings_router
 from app.api.unblock_router import router as unblock_router
 from app.api.translation_router import router as translation_router
 from app.api.novel_router import router as novel_router
-from app.api.tts_router import router as tts_router
+from app.api.tts_router import router as tts_router, test_router as tts_test_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -61,6 +61,7 @@ app.include_router(unblock_router, prefix="/api")
 app.include_router(translation_router, prefix="/api")
 app.include_router(novel_router, prefix="/api")
 app.include_router(tts_router, prefix="/api")
+app.include_router(tts_test_router, prefix="/api")
 
 app.include_router(crawler_router)
 app.include_router(dictionary_router)
@@ -69,6 +70,7 @@ app.include_router(unblock_router)
 app.include_router(translation_router)
 app.include_router(novel_router)
 app.include_router(tts_router)
+app.include_router(tts_test_router)
 
 from fastapi.staticfiles import StaticFiles
 

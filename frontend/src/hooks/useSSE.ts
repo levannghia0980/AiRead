@@ -2,8 +2,6 @@ import { useEffect } from 'react'
 import { useNovelStore } from '../store/useNovelStore'
 
 export const useSSE = () => {
-  const { setLogs, addLog, setProgress, setPackagedResult } = useNovelStore()
-
   useEffect(() => {
     const eventSource = new EventSource('/api/translation/logs')
 
@@ -11,15 +9,21 @@ export const useSSE = () => {
       try {
         const payload = JSON.parse(event.data)
         const { event: eventType, data } = payload
+        const store = useNovelStore.getState()
 
         if (eventType === 'init_logs') {
-          setLogs(data)
+          store.setLogs(data)
         } else if (eventType === 'log') {
-          addLog(data)
+          store.addLog(data)
         } else if (eventType === 'progress') {
-          setProgress(data)
+          store.setProgress(data)
         } else if (eventType === 'packaged') {
-          setPackagedResult(data)
+          store.setPackagedResult(data)
+          store.fetchNovels()
+          const currentSelected = store.selectedNovel
+          if (currentSelected?.novel?.id) {
+            store.fetchNovelDetails(currentSelected.novel.id)
+          }
         }
       } catch (e) {
         console.error("SSE parse error", e)
@@ -33,6 +37,7 @@ export const useSSE = () => {
     return () => {
       eventSource.close()
     }
-  }, [setLogs, addLog, setProgress, setPackagedResult])
+  }, [])
 }
+
 export default useSSE

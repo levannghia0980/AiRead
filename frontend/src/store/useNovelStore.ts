@@ -100,6 +100,7 @@ interface NovelStore {
   endChapter: number | null
   translationStyle: string
   enableUnblock: boolean
+  enableErotic: boolean
   enableLlmExtract: boolean
   enableNamesDict: boolean
   enableGgCorrections: boolean
@@ -116,6 +117,7 @@ interface NovelStore {
     endChapter?: number | null;
     translationStyle?: string;
     enableUnblock?: boolean;
+    enableErotic?: boolean;
     enableLlmExtract?: boolean;
     enableNamesDict?: boolean;
     enableGgCorrections?: boolean;
@@ -194,6 +196,7 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
   endChapter: null,
   translationStyle: localStorage.getItem('airead_translation_style') || 'draft_only',
   enableUnblock: localStorage.getItem('airead_enable_unblock') !== 'false',
+  enableErotic: localStorage.getItem('airead_enable_erotic') !== 'false',
   enableLlmExtract: true,
   enableNamesDict: true,
   enableGgCorrections: true,
@@ -210,6 +213,7 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
       if (settings.batchSize !== undefined) localStorage.setItem('airead_batch_size', settings.batchSize.toString())
       if (settings.translationStyle !== undefined) localStorage.setItem('airead_translation_style', settings.translationStyle)
       if (settings.enableUnblock !== undefined) localStorage.setItem('airead_enable_unblock', settings.enableUnblock ? 'true' : 'false')
+      if (settings.enableErotic !== undefined) localStorage.setItem('airead_enable_erotic', settings.enableErotic ? 'true' : 'false')
       if (settings.enableLlmExtract !== undefined) localStorage.setItem('airead_enable_llm_extract', settings.enableLlmExtract ? 'true' : 'false')
       if (settings.enableNamesDict !== undefined) localStorage.setItem('airead_enable_names_dict', settings.enableNamesDict ? 'true' : 'false')
       if (settings.enableGgCorrections !== undefined) localStorage.setItem('airead_enable_gg_corrections', settings.enableGgCorrections ? 'true' : 'false')
@@ -320,6 +324,10 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
   },
 
   fetchNovelDetails: async (id) => {
+    const current = get().selectedNovel
+    if (current && current.novel && current.novel.id !== id) {
+      set({ selectedNovel: null })
+    }
     try {
       const res = await fetch(`/api/novels/${id}`)
       if (res.ok) {
@@ -573,6 +581,7 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
         end_chapter: endChapter,
         translation_style: translationStyle,
         enable_unblock: enableUnblock,
+        enable_erotic: get().enableErotic !== false,
         enable_llm_extract: get().enableLlmExtract !== false,
         enable_names_dict: get().enableNamesDict !== false,
         enable_gg_corrections: get().enableGgCorrections !== false,
@@ -730,6 +739,20 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
 
   addLog: (log) => set((state) => ({ logs: [...state.logs, log].slice(-500) })),
   setLogs: (logs) => set({ logs }),
-  setProgress: (progress) => set({ progress }),
+  setProgress: (progress) => {
+    set((state) => {
+      let updatedSelectedNovel = state.selectedNovel
+      if (progress && progress.currentChapterNo && state.selectedNovel && (!progress.novelId || state.selectedNovel.novel.id === progress.novelId)) {
+        const chapters = state.selectedNovel.chapters.map((ch: any) => {
+          if (ch.chapter_no === progress.currentChapterNo) {
+            return { ...ch, status: 'COMPLETED' }
+          }
+          return ch
+        })
+        updatedSelectedNovel = { ...state.selectedNovel, chapters }
+      }
+      return { progress, selectedNovel: updatedSelectedNovel }
+    })
+  },
   setPackagedResult: (packagedResult) => set({ packagedResult })
 }))

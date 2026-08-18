@@ -53,7 +53,12 @@ async def get_previous_chapter_context(session, novel_id: int, current_first_cha
                     pass
             if content and content.strip():
                 snippet = content.strip()[-500:]
-                return f"Chương {prev_ch.chapter_no}: \"...{snippet}\""
+                try:
+                    from app.services.unblock.unblock_pipeline import mask_text_with_dictionary
+                    masked_snippet, _, _ = await mask_text_with_dictionary(snippet, flow="contextt")
+                    return f"Chương {prev_ch.chapter_no}: \"...{masked_snippet}\""
+                except Exception:
+                    return f"Chương {prev_ch.chapter_no}: \"...{snippet}\""
     return ""
 
 
@@ -124,9 +129,8 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
                 load_chapter_entities_fast
             )
 
-            ch_entity_ids: set = set()
             chapter_entity_list = []
-            missing_cids = []
+            ch_entity_ids = set()
 
             # 1. Đọc trực tiếp từ file JSON metadata của từng chương (Output/06_Metadata/.../chapters/*.json)
             for cid in chapter_ids:
@@ -138,19 +142,18 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
                     if ch_ents:
                         for e in ch_ents:
                             eid = e.get("id")
+                            cn = e.get("chinese_name")
                             if eid and eid not in ch_entity_ids:
                                 ch_entity_ids.add(eid)
                                 chapter_entity_list.append(e)
-                            elif not eid and e.get("chinese_name"):
+                            elif not eid and cn:
                                 chapter_entity_list.append(e)
-                    else:
-                        missing_cids.append(cid)
 
-            # 2. Chương nào chưa có file JSON cache -> Fallback query DB chính
-            if missing_cids:
+            # 2. Nạp fallback từ DB chính ChapterEntityLink nếu thiếu
+            if not chapter_entity_list:
                 from app.models.schema import ChapterEntityLink
                 stmt_linked = select(NovelEntity).join(ChapterEntityLink).where(
-                    ChapterEntityLink.chapter_id.in_(missing_cids),
+                    ChapterEntityLink.chapter_id.in_(chapter_ids),
                     NovelEntity.entity_type != "CORRECTION"
                 )
                 res_linked = await session.execute(stmt_linked)
@@ -161,15 +164,33 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
                             "id": e.id,
                             "chinese_name": e.chinese_name,
                             "rough_translation": e.rough_translation,
-                            "entity_type": e.entity_type or "NAME"
+                            "entity_type": e.entity_type or "NAME",
+                            "gender": getattr(e, "gender", None),
+                            "role": getattr(e, "role", None)
                         })
 
-            for e in chapter_entity_list:
-                cn = e.get("chinese_name", "")
-                rt = e.get("rough_translation", "")
-                etype = e.get("entity_type") or "NAME"
-                if cn and rt and etype != "CORRECTION":
-                    dict_mapping[cn] = f"{rt} [{etype}]"
+            # 3. Đưa danh sách thực thể vào dict_mapping (Khớp thông minh: exact + substring + rough_translation)
+            from app.services.translation.entity_matcher import build_entity_dict
+            dict_mapping = build_entity_dict(chapter_entity_list, combined_text, corrections=None, include_details=False)
+
+            # 4. Dự phòng: Nếu dict_mapping vẫn trống, nạp từ toàn bộ Novel
+            if not dict_mapping:
+                stmt_all_entities = select(NovelEntity).where(
+                    NovelEntity.novel_id == novel.id,
+                    NovelEntity.entity_type != "CORRECTION"
+                ).order_by(NovelEntity.id.asc())
+                res_all_entities = await session.execute(stmt_all_entities)
+                all_entity_list = [
+                    {
+                        "chinese_name": e.chinese_name,
+                        "rough_translation": e.rough_translation,
+                        "entity_type": e.entity_type or "NAME",
+                        "role": e.role
+                    }
+                    for e in res_all_entities.scalars().all()
+                    if e.chinese_name and e.rough_translation
+                ]
+                dict_mapping = build_entity_dict(all_entity_list, combined_text, corrections=None, include_details=False)
 
     context_profile_prompt = get_context_profile_prompt(novel.context_profile)
     dict_json = json.dumps(dict_mapping, ensure_ascii=False, indent=2)
@@ -182,25 +203,29 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
 ========================================================================================
 """
     
-    system_prompt = f"""Bạn là một dịch giả đại sư chuyên dịch tiểu thuyết Trung - Việt.
-Dịch Hán văn sang tiếng Việt mượt mà, thuần Việt, chuẩn phong cách audiobook.
+    custom_prompt_val = kwargs.get("custom_prompt") or os.environ.get("AIREAD_CUSTOM_PROMPT") or await get_active_setting("AIREAD_CUSTOM_PROMPT") or ""
+    custom_prompt_block = f"\n=== CHỈ DẪN BỔ SUNG CỦA NGƯỜI DÙNG ===\n{custom_prompt_val.strip()}\n" if custom_prompt_val and custom_prompt_val.strip() else ""
+
+    system_prompt = f"""Bạn là một đại sư dịch giả văn học chuyên ngữ Hán - Việt đỉnh cao.
+Nhiệm vụ: Dịch Hán văn sang tiếng Việt mượt mà, thuần Việt 100%, câu văn gãy gọn, giàu nhạc điệu, chuẩn phong cách audiobook / tiểu thuyết xuất bản.
 
 {context_profile_prompt}
 {prev_context_block}
-=== TỪ ĐIỂN THỰC THỂ ===
+=== BẢNG THAM KHẢO THỰC THỂ ĐÃ CHUẨN HÓA (DÙNG ĐÚNG KHI XUẤT HIỆN TRONG VĂN BẢN) ===
 {dict_json}
 
-=== YÊU CẦU ĐẦU RA ===
-- Giữ nguyên cặp thẻ phân chương ở đầu ra: === [BẮT ĐẦU CHƯƠNG X] === và === [KẾT THÚC CHƯƠNG X] ===.
-- Dịch đầy đủ 100% nội dung từng chương đến tận CÂU CUỐI CÙNG, không bỏ câu, không tóm tắt, không ngắt giữa chừng.
-- BẢO TỒN DÒNG KẾT CHƯƠNG: Đảm bảo dịch đầy đủ đoạn kết. Nếu văn bản gốc có dòng "(Hết chương / 本章完)" hoặc ghi chú kết thúc chương, BẮT BUỘC giữ trọn vẹn ở cuối mỗi chương.
-- TỐI ƯU ĐOẠN VĂN: Giữa các đoạn văn chỉ xuống dòng 1 lần (`\n`), không chèn dòng trống thừa (`\n\n`) để tiết kiệm token đầu ra.
+{custom_prompt_block}
+=== MỆNH LỆNH BẮT BUỘC ===
+1. Giữ nguyên cặp thẻ phân chương ở đầu ra: === [BẮT ĐẦU CHƯƠNG X] === và === [KẾT THÚC CHƯƠNG X] ===.
+2. Dịch đầy đủ 100% diễn biến nội dung, không bỏ câu, không tóm tắt, giữ dòng 'Hết chương' ở cuối mỗi chương.
+3. Bản dịch đầu ra là 100% tiếng Việt thuần túy, sạch sẽ, không để sót chữ Hán rơi vãi (trừ các mã thẻ §...§ đã được bọc bảo vệ).
+4. QUY TẮC ĐẠI TỪ 'Y' & CHÍNH TẢ: Khi dùng đại từ dẫn chuyện 'y', BẮT BUỘC có dấu cách (khoảng trắng) rõ ràng ở cả hai phía (' y ', 'y đã', 'nhìn y', 'thấy y'). TUYỆT ĐỐI CẤM viết dính liền chữ sai chính tả ('yđã', 'yđi', 'yvào', 'ngườiy', 'thấyy').
 """
 
     enable_unblock = kwargs.get("enable_unblock", True)
     if enable_unblock:
         from app.services.unblock.unblock_pipeline import mask_text_with_dictionary, get_unblock_prompt_enforcer
-        masked_text, mapping_table, _ = await mask_text_with_dictionary(combined_text)
+        masked_text, mapping_table, _ = await mask_text_with_dictionary(combined_text, flow="rawt")
         enforcer_prompt = "\n" + get_unblock_prompt_enforcer() if mapping_table else ""
     else:
         masked_text = combined_text
@@ -218,79 +243,92 @@ Dịch Hán văn sang tiếng Việt mượt mà, thuần Việt, chuẩn phong 
     unblock_final_reminder = " BẮT BUỘC GIỮ NGUYÊN 100% TẤT CẢ CÁC MÃ PLACEHOLDER §PREFIX_XXXX§ (như §BDY_..., §ACT_..., §SCN_...) XUẤT HIỆN TRONG VĂN BẢN! TUYỆT ĐỐI KHÔNG ĐƯỢC XÓA!" if (enable_unblock and mapping_table) else ""
 
     full_system_instruction = system_prompt + enforcer_prompt
-    user_task_prompt = (
-        f"=== VĂN BẢN CẦN DỊCH ===\n{masked_text}\n\n"
-        f"=== NHẮC LẠI: Dịch đủ 100% các chương, bọc đúng thẻ === [BẮT ĐẦU CHƯƠNG X] === và === [KẾT THÚC CHƯƠNG X] === cho từng chương!{unblock_final_reminder} ==="
-    )
-    
     is_openrouter = (provider == "openrouter") or ("/" in model) or ("qwen" in model.lower()) or ("openrouter" in model.lower())
     print(f"[LLM-TRANSLATOR DEBUG] is_openrouter={is_openrouter}")
 
-    if is_openrouter:
-        url = "https://openrouter.ai/api/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:8000",
-            "X-Title": "AiRead"
-        }
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": full_system_instruction},
-                {"role": "user", "content": user_task_prompt}
-            ],
-            "temperature": 0.4,
-            "max_tokens": 16384
-        }
-        async with httpx.AsyncClient(timeout=600.0) as client:
-            resp = await post_openrouter_with_retry(client, url, headers, payload)
-        if resp.status_code == 200:
-            res_json = resp.json()
-            translated_text = res_json["choices"][0]["message"]["content"].strip()
-        else:
-            raise Exception(f"OpenRouter API Error (HTTP {resp.status_code}): {resp.text}")
+    # === CHỈ TỰ ĐỘNG CHIA ĐÔI KHI LÔ CÓ 1 CHƯƠNG DUY NHẤT VÀ VƯỢT NGƯỠNG AN TOÀN (> 45.000 ký tự) ===
+    # Các chương như Chương 11 (42k), Chương 13 (37k) vẫn đủ 1 request an toàn và KHÔNG BỊ CHIA.
+    # Riêng các chương như Chương 14 (58k), Chương 15 (52k) sẽ tự động chia đôi thành 2 phần cân bằng.
+    def split_text_into_halves(text: str) -> List[str]:
+        mid = len(text) // 2
+        # Tìm vị trí xuống dòng gần điểm chính giữa nhất để cắt đôi văn bản mượt mà
+        split_pos = text.find('\n', mid)
+        if split_pos == -1:
+            split_pos = text.rfind('\n', 0, mid)
+        if split_pos != -1:
+            return [text[:split_pos].strip(), text[split_pos:].strip()]
+        return [text]
+
+    is_single_chapter = (len(chapter_map) <= 1)
+    if is_single_chapter and len(masked_text) > 45000:
+        text_chunks = split_text_into_halves(masked_text)
+    elif not is_single_chapter and len(masked_text) > 35000:
+        err_msg = f"❌ [QUÁ DUNG LƯỢNG LÔ] Lô gồm {len(chapter_map)} chương (Chương {list(chapter_map.values())}) có tổng độ dài ({len(masked_text)} ký tự) vượt quá giới hạn an toàn. Vui lòng giảm Số chương/Lô (Batch Size) xuống 1 chương trong Cài đặt và dịch lại!"
+        print(f"[LLM-TRANSLATOR] {err_msg}")
+        try:
+            from app.api.translation_router import add_system_log
+            add_system_log(err_msg, "error")
+        except Exception:
+            pass
+        raise ValueError(err_msg)
     else:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-        headers = {"Content-Type": "application/json"}
-        safety_settings = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-        ]
-        payload = {
-            "system_instruction": {"parts": [{"text": full_system_instruction}]},
-            "contents": [{"role": "user", "parts": [{"text": user_task_prompt}]}],
-            "generationConfig": {
-                "temperature": 0.4, 
-                "topK": 40, 
-                "topP": 0.95,
-                "maxOutputTokens": 65536
-            },
-            "safetySettings": safety_settings
-        }
+        text_chunks = [masked_text]
 
-        async with httpx.AsyncClient(timeout=600.0) as client:
-            resp = await post_gemini_with_retry(client, url, headers, payload)
+    translated_parts = []
 
-        res_json = resp.json()
-        candidate = res_json.get("candidates", [{}])[0]
-        
-        # Nếu bị chặn bởi Gemini Safety Policy -> Kích hoạt Retry Masking bổ sung
-        if candidate.get("finishReason") in ["SAFETY", "PROHIBITED_CONTENT", "BLOCK"] or not candidate.get("content"):
-            print(f"[LLM-TRANSLATOR] Cảnh báo: Gemini chặn bộ lọc PROHIBITED_CONTENT. Tiến hành che từ nhạy cảm bổ sung và thử lại...")
-            from app.services.unblock.unblock_pipeline import mask_text_with_dictionary
-            re_masked_text, extra_mapping, _ = await mask_text_with_dictionary(masked_text, aggressive=True)
-            
-            retry_user_prompt = (
-                f"=== VĂN BẢN CẦN DỊCH ===\n{re_masked_text}\n\n"
-                f"=== NHẮC LẠI: Dịch đủ 100% các chương, bọc đúng thẻ === [BẮT ĐẦU CHƯƠNG X] === và === [KẾT THÚC CHƯƠNG X] === cho từng chương!{unblock_final_reminder} ==="
-            )
-            
-            retry_payload = {
+    for chunk_idx, chunk_text in enumerate(text_chunks):
+        if len(text_chunks) > 1:
+            cno = list(chapter_map.values())[0] if chapter_map else ""
+            chunk_msg = f"📄 [CHIA ĐÔI CHƯƠNG {cno}] Đang dịch Phần {chunk_idx + 1}/2 ({len(chunk_text)} ký tự)..."
+            print(chunk_msg)
+            try:
+                from app.api.translation_router import add_system_log
+                add_system_log(chunk_msg, "pre")
+            except Exception:
+                pass
+
+        user_task_prompt = (
+            f"=== VĂN BẢN CẦN DỊCH ===\n{chunk_text}\n\n"
+            f"=== NHẮC LẠI: Dịch đủ 100% nội dung đoạn văn trên, câu văn thuần Việt mượt mà!{unblock_final_reminder} ==="
+        )
+
+        if is_openrouter:
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "http://localhost:8000",
+                "X-Title": "AiRead"
+            }
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": full_system_instruction},
+                    {"role": "user", "content": user_task_prompt}
+                ],
+                "temperature": 0.4,
+                "max_tokens": 16384
+            }
+            async with httpx.AsyncClient(timeout=600.0) as client:
+                resp = await post_openrouter_with_retry(client, url, headers, payload)
+            if resp.status_code == 200:
+                res_json = resp.json()
+                translated_parts.append(res_json["choices"][0]["message"]["content"].strip())
+            else:
+                raise Exception(f"OpenRouter API Error (HTTP {resp.status_code}): {resp.text}")
+        else:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+            headers = {"Content-Type": "application/json"}
+            safety_settings = [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"}
+            ]
+            payload = {
                 "system_instruction": {"parts": [{"text": full_system_instruction}]},
-                "contents": [{"role": "user", "parts": [{"text": retry_user_prompt}]}],
+                "contents": [{"role": "user", "parts": [{"text": user_task_prompt}]}],
                 "generationConfig": {
                     "temperature": 0.4, 
                     "topK": 40, 
@@ -299,25 +337,121 @@ Dịch Hán văn sang tiếng Việt mượt mà, thuần Việt, chuẩn phong 
                 },
                 "safetySettings": safety_settings
             }
-            
+
             async with httpx.AsyncClient(timeout=600.0) as client:
-                retry_resp = await post_gemini_with_retry(client, url, headers, retry_payload)
+                resp = await post_gemini_with_retry(client, url, headers, payload)
+
+            res_json = resp.json()
+            candidates = res_json.get("candidates", [])
+            candidate = candidates[0] if candidates else {}
+            prompt_block = res_json.get("promptFeedback", {}).get("blockReason")
+            finish_reason = candidate.get("finishReason")
             
-            retry_json = retry_resp.json()
-            retry_cand = retry_json.get("candidates", [{}])[0]
-            if retry_cand.get("finishReason") not in ["SAFETY", "PROHIBITED_CONTENT", "BLOCK"] and retry_cand.get("content"):
-                candidate = retry_cand
-                mapping_table.update(extra_mapping)
-            else:
-                raise Exception(f"Bị chặn bởi Gemini Safety Policy: {resp.text}")
+            # Nếu bị chặn bởi Gemini Safety Policy -> Xóa cache Trie, dọn sạch system prompt và thử lại
+            if prompt_block or finish_reason in ["SAFETY", "PROHIBITED_CONTENT", "BLOCK", "OTHER"] or not candidate.get("content"):
+                err_cause = prompt_block or finish_reason or "NO_CONTENT"
+                print(f"[LLM-TRANSLATOR] Cảnh báo: Gemini chặn bộ lọc safety ({err_cause}). Tiến hành che từ nhạy cảm bổ sung và tối ưu prompt...")
+                from app.services.unblock.rawt.rawt_pipeline import clear_rawt_trie_cache
+                clear_rawt_trie_cache()
+                from app.services.unblock.unblock_pipeline import mask_text_with_dictionary
+                re_masked_text, extra_mapping, _ = await mask_text_with_dictionary(chunk_text, flow="rawt")
+                
+                # System prompt tối giản sạch sẽ để không bị dính từ nhạy cảm từ ngữ cảnh cũ
+                clean_system_instruction = f"""Bạn là một đại sư dịch giả văn học chuyên ngữ Hán - Việt.
+Nhiệm vụ: Dịch Hán văn sang tiếng Việt mượt mà, thuần Việt 100%, câu văn gãy gọn.
 
-        finish_reason = candidate.get("finishReason")
-        if finish_reason == "MAX_TOKENS":
-            err_max_tok = f"❌ [TRÀN TỐI ĐA TOKEN GEMINI] Lô Chương {list(chapter_map.values())} bị ngắt dở do chạm giới hạn token đầu ra tối đa của Gemini (MAX_TOKENS). Vui lòng giảm số chương/lô (Batch Size) xuống 1 hoặc 2 chương!"
-            print(f"[LLM-TRANSLATOR] {err_max_tok}")
-            raise ValueError(err_max_tok)
+{context_profile_prompt}
 
-        translated_text = candidate["content"]["parts"][0]["text"].strip()
+=== MỆNH LỆNH BẮT BUỘC ===
+1. Giữ nguyên cặp thẻ phân chương: === [BẮT ĐẦU CHƯƠNG X] === và === [KẾT THÚC CHƯƠNG X] ===.
+2. Dịch đầy đủ 100% nội dung, không bỏ câu. Giữ nguyên 100% các mã §PREFIX_XXXX§.
+"""
+                
+                retry_user_prompt = (
+                    f"=== VĂN BẢN CẦN DỊCH ===\n{re_masked_text}\n\n"
+                    f"=== NHẮC LẠI: Dịch đủ 100% nội dung đoạn văn trên, giữ nguyên các mã §PREFIX_XXXX§! ==="
+                )
+                
+                retry_payload = {
+                    "system_instruction": {"parts": [{"text": clean_system_instruction}]},
+                    "contents": [{"role": "user", "parts": [{"text": retry_user_prompt}]}],
+                    "generationConfig": {
+                        "temperature": 0.4, 
+                        "topK": 40, 
+                        "topP": 0.95,
+                        "maxOutputTokens": 65536
+                    },
+                    "safetySettings": safety_settings
+                }
+                
+                async with httpx.AsyncClient(timeout=600.0) as client:
+                    retry_resp = await post_gemini_with_retry(client, url, headers, retry_payload)
+                
+                retry_json = retry_resp.json()
+                retry_cands = retry_json.get("candidates", [])
+                retry_cand = retry_cands[0] if retry_cands else {}
+                retry_prompt_block = retry_json.get("promptFeedback", {}).get("blockReason")
+                retry_finish_reason = retry_cand.get("finishReason")
+                
+                if not retry_prompt_block and retry_finish_reason not in ["SAFETY", "PROHIBITED_CONTENT", "BLOCK", "OTHER"] and retry_cand.get("content"):
+                    candidate = retry_cand
+                    mapping_table.update(extra_mapping)
+                else:
+                    # Fallback chia đôi đoạn văn để giảm mật độ từ khóa và vượt qua bộ lọc
+                    print(f"[LLM-TRANSLATOR] Thử nghiệm chia nhỏ đoạn văn để vượt qua bộ lọc Gemini Safety...")
+                    mid = len(re_masked_text) // 2
+                    split_idx = re_masked_text.rfind("\n", 0, mid + 200)
+                    if split_idx == -1 or split_idx < mid - 500:
+                        split_idx = mid
+                    part1_text = re_masked_text[:split_idx]
+                    part2_text = re_masked_text[split_idx:]
+                    
+                    sub_outs = []
+                    for sub_idx, sub_t in enumerate([part1_text, part2_text]):
+                        sub_payload = {
+                            "system_instruction": {"parts": [{"text": clean_system_instruction}]},
+                            "contents": [{"role": "user", "parts": [{"text": f"=== VĂN BẢN CẦN DỊCH (Phần {sub_idx+1}/2) ===\n{sub_t}\n\n=== Dịch đủ 100% nội dung, giữ nguyên mã §...§ ==="}]}],
+                            "generationConfig": {"temperature": 0.4, "maxOutputTokens": 32768},
+                            "safetySettings": safety_settings
+                        }
+                        async with httpx.AsyncClient(timeout=600.0) as client:
+                            sub_resp = await post_gemini_with_retry(client, url, headers, sub_payload)
+                        sub_j = sub_resp.json()
+                        sub_c = sub_j.get("candidates", [{}])[0]
+                        if sub_c.get("content") and sub_c.get("finishReason") not in ["SAFETY", "PROHIBITED_CONTENT"]:
+                            sub_outs.append(sub_c["content"]["parts"][0]["text"].strip())
+                    
+                    if len(sub_outs) == 2:
+                        candidate = {"content": {"parts": [{"text": "\n\n".join(sub_outs)}]}, "finishReason": "STOP"}
+                        mapping_table.update(extra_mapping)
+                    else:
+                        err_block = retry_prompt_block or retry_finish_reason or "PROHIBITED_CONTENT"
+                        raise Exception(f"Bị chặn bởi Gemini Safety Policy ({err_block}): {retry_resp.text}")
+
+            finish_reason = candidate.get("finishReason")
+            if finish_reason == "MAX_TOKENS":
+                if not is_single_chapter:
+                    err_max_tok = f"❌ [TRÀN TỐI ĐA TOKEN GEMINI] Lô Chương {list(chapter_map.values())} bị ngắt dở do chạm giới hạn token đầu ra tối đa của Gemini (MAX_TOKENS). Vui lòng giảm số chương/lô (Batch Size) xuống 1 chương!"
+                    print(f"[LLM-TRANSLATOR] {err_max_tok}")
+                    raise ValueError(err_max_tok)
+                elif not candidate.get("content"):
+                    err_max_tok = f"❌ [TRÀN TỐI ĐA TOKEN GEMINI] Đoạn văn chương {list(chapter_map.values())} bị ngắt dở do chạm giới hạn token đầu ra."
+                    print(f"[LLM-TRANSLATOR] {err_max_tok}")
+                    raise ValueError(err_max_tok)
+
+            chunk_out = candidate["content"]["parts"][0]["text"].strip() if (candidate.get("content") and candidate["content"].get("parts")) else ""
+            translated_parts.append(chunk_out)
+
+    translated_text = "\n\n".join(translated_parts).strip()
+    
+    # Đảm bảo các thẻ chương bao bọc toàn bộ văn bản nếu bị thiếu
+    for cid, cno in chapter_map.items():
+        start_tag = f"=== [BẮT ĐẦU CHƯƠNG {cno}] ==="
+        end_tag = f"=== [KẾT THÚC CHƯƠNG {cno}] ==="
+        if start_tag not in translated_text:
+            translated_text = f"{start_tag}\n" + translated_text
+        if end_tag not in translated_text:
+            translated_text = translated_text + f"\n{end_tag}"
 
     # === KIỂM TRA & KHÔI PHỤC THẺ PLACEHOLDER ===
     if enable_unblock and mapping_table:

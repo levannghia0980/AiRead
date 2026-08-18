@@ -10,9 +10,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.14.9",
+    "lucide-react": "^0.263.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "lucide-react": "^0.263.0",
     "zustand": "^4.4.1"
   },
   "devDependencies": {

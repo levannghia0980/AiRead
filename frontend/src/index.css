@@ -331,4 +331,33 @@ html.theme-light ::-webkit-scrollbar-thumb:hover,
   color: #9f1239 !important;
 }
 
+/* === HIGHLIGHTS FOR TRANSLATION AUDIT & FIXES === */
+.swept-chinese {
+  color: #38bdf8 !important;
+  text-decoration: underline !important;
+  text-decoration-color: #0284c7 !important;
+  text-underline-offset: 3px !important;
+  font-weight: 500 !important;
+  background-color: rgba(56, 189, 248, 0.08) !important;
+  padding: 0 2px !important;
+  border-radius: 2px !important;
+}
+
+.fixed-sentence {
+  text-decoration: underline !important;
+  text-decoration-color: rgba(16, 185, 129, 0.6) !important;
+  text-underline-offset: 4px !important;
+}
+
+.fixed-word {
+  color: #10b981 !important;
+  font-weight: 700 !important;
+  background-color: rgba(16, 185, 129, 0.15) !important;
+  padding: 1px 4px !important;
+  border-radius: 4px !important;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.2) !important;
+  display: inline-block !important;
+}
+
+
 

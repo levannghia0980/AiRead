@@ -51,11 +51,9 @@ def tag_raw_chinese_text(raw_text: str, profile: str = "xianxia") -> Tuple[str, 
 
 def format_dual_anchor_tags(gt_text: str, tag_mapping: Dict[str, str]) -> str:
     """
-    Sau khi Google Translate dịch xong, ghép thêm Từ Hán Gốc vào trong thẻ:
-    Ví dụ: ⟦T1: Sư huynh⟧ -> ⟦T1: 师兄 | Sư huynh⟧
-           ⟦T4: Tổ⟧ -> ⟦T4: 老祖 | Tổ⟧
-
-    Giúp Gemini thấy được cả TRỰC TIẾP TỪ HÁN GỐC + BẢN DỊCH GT ở cùng 1 chỗ.
+    Sau khi Google Translate dịch xong, giữ nguyên Từ Hán Gốc vào trong thẻ:
+    Ví dụ: ⟦T1: 师兄⟧, ⟦T4: 老祖⟧
+    Giúp Gemini dịch trực tiếp từ Hán gốc theo đúng ngữ cảnh, không bị ảnh hưởng bởi bản dịch thô của Google Translate.
     """
     if not gt_text or not tag_mapping:
         return gt_text or ""
@@ -65,8 +63,6 @@ def format_dual_anchor_tags(gt_text: str, tag_mapping: Dict[str, str]) -> str:
         gt_trans = match.group(2).strip()
         orig_word = tag_mapping.get(tag_id, "")
         if orig_word:
-            if orig_word != gt_trans:
-                return f"⟦{tag_id}: {orig_word} | {gt_trans}⟧"
             return f"⟦{tag_id}: {orig_word}⟧"
         return f"⟦{tag_id}: {gt_trans}⟧"
 
@@ -95,6 +91,12 @@ def clean_remaining_anchor_tags(text: str, tag_mapping: Dict[str, str] = None) -
                 fallback_val = re.sub(r'(?i)\b[Bb]ố\s+già\b', 'Bố', fallback_val)
                 fallback_val = re.sub(r'(?i)\bbạn\s+[Bb]ố(?:\s+già)?\b', 'Bố', fallback_val)
                 return fallback_val
+            if re.search(r'[\u4e00-\u9fff]', sub_content):
+                try:
+                    from app.services.preprocessing.dichhan.hanviet_data import build_hanviet_name
+                    return build_hanviet_name(sub_content)
+                except Exception:
+                    pass
             return sub_content
         return content
 

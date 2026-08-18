@@ -33,6 +33,7 @@ export default function App() {
     endChapter,
     translationStyle,
     enableUnblock,
+    enableErotic,
     enableLlmExtract,
     enableNamesDict,
     enableGgCorrections,
@@ -505,6 +506,7 @@ export default function App() {
                 endChapter={endChapter}
                 translationStyle={translationStyle}
                 enableUnblock={enableUnblock}
+                enableErotic={enableErotic}
                 enableLlmExtract={enableLlmExtract}
                 enableNamesDict={enableNamesDict}
                 enableGgCorrections={enableGgCorrections}
@@ -538,16 +540,7 @@ export default function App() {
         )}
 
         {activeTab === 'audio' && (
-          <AudioStudio
-            novels={novels.map(n => ({
-              id: n.id,
-              title: n.title_rough || n.title_raw || n.title || "Chưa có tên",
-              author: n.author,
-              cover_url: n.cover_url,
-              total_chapters: n.total_chapters || 0,
-              completed_chapters: n.completed_chapters || 0
-            }))}
-          />
+          <AudioStudio />
         )}
       </main>
     </div>
