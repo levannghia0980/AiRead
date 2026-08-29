@@ -20,7 +20,10 @@ STANDARDIZED_OVERRIDES = {
     "楮": "chử", "卫": "vệ", "蒋": "tưởng", "沈": "thẩm", "韩": "hàn", "朱": "chu",
     "秦": "tần", "尤": "vưu", "许": "hứa", "何": "hà", "吕": "lữ", "施": "thi",
     "孔": "khổng", "曹": "tào", "严": "nghiêm", "华": "hoa", "金": "kim", "魏": "ngụy",
-    "陶": "đào", "姜": "khương", "岚": "lam", "妙": "diệu", "颖": "dĩnh", "璃": "ly"
+    "陶": "đào", "姜": "khương", "岚": "lam", "妙": "diệu", "颖": "dĩnh", "璃": "ly",
+    # Chuẩn hóa âm Hán-Việt cho Võ học, Chiêu thức, Trận pháp, Binh khí
+    "圈": "quyển", "拳": "quyền", "掌": "chưởng", "爪": "trảo", "腿": "cước",
+    "指": "chỉ", "阵": "trận", "诀": "quyết", "经": "kinh", "籍": "tịch", "谱": "phổ"
 }
 
 if os.path.exists(DICT_FILE):

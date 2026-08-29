@@ -49,31 +49,87 @@ def ensure_venv_execution():
             print(f"⚠️ Không thể chuyển tự động sang venv: {e}")
 
 import socket
+import re
 
-def get_local_ip():
-    """Lấy địa chỉ IP mạng nội bộ (LAN IP) của máy tính."""
+def get_real_lan_ip():
+    """Lấy địa chỉ IP mạng nội bộ thực tế của máy tính (loại bỏ Cloudflare WARP/VPN/WSL/Virtual adapters)."""
+    # 1. Socket route (nhanh và chính xác nhất theo card mạng đang kết nối Internet/LAN)
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.5)
         s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
+        s_ip = s.getsockname()[0]
         s.close()
-        return ip
+        if not s_ip.startswith("127.") and not s_ip.startswith("172.16."):
+            return s_ip
     except Exception:
-        return "127.0.0.1"
+        pass
+
+    # 2. Thử lấy qua ipconfig (tìm adapter có Default Gateway)
+    try:
+        res = subprocess.run(["ipconfig"], capture_output=True, text=True, timeout=2)
+        lines = res.stdout.splitlines()
+        current_adapter = ""
+        adapter_ips = {}
+        for line in lines:
+            if "adapter" in line.lower() and ":" in line:
+                current_adapter = line.strip().rstrip(":")
+            m_ip = re.search(r"IPv4 Address[.\s]+:\s*([\d.]+)", line)
+            if m_ip and current_adapter:
+                adapter_ips[current_adapter] = m_ip.group(1)
+            if "Default Gateway" in line and current_adapter in adapter_ips:
+                gw = line.split(":")[-1].strip()
+                if gw and not gw.startswith("0.0.0.0"):
+                    cand_ip = adapter_ips[current_adapter]
+                    if not cand_ip.startswith("172.16.") and not cand_ip.startswith("127."):
+                        return cand_ip
+    except Exception:
+        pass
+
+    # 3. Hostname resolution
+    try:
+        hostname = socket.gethostname()
+        host_ip = socket.gethostbyname(hostname)
+        if host_ip and not host_ip.startswith("127.") and not host_ip.startswith("172.16."):
+            return host_ip
+    except Exception:
+        pass
+
+    return "127.0.0.1"
+
+def print_qr_code(url: str):
+    """In mã QR Code ASCII ra terminal để quét bằng camera điện thoại mở web ngay lập tức."""
+    try:
+        import qrcode
+        import io
+        qr = qrcode.QRCode(border=1)
+        qr.add_data(url)
+        qr.make(fit=True)
+        f = io.StringIO()
+        qr.print_ascii(out=f, invert=True)
+        print("📱 QUÉT MÃ QR DƯỚI ĐÂY BẰNG CAMERA ĐIỆN THOẠI ĐỂ TRUY CẬP NGAY:")
+        print(f.getvalue())
+    except Exception:
+        pass
 
 def run_services():
     venv_py = get_venv_python()
-    local_ip = get_local_ip()
+    local_ip = get_real_lan_ip()
+    hostname = socket.gethostname().lower()
     
-    print("=" * 65)
+    phone_ip_url = f"http://{local_ip}:8000"
+    phone_fixed_url = f"http://{hostname}.local:8000"
+    
+    print("=" * 68)
     print("🚀 AIREAD - HỆ THỐNG DỊCH TRUYỆN AI & ĐỌC TRUYỆN SEPIA")
-    print("=" * 65)
+    print("=" * 68)
     print(f"📌 Môi trường Python   : {venv_py}")
-    print(f"🎨 Giao diện chính (Local) : http://localhost:8000")
-    print(f"📱 Giao diện trên Điện thoại: http://{local_ip}:8000")
-    print(f"🌐 Link Tên Miền Tùy Chỉnh : http://nghianeaudio0980.net:8000")
-    print(f"🔹 Backend API (Internal)  : http://localhost:8001")
-    print("=" * 65)
+    print(f"🎨 Mở trên Máy Tính    : http://localhost:8000")
+    print(f"📱 Mở trên Điện Thoại  : {phone_ip_url}")
+    print(f"🔗 Link Cố Định (mDNS) : {phone_fixed_url}  (Không đổi khi IP đổi)")
+    print(f"🌐 Link Tên Miền       : http://nghianeaudio0980.net:8000")
+    print(f"🔹 Backend API         : http://localhost:8001")
+    print("=" * 68)
     print("Đang khởi chạy dịch vụ trên CỔNG 8000...\n")
 
     # Command khởi chạy Backend FastAPI trên cổng 8001 (Nội bộ / Proxied)
@@ -107,9 +163,10 @@ def run_services():
         fe_process = subprocess.Popen(fe_cmd, cwd=FRONTEND_DIR, env=be_env)
 
         print("\n✅ Cả Backend và Frontend đã sẵn sàng!")
-        print(f"💡 Mở trên máy tính  : http://localhost:8000  hoặc  http://nghianeaudio0980.net:8000")
-        print(f"📱 Mở trên Điện thoại: http://{local_ip}:8000")
-        print("Nhấn Ctrl+C hoặc đóng cửa sở terminal để dừng tất cả dịch vụ.\n")
+        print(f"💡 Mở trên máy tính  : http://localhost:8000")
+        print(f"📱 Mở trên Điện thoại: {phone_ip_url}  hoặc  {phone_fixed_url}")
+        print_qr_code(phone_ip_url)
+        print("Nhấn Ctrl+C hoặc đóng cửa sổ terminal để dừng tất cả dịch vụ.\n")
 
         # Tự động mở trình duyệt web
         try:

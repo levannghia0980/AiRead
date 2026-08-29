@@ -24,14 +24,17 @@ import {
   CheckCircle2,
   Sliders,
   Radio,
-  Trash2
+  Trash2,
+  FileText
 } from 'lucide-react'
 
 interface ChapterPlaylistItem {
   chapter_no: number
   title: string
   has_audio: boolean
+  has_json?: boolean
   audio_url: string | null
+  json_url?: string | null
   file_size?: string | null
   size_bytes?: number
 }
@@ -77,14 +80,19 @@ export default function AudioStudio() {
   const [autoNext, setAutoNext] = useState(true)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
-  // Batch Range & Config
-  const [rangeStart, setRangeStart] = useState<number>(1)
-  const [rangeEnd, setRangeEnd] = useState<number>(50)
+  // Batch TTS Range & Config
+  const [ttsRangeStart, setTtsRangeStart] = useState<number>(1)
+  const [ttsRangeEnd, setTtsRangeEnd] = useState<number>(50)
   const [voiceProfile, setVoiceProfile] = useState<string>('default')
   const [parallelWorkers, setParallelWorkers] = useState<number>(() => {
     const saved = localStorage.getItem('tts_parallel_workers')
     return saved ? Number(saved) : 8
   })
+
+  // Export / Download Range & Config
+  const [exportRangeStart, setExportRangeStart] = useState<number>(1)
+  const [exportRangeEnd, setExportRangeEnd] = useState<number>(50)
+  const [exportSpeed, setExportSpeed] = useState<number>(1.0)
 
   // TTS Job Progress & Status
   const [jobStatus, setJobStatus] = useState<any>(null)
@@ -103,16 +111,25 @@ export default function AudioStudio() {
         const items = data.playlist || []
         setPlaylist(items)
         if (items.length > 0) {
-          // Tự động tìm chương nhỏ nhất chưa có Audio để làm mốc "Từ chương"
+          // 1. Khoảng Tạo TTS: Tự động tìm chương nhỏ nhất chưa có Audio
           const firstUnready = items.find((it: ChapterPlaylistItem) => !it.has_audio)
           if (firstUnready) {
-            setRangeStart(firstUnready.chapter_no)
+            setTtsRangeStart(firstUnready.chapter_no)
           } else {
-            setRangeStart(items[0].chapter_no)
+            setTtsRangeStart(items[0].chapter_no)
           }
-          // Mốc "Đến chương" là chương cuối cùng trong danh sách
           const lastCh = items[items.length - 1].chapter_no
-          setRangeEnd(lastCh)
+          setTtsRangeEnd(lastCh)
+
+          // 2. Khoảng Xuất / Tải File: Tự động tìm khoảng các chương ĐÃ CÓ AUDIO
+          const readyItems = items.filter((it: ChapterPlaylistItem) => it.has_audio)
+          if (readyItems.length > 0) {
+            setExportRangeStart(readyItems[0].chapter_no)
+            setExportRangeEnd(readyItems[readyItems.length - 1].chapter_no)
+          } else {
+            setExportRangeStart(items[0].chapter_no)
+            setExportRangeEnd(lastCh)
+          }
         }
       }
     } catch (e) {
@@ -129,12 +146,51 @@ export default function AudioStudio() {
     }
   }, [selectedNovelId, fetchPlaylist])
 
+  const [savedHistory, setSavedHistory] = useState<any>(null)
+
+  // Check saved listening history for current novel
+  useEffect(() => {
+    if (selectedNovelId) {
+      try {
+        const saved = localStorage.getItem(`airead_audio_pos_${selectedNovelId}`)
+        if (saved) {
+          const parsed = JSON.parse(saved)
+          setSavedHistory(parsed)
+        } else {
+          setSavedHistory(null)
+        }
+      } catch {
+        setSavedHistory(null)
+      }
+    }
+  }, [selectedNovelId, currentChapterNo])
+
+  // Auto restore last played chapter from localStorage when novel changes
+  useEffect(() => {
+    if (selectedNovelId && !currentChapterNo) {
+      try {
+        const saved = localStorage.getItem(`airead_audio_pos_${selectedNovelId}`)
+        if (saved) {
+          const parsed = JSON.parse(saved)
+          if (parsed && parsed.chapterNo) {
+            setCurrentChapterNo(parsed.chapterNo)
+            if (parsed.time) setCurrentTime(parsed.time)
+            if (parsed.duration) setDuration(parsed.duration)
+          }
+        }
+      } catch (e) {
+        // Ignore JSON parse errors
+      }
+    }
+  }, [selectedNovelId, currentChapterNo])
+
   const isGeneratingRef = useRef(false)
+  const lastDoneChapterRef = useRef<number>(-1)
   useEffect(() => {
     isGeneratingRef.current = isGenerating
   }, [isGenerating])
 
-  // Pure Event-Driven SSE TTS Progress Listener (Zero Polling Spam)
+  // Pure Event-Driven SSE TTS Progress Listener with Real-time Playlist Updates
   useEffect(() => {
     if (activeView !== 'detail' || !selectedNovelId) return
 
@@ -145,6 +201,12 @@ export default function AudioStudio() {
         if (data.is_running) {
           setJobStatus(data)
           setIsGenerating(true)
+
+          // Cập nhật real-time danh sách chương ngay khi có 1 chương vừa tạo xong
+          if (data.done_chapters !== undefined && data.done_chapters !== lastDoneChapterRef.current) {
+            lastDoneChapterRef.current = data.done_chapters
+            fetchPlaylist(selectedNovelId)
+          }
         } else {
           if (isGeneratingRef.current) {
             setIsGenerating(false)
@@ -237,9 +299,43 @@ export default function AudioStudio() {
   // Audio element events
   const onTimeUpdate = () => {
     if (audioRef.current) {
-      setCurrentTime(audioRef.current.currentTime)
-      setDuration(audioRef.current.duration || 0)
+      const cur = audioRef.current.currentTime
+      const dur = audioRef.current.duration || 0
+      setCurrentTime(cur)
+      setDuration(dur)
+
+      // Lưu tiến độ nghe vào localStorage
+      if (selectedNovelId && currentChapterNo) {
+        try {
+          const chapObj = playlist.find(p => p.chapter_no === currentChapterNo)
+          const chapTitle = chapObj?.title || `Chương ${currentChapterNo}`
+          const historyEntry = {
+            novelId: selectedNovelId,
+            chapterNo: currentChapterNo,
+            chapterTitle: chapTitle,
+            time: cur,
+            duration: dur,
+            percent: dur > 0 ? Math.round((cur / dur) * 100) : 0,
+            updatedAt: Date.now()
+          }
+
+          localStorage.setItem(`airead_audio_pos_${selectedNovelId}`, JSON.stringify(historyEntry))
+          setSavedHistory(historyEntry)
+        } catch (e) {}
+      }
     }
+  }
+
+  // Tiếp tục nghe đoạn dở từ lịch sử
+  const handleResumeHistory = (item: any) => {
+    if (!item || !item.chapterNo) return
+    handlePlayChapter(item.chapterNo)
+    setTimeout(() => {
+      if (audioRef.current && item.time) {
+        audioRef.current.currentTime = item.time
+        setCurrentTime(item.time)
+      }
+    }, 150)
   }
 
   const onEnded = () => {
@@ -314,8 +410,8 @@ export default function AudioStudio() {
   // Start Batch Generation
   const handleStartBatchTTS = async (sChapter?: number, eChapter?: number) => {
     if (!selectedNovelId) return
-    const start = sChapter ?? rangeStart
-    const end = eChapter ?? rangeEnd
+    const start = sChapter ?? ttsRangeStart
+    const end = eChapter ?? ttsRangeEnd
     setIsGenerating(true)
     try {
       const res = await fetch(
@@ -345,14 +441,14 @@ export default function AudioStudio() {
     }
   }
 
-  // Fast Merge with FFmpeg
+  // Fast Merge with FFmpeg (kèm hỗ trợ tùy chọn tốc độ speed)
   const handleFastMerge = async () => {
     if (!selectedNovelId) return
     setIsMerging(true)
     setMergeResult(null)
     try {
       const res = await fetch(
-        `/api/novels/${selectedNovelId}/audio/merge_range?start_chapter=${rangeStart}&end_chapter=${rangeEnd}`,
+        `/api/novels/${selectedNovelId}/audio/merge_range?start_chapter=${exportRangeStart}&end_chapter=${exportRangeEnd}&speed=${exportSpeed}`,
         { method: 'POST' }
       )
       const data = await res.json()
@@ -414,7 +510,15 @@ export default function AudioStudio() {
     }
   }
 
-  const readyCount = useMemo(() => playlist.filter(p => p.has_audio).length, [playlist])
+  const readyItems = useMemo(() => playlist.filter(p => p.has_audio), [playlist])
+  const readyCount = readyItems.length
+  const minReadyCh = readyItems.length > 0 ? readyItems[0].chapter_no : null
+  const maxReadyCh = readyItems.length > 0 ? readyItems[readyItems.length - 1].chapter_no : null
+
+  const selectedRangeReadyCount = useMemo(() => {
+    return playlist.filter(p => p.has_audio && p.chapter_no >= exportRangeStart && p.chapter_no <= exportRangeEnd).length
+  }, [playlist, exportRangeStart, exportRangeEnd])
+
   const currentChapterInfo = playlist.find(p => p.chapter_no === currentChapterNo)
 
   // =========================================================================
@@ -559,6 +663,35 @@ export default function AudioStudio() {
           </button>
         </div>
       </div>
+
+      {/* Quick Resume History Banner (If saved position exists) */}
+      {savedHistory && savedHistory.chapterNo && (!currentChapterNo || currentChapterNo !== savedHistory.chapterNo || !isPlaying) && (
+        <div className="glass-panel px-3 sm:px-4 py-2 rounded-xl flex items-center justify-between bg-gradient-to-r from-cyan-950/40 via-slate-900/60 to-slate-950/60 border border-cyber-accent/40 shadow-sm animate-fade-in flex-wrap gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="w-7 h-7 rounded-lg bg-cyber-accent/15 border border-cyber-accent/30 text-cyber-accent flex items-center justify-center text-xs flex-shrink-0">
+              🎧
+            </span>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-cyber-accent">Đang nghe dở</span>
+                <span className="text-xs font-bold text-slate-100 truncate">Chương {savedHistory.chapterNo}: {savedHistory.chapterTitle}</span>
+              </div>
+              <p className="text-[10px] text-slate-400 font-mono mt-0.5">
+                Vị trí: {formatSeconds(savedHistory.time)} / {formatSeconds(savedHistory.duration || 0)} 
+                {savedHistory.totalParas ? ` • Đoạn ${(savedHistory.paraIdx || 0) + 1}/${savedHistory.totalParas}` : ''}
+                {savedHistory.percent ? ` (${savedHistory.percent}%)` : ''}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => handleResumeHistory(savedHistory)}
+            className="px-3 py-1.5 bg-cyber-accent hover:bg-cyber-accent/80 text-cyber-bg font-bold rounded-lg text-xs flex items-center gap-1.5 shadow-md shadow-cyber-accent/20 transition-all flex-shrink-0 active:scale-95"
+          >
+            <Play className="w-3.5 h-3.5 fill-current" />
+            <span>Tiếp tục nghe</span>
+          </button>
+        </div>
+      )}
 
       {/* Mobile Tab Switcher (Visible only on mobile screens < 1024px) */}
       <div className="flex lg:hidden items-center justify-around bg-slate-950/60 p-1 rounded-xl border border-cyber-border/40 text-xs">
@@ -748,6 +881,17 @@ export default function AudioStudio() {
                                 title={`Tải riêng tệp MP3 Chương ${item.chapter_no} về máy`}
                               >
                                 <Download className="w-3.5 h-3.5" />
+                              </a>
+
+                              {/* DOWNLOAD SINGLE CHAPTER JSON SUBTITLE BUTTON */}
+                              <a
+                                href={`/api/novels/${selectedNovelId}/audio/json/${item.chapter_no}`}
+                                download={`chap_${item.chapter_no}.json`}
+                                onClick={(e) => e.stopPropagation()}
+                                className="p-1.5 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/30 border border-cyan-500/40 text-cyan-400 hover:text-cyan-200 transition-all flex items-center justify-center shadow-sm"
+                                title={`Tải file JSON Subtitle Karaoke Chương ${item.chapter_no}`}
+                              >
+                                <FileText className="w-3.5 h-3.5" />
                               </a>
 
                               {/* DELETE SINGLE CHAPTER AUDIO BUTTON (TO REGENERATE) */}
@@ -988,15 +1132,15 @@ export default function AudioStudio() {
             </div>
           )}
 
-          {/* 3. BATCH GENERATE & FAST MERGE EXPORT */}
+          {/* 3. BATCH TTS GENERATION CARD */}
           <div className={`glass-panel p-4 rounded-2xl border border-cyber-border/40 flex flex-col gap-3 bg-slate-950/50 shadow-md ${
             mobileTab === 'player' ? 'hidden lg:flex' : 'flex'
           }`}>
             <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-              <Layers className="w-4 h-4 text-cyber-purple" /> Tạo Lô & Xuất File Gộp
+              <Zap className="w-4 h-4 text-cyber-accent" /> Tạo Audio TTS Hàng Loạt
             </span>
 
-            {/* Range Selection */}
+            {/* TTS Range Selection */}
             <div className="grid grid-cols-2 gap-2 text-xs">
               <div>
                 <label className="text-[10px] text-slate-400 block mb-1 font-medium">Từ chương:</label>
@@ -1004,8 +1148,8 @@ export default function AudioStudio() {
                   type="number"
                   min={1}
                   max={playlist.length || 1}
-                  value={rangeStart}
-                  onChange={(e) => setRangeStart(Math.max(1, parseInt(e.target.value) || 1))}
+                  value={ttsRangeStart}
+                  onChange={(e) => setTtsRangeStart(Math.max(1, parseInt(e.target.value) || 1))}
                   className="w-full glass-input rounded-xl px-2.5 py-1.5 text-xs"
                 />
               </div>
@@ -1015,8 +1159,8 @@ export default function AudioStudio() {
                   type="number"
                   min={1}
                   max={playlist.length || 1}
-                  value={rangeEnd}
-                  onChange={(e) => setRangeEnd(Math.max(1, parseInt(e.target.value) || 1))}
+                  value={ttsRangeEnd}
+                  onChange={(e) => setTtsRangeEnd(Math.max(1, parseInt(e.target.value) || 1))}
                   className="w-full glass-input rounded-xl px-2.5 py-1.5 text-xs"
                 />
               </div>
@@ -1050,40 +1194,140 @@ export default function AudioStudio() {
                   <option value={8}>8 luồng</option>
                   <option value={12}>12 luồng</option>
                   <option value={16}>16 luồng</option>
+                  <option value={24}>24 luồng</option>
+                  <option value={32}>32 luồng (Siêu tốc)</option>
+                  <option value={48}>48 luồng (Cực đại)</option>
                 </select>
               </div>
             </div>
 
-            {/* Actions */}
-            <div className="flex flex-col gap-2 pt-1">
-              <button
-                onClick={() => handleStartBatchTTS()}
-                disabled={isGenerating}
-                className="w-full py-2.5 rounded-xl bg-cyber-accent/15 hover:bg-cyber-accent text-cyber-accent hover:text-cyber-bg font-bold text-xs border border-cyber-accent/30 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 shadow-sm"
-              >
-                <Zap className="w-3.5 h-3.5" /> Tạo Audio Lô ({rangeStart} → {rangeEnd})
-              </button>
+            {/* Start Batch TTS Action */}
+            <button
+              onClick={() => handleStartBatchTTS()}
+              disabled={isGenerating}
+              className="w-full py-2.5 rounded-xl bg-cyber-accent/15 hover:bg-cyber-accent text-cyber-accent hover:text-cyber-bg font-bold text-xs border border-cyber-accent/30 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 shadow-sm mt-1"
+            >
+              <Zap className="w-3.5 h-3.5" /> Tạo Audio Lô ({ttsRangeStart} → {ttsRangeEnd})
+            </button>
+          </div>
 
+          {/* 4. EXPORT & DOWNLOAD (MP3 & TIMELINE JSON) CARD - TÁCH BIỆT HOÀN TOÀN */}
+          <div className={`glass-panel p-4 rounded-2xl border border-cyber-border/40 flex flex-col gap-3 bg-slate-950/50 shadow-md ${
+            mobileTab === 'player' ? 'hidden lg:flex' : 'flex'
+          }`}>
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                <Layers className="w-4 h-4 text-cyber-purple" /> Xuất & Tải File Gộp (MP3 / JSON)
+              </span>
+              {minReadyCh !== null && maxReadyCh !== null && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportRangeStart(minReadyCh)
+                    setExportRangeEnd(maxReadyCh)
+                  }}
+                  className="text-[10px] px-2 py-0.5 rounded-lg bg-cyber-purple/20 text-cyber-purple hover:bg-cyber-purple/30 font-medium transition-all"
+                  title={`Tự động chọn khoảng chương đã có Audio: ${minReadyCh} → ${maxReadyCh}`}
+                >
+                  🎯 Chọn nhanh {minReadyCh} → {maxReadyCh}
+                </button>
+              )}
+            </div>
+
+            {/* Export Range Selection */}
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div>
+                <label className="text-[10px] text-slate-400 block mb-1 font-medium">Từ chương:</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={playlist.length || 1}
+                  value={exportRangeStart}
+                  onChange={(e) => setExportRangeStart(Math.max(1, parseInt(e.target.value) || 1))}
+                  className="w-full glass-input rounded-xl px-2.5 py-1.5 text-xs"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-slate-400 block mb-1 font-medium">Đến chương:</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={playlist.length || 1}
+                  value={exportRangeEnd}
+                  onChange={(e) => setExportRangeEnd(Math.max(1, parseInt(e.target.value) || 1))}
+                  className="w-full glass-input rounded-xl px-2.5 py-1.5 text-xs"
+                />
+              </div>
+            </div>
+
+            {/* Range Status Info */}
+            <div className="text-[11px] flex items-center justify-between px-1">
+              <span className={selectedRangeReadyCount > 0 ? 'text-emerald-400 font-medium' : 'text-amber-400 font-medium'}>
+                {selectedRangeReadyCount > 0 
+                  ? `✅ Có sẵn ${selectedRangeReadyCount}/${Math.max(1, exportRangeEnd - exportRangeStart + 1)} chương MP3`
+                  : `⚠️ Khoảng ${exportRangeStart} → ${exportRangeEnd} chưa có Audio nào`}
+              </span>
+              <span className="text-[10px] text-slate-400">
+                (Tổng có: {readyCount} ch)
+              </span>
+            </div>
+
+            {/* Export Speed Selector */}
+            <div className="flex items-center justify-between gap-2 p-2 rounded-xl bg-slate-900/60 border border-cyber-border/40 text-xs">
+              <span className="text-[11px] font-bold text-slate-300 flex items-center gap-1">
+                ⚡ Tốc độ xuất:
+              </span>
+              <div className="flex items-center gap-1 flex-wrap justify-end">
+                {[1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0].map((spd) => (
+                  <button
+                    key={spd}
+                    type="button"
+                    onClick={() => setExportSpeed(spd)}
+                    className={`px-2 py-0.5 rounded-lg text-[10px] font-bold transition-all ${
+                      exportSpeed === spd
+                        ? 'bg-cyber-accent text-cyber-bg shadow-sm'
+                        : 'bg-slate-800/80 text-slate-400 hover:text-slate-200 hover:bg-slate-700'
+                    }`}
+                  >
+                    {spd === 1.0 ? '1.0x (Gốc)' : `${spd}x`}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Export Action Buttons */}
+            <div className="grid grid-cols-2 gap-2 pt-1">
               <button
                 onClick={handleFastMerge}
                 disabled={isMerging}
-                className="w-full py-2.5 rounded-xl bg-cyber-purple/15 hover:bg-cyber-purple text-cyber-purple hover:text-white font-bold text-xs border border-cyber-purple/30 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 shadow-sm"
+                className="py-2.5 px-2 rounded-xl bg-cyber-purple/15 hover:bg-cyber-purple text-cyber-purple hover:text-white font-bold text-xs border border-cyber-purple/30 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 shadow-sm truncate"
+                title={`Ghép các file MP3 từ chương ${exportRangeStart} đến ${exportRangeEnd} thành 1 file MP3 gộp (Tốc độ ${exportSpeed}x)`}
               >
                 {isMerging ? (
                   <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                 ) : (
                   <Download className="w-3.5 h-3.5" />
                 )}
-                Ghép & Tải File Gộp (FFmpeg)
+                <span>{isMerging ? 'Đang ghép...' : `Ghép & Tải MP3 (${exportSpeed}x)`}</span>
               </button>
+
+              <a
+                href={`/api/novels/${selectedNovelId}/audio/export_timeline_json?start_chapter=${exportRangeStart}&end_chapter=${exportRangeEnd}&speed=${exportSpeed}`}
+                download={`Timeline_Ch${exportRangeStart}_to_Ch${exportRangeEnd}${exportSpeed !== 1.0 ? `_${exportSpeed}x` : ''}.json`}
+                className="py-2.5 px-2 rounded-xl bg-cyan-500/15 hover:bg-cyan-500 text-cyan-300 hover:text-slate-950 font-bold text-xs border border-cyan-500/30 transition-all flex items-center justify-center gap-1.5 shadow-sm truncate"
+                title={`Xuất file JSON timeline phụ đề karaoke từ chương ${exportRangeStart} đến ${exportRangeEnd} (Tốc độ ${exportSpeed}x)`}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Xuất JSON Chuỗi ({exportSpeed}x)</span>
+              </a>
             </div>
 
             {/* Merge Result Download Banner */}
             {mergeResult && (
-              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center justify-between">
+              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center justify-between mt-1">
                 <div>
                   <p className="font-bold">{mergeResult.message}</p>
-                  <p className="text-[10px] text-slate-400">Dung lượng: {mergeResult.file_size}</p>
+                  <p className="text-[10px] text-slate-400">Dung lượng: {mergeResult.file_size} • Độ dài: {mergeResult.duration || 'N/A'}</p>
                 </div>
                 <a
                   href={mergeResult.download_url}

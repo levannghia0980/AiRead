@@ -186,14 +186,14 @@ def apply_swept_corrections(content: str, corrections_map: Dict[str, Any], chapt
                 if '[FIX]' in clean_fixed and '[/FIX]' in clean_fixed:
                     formatted_fixed = re.sub(
                         r'\[FIX\](.*?)\[/FIX\]',
-                        rf'<span class="fixed-sentence" style="text-decoration: underline; text-decoration-color: #10b981; text-underline-offset: 4px;"><span class="fixed-word" style="color: #10b981; font-weight: bold; background: rgba(16, 185, 129, 0.18); padding: 1px 5px; border-radius: 3px; text-decoration: none;" title="{tooltip_str}">\1</span></span>',
+                        rf'<span class="fixed-sentence" style="text-decoration: underline; text-decoration-color: #f59e0b; text-underline-offset: 4px;"><span class="fixed-word" style="color: #f59e0b; font-weight: bold; background: rgba(245, 158, 11, 0.18); padding: 1px 5px; border-radius: 3px; text-decoration: none;" title="{tooltip_str}">\1</span></span>',
                         clean_fixed
                     )
                 elif corrected_term and corrected_term in clean_fixed:
                     # Tự động bọc corrected_term nếu Gemini quên đóng thẻ [FIX]
                     formatted_fixed = clean_fixed.replace(
                         corrected_term,
-                        f'<span class="fixed-sentence" style="text-decoration: underline; text-decoration-color: #10b981; text-underline-offset: 4px;"><span class="fixed-word" style="color: #10b981; font-weight: bold; background: rgba(16, 185, 129, 0.18); padding: 1px 5px; border-radius: 3px; text-decoration: none;" title="{tooltip_str}">{corrected_term}</span></span>',
+                        f'<span class="fixed-sentence" style="text-decoration: underline; text-decoration-color: #f59e0b; text-underline-offset: 4px;"><span class="fixed-word" style="color: #f59e0b; font-weight: bold; background: rgba(245, 158, 11, 0.18); padding: 1px 5px; border-radius: 3px; text-decoration: none;" title="{tooltip_str}">{corrected_term}</span></span>',
                         1
                     )
                 else:
@@ -236,7 +236,7 @@ def apply_swept_corrections(content: str, corrections_map: Dict[str, Any], chapt
                 # 5. Khử phần mở ngoặc đơn rác đằng sau post_span (VD: " (chà đạp quấy rối)")
                 post_span = re.sub(r'^\s*\([^)]+\)', '', post_span)
                 
-                highlighted_term = f'<span class="fixed-sentence" style="text-decoration: underline; text-decoration-color: #10b981; text-underline-offset: 4px;"><span class="fixed-word" style="color: #10b981; font-weight: bold; background: rgba(16, 185, 129, 0.18); padding: 1px 5px; border-radius: 3px; text-decoration: none;" title="{tooltip_str}">{corr_clean}</span></span>'
+                highlighted_term = f'<span class="fixed-sentence" style="text-decoration: underline; text-decoration-color: #f59e0b; text-underline-offset: 4px;"><span class="fixed-word" style="color: #f59e0b; font-weight: bold; background: rgba(245, 158, 11, 0.18); padding: 1px 5px; border-radius: 3px; text-decoration: none;" title="{tooltip_str}">{corr_clean}</span></span>'
                 
                 lines[line_idx] = (pre_span + " " + highlighted_term + " " + post_span).strip()
                 lines[line_idx] = re.sub(r'[ \t]{2,}', ' ', lines[line_idx])

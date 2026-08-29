@@ -1,6 +1,14 @@
 import os
 import sys
+import asyncio
 import subprocess
+
+# Thiết lập WindowsProactorEventLoopPolicy trên Windows để hỗ trợ Playwright subprocess
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except Exception:
+        pass
 
 # Tự động chuyển đổi I/O stream sang UTF-8 trên Windows để chống lỗi [WinError 233] Pipe & UnicodeEncodeError
 if hasattr(sys.stdout, "reconfigure"):

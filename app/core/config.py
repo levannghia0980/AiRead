@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     TTS_MAX_WORKERS: int = 1  # Số lượng worker TTS (1 luồng duy nhất đảm bảo độ ổn định và tránh rate-limit)
     TTS_RATE: str = "-4%"      # Tốc độ đọc Neural (phát âm rõ chữ, nhẹ nhàng, tự nhiên)
     TTS_PITCH: str = "+0Hz"    # Cao độ mặc định từ mô hình Neural Microsoft
-    TTS_SILENCE_MS: int = 250  # Khoảng nghỉ (milliseconds) ngắt câu giữa các phân đoạn
+    TTS_SILENCE_MS: int = 400  # Khoảng nghỉ (milliseconds) ngắt câu giữa các phân đoạn (tối ưu khi nghe x2, x3)
     TTS_MAX_CHUNK_SIZE: int = 600  # 600 ký tự mỗi chunk theo đúng tính toán tối ưu
     TTS_PACING_SECONDS: float = 0.5  # 0.5s nghỉ giữa các chunk trong cùng 1 ống (worker)
     TTS_PARALLEL_WORKERS: int = 8    # 8 luồng song song mặc định, mỗi luồng giữ 1 proxy riêng biệt

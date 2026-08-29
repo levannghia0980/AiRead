@@ -401,6 +401,9 @@ export default function App() {
     }
   }, [downloadNovel])
 
+  // Mobile Sub-tab State for Translation Tab ('controls' | 'logs')
+  const [mobileTranslateSubTab, setMobileTranslateSubTab] = useState<'controls' | 'logs'>('controls')
+
   return (
     <div className="min-h-[100dvh] md:h-screen flex flex-col overflow-y-auto md:overflow-hidden bg-[#070A13] text-slate-200 font-sans selection:bg-cyber-accent selection:text-white">
       {/* Top Navbar */}
@@ -414,9 +417,12 @@ export default function App() {
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-4 md:px-6 pb-24 md:pb-6 pt-20 overflow-visible md:overflow-hidden min-h-0 flex flex-col">
-        {/* AudioStudio tab removed as requested */}
+        {/* AudioStudio tab */}
+        <div className={`h-full flex-col min-h-0 ${activeTab === 'audio' ? 'flex' : 'hidden'}`}>
+          <AudioStudio />
+        </div>
 
-        {activeTab === 'library' && (
+        <div className={`h-full flex-col min-h-0 ${activeTab === 'library' ? 'flex' : 'hidden'}`}>
           <LibraryTab
             novels={novels}
             selectedNovel={selectedNovel}
@@ -446,9 +452,9 @@ export default function App() {
             handleRestartNovel={handleRestartNovel}
             isRestarting={isRestarting}
           />
-        )}
+        </div>
 
-        {activeTab === 'glossary' && (
+        <div className={`h-full flex-col min-h-0 ${activeTab === 'glossary' ? 'flex' : 'hidden'}`}>
           <GlossaryTab
             glossary={glossary}
             corrections={corrections}
@@ -463,17 +469,57 @@ export default function App() {
             updateCorrection={updateCorrection}
             deleteCorrection={deleteCorrection}
           />
-        )}
+        </div>
 
-        {activeTab === 'translate' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 md:h-full">
+        <div className={`h-full min-h-0 ${activeTab === 'translate' ? 'flex flex-col' : 'hidden'}`}>
+          {/* Mobile Sub-Navigation Switcher (Chỉ hiển thị trên màn hình điện thoại) */}
+          <div className="lg:hidden flex items-center p-1 bg-slate-900/90 rounded-2xl border border-cyber-border/60 mb-3 flex-shrink-0 shadow-lg">
+            <button
+              onClick={() => setMobileTranslateSubTab('controls')}
+              className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                mobileTranslateSubTab === 'controls'
+                  ? 'bg-cyber-accent text-white shadow-lg shadow-cyber-accent/30 font-bold'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <span>⚙️ Bảng Điều Khiển & Cấu Hình</span>
+            </button>
+
+            <button
+              onClick={() => setMobileTranslateSubTab('logs')}
+              className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                mobileTranslateSubTab === 'logs'
+                  ? 'bg-cyber-accent text-white shadow-lg shadow-cyber-accent/30 font-bold'
+                  : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <span>📜 Nhật Ký Dịch (Terminal)</span>
+              {progress?.isRunning && (
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping ml-1" />
+              )}
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 md:h-full flex-1 min-h-0">
             {/* Left Column (2 Cols wide): Terminal Logs */}
-            <div className="lg:col-span-2 flex flex-col md:h-full min-h-[350px] md:min-h-0">
+            <div className={`lg:col-span-2 flex flex-col md:h-full min-h-[350px] md:min-h-0 ${
+              mobileTranslateSubTab === 'logs' ? 'flex' : 'hidden lg:flex'
+            }`}>
               <TerminalLogs logs={logs} setLogs={setLogs} />
             </div>
 
             {/* Right Column (1 Col wide): Crawler, Active Controls, Settings, Glossary Sidebar */}
-            <div className="flex flex-col gap-4 overflow-y-auto pr-1">
+            <div className={`flex flex-col gap-4 overflow-y-auto pr-1 ${
+              mobileTranslateSubTab === 'controls' ? 'flex' : 'hidden lg:flex'
+            }`}>
+              <ActiveJobControls
+                selectedNovel={selectedNovel}
+                progress={progress}
+                startTranslation={startTranslation}
+                pauseTranslation={pauseTranslation}
+                clearJob={clearJob}
+              />
+
               <CrawlerPanel
                 inputUrl={inputUrl}
                 setInputUrl={setInputUrl}
@@ -485,14 +531,6 @@ export default function App() {
                 novels={novels}
                 selectedNovelId={selectedNovel?.novel.id}
                 fetchNovelDetails={fetchNovelDetails}
-              />
-
-              <ActiveJobControls
-                selectedNovel={selectedNovel}
-                progress={progress}
-                startTranslation={startTranslation}
-                pauseTranslation={pauseTranslation}
-                clearJob={clearJob}
               />
 
               <ModelSettingsPanel
@@ -537,11 +575,7 @@ export default function App() {
               />
             </div>
           </div>
-        )}
-
-        {activeTab === 'audio' && (
-          <AudioStudio />
-        )}
+        </div>
       </main>
     </div>
   )

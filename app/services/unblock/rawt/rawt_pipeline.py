@@ -59,6 +59,8 @@ async def mask_rawt_text(text: str, mask_level: str = "word") -> Tuple[str, Dict
 def clear_rawt_trie_cache():
     global _RAW_TRIE
     _RAW_TRIE = None
+    from app.services.unblock.common.dictionary_loader import clear_dictionary_cache
+    clear_dictionary_cache()
 
 def unmask_rawt_text(text: str, mapping_table: Dict[str, Dict[str, str]], highlight: bool = False, enable_erotic: bool = True) -> str:
     return RawtDecoder.decode(text, mapping_table, highlight=highlight, enable_erotic=enable_erotic)

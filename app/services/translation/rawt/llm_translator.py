@@ -55,7 +55,8 @@ async def get_previous_chapter_context(session, novel_id: int, current_first_cha
                 snippet = content.strip()[-500:]
                 try:
                     from app.services.unblock.unblock_pipeline import mask_text_with_dictionary
-                    masked_snippet, _, _ = await mask_text_with_dictionary(snippet, flow="contextt")
+                    flow_type = "rawt" if any('\u4e00' <= c <= '\u9fff' for c in snippet) else "contextt"
+                    masked_snippet, _, _ = await mask_text_with_dictionary(snippet, flow=flow_type)
                     return f"Chương {prev_ch.chapter_no}: \"...{masked_snippet}\""
                 except Exception:
                     return f"Chương {prev_ch.chapter_no}: \"...{snippet}\""
@@ -108,7 +109,8 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
             )
             res_raw = await session.execute(stmt_raw)
             ver_raw = res_raw.scalar_one_or_none()
-            if not ver_raw: continue
+            if not ver_raw:
+                raise ValueError(f"Chương {chap.chapter_no} chưa có bản RAW để dịch. Tạm dừng để cào lại!")
                 
             if ver_raw.content:
                 raw_text = ver_raw.content
@@ -116,7 +118,7 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
                 with open(ver_raw.file_path, "r", encoding="utf-8", errors="ignore") as f:
                     raw_text = f.read()
             else:
-                continue
+                raise ValueError(f"Tệp RAW của Chương {chap.chapter_no} bị rỗng hoặc không tồn tại trên đĩa. Tạm dừng để cào lại!")
                 
             raw_text = sanitize_chinese_raw_text(raw_text)
             combined_text += f"\n=== [BẮT ĐẦU CHƯƠNG {chap.chapter_no}] ===\n{raw_text}\n=== [KẾT THÚC CHƯƠNG {chap.chapter_no}] ===\n"
@@ -173,7 +175,7 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
             from app.services.translation.entity_matcher import build_entity_dict
             dict_mapping = build_entity_dict(chapter_entity_list, combined_text, corrections=None, include_details=False)
 
-            # 4. Dự phòng: Nếu dict_mapping vẫn trống, nạp từ toàn bộ Novel
+            # 4. Dự phòng: Nếu dict_mapping vẫn trống hoàn toàn, nạp từ toàn bộ Novel
             if not dict_mapping:
                 stmt_all_entities = select(NovelEntity).where(
                     NovelEntity.novel_id == novel.id,
@@ -206,8 +208,50 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
     custom_prompt_val = kwargs.get("custom_prompt") or os.environ.get("AIREAD_CUSTOM_PROMPT") or await get_active_setting("AIREAD_CUSTOM_PROMPT") or ""
     custom_prompt_block = f"\n=== CHỈ DẪN BỔ SUNG CỦA NGƯỜI DÙNG ===\n{custom_prompt_val.strip()}\n" if custom_prompt_val and custom_prompt_val.strip() else ""
 
+    chap_nos_list = list(chapter_map.values())
+    chap_count = len(chap_nos_list)
+    chap_list_str = ", ".join([f"Chương {c}" for c in chap_nos_list])
+
     system_prompt = f"""Bạn là một đại sư dịch giả văn học chuyên ngữ Hán - Việt đỉnh cao.
 Nhiệm vụ: Dịch Hán văn sang tiếng Việt mượt mà, thuần Việt 100%, câu văn gãy gọn, giàu nhạc điệu, chuẩn phong cách audiobook / tiểu thuyết xuất bản.
+
+NGUYÊN TẮC DỊCH CỐT LÕI:
+- Thuật ngữ, tên riêng, cảnh giới, xưng hô: PHẢI tuân thủ chính xác các quy tắc cứng trong bảng tham khảo và profile bối cảnh.
+- Câu miêu tả, kể chuyện, hành động, cảm xúc: PHẢI diễn đạt uyển chuyển, mượt mà theo văn phong tiểu thuyết Việt — thoát khỏi kết cấu Hán ngữ cứng nhắc, viết sao cho đọc lên nghe thuận tai tiếng Việt. CẤM dịch sát từng chữ Hán tạo ra câu văn thô cứng, khó hiểu (ví dụ CẤM: 'bản thân cái xác gầy nhỏ' → PHẢI: 'thân hình gầy gò' / 'tấm thân nhỏ bé').
+- Đúng nghĩa gốc 100% + Đọc lên nghe hay bằng tiếng Việt = Bản dịch hoàn hảo.
+
+QUY TẮC DỊCH CHIÊU THỨC, KỸ NĂNG HỆ THỐNG, CẢNH GIỚI & BẢNG THUỘC TÍNH (BẮT BUỘC):
+1. KỸ NĂNG / CHIÊU THỨC / THÂN PHÁP / CÔNG PHÁP / BỊ ĐỘNG (SKILLS & PASSIVES):
+   - PHẢI dịch theo âm Hán-Việt cổ phong hoặc thuật ngữ tu tiên / hệ thống sang trọng, giàu mỹ cảm, uy lực và dễ hiểu.
+   - TUYỆT ĐỐI CẤM dịch nôm na theo nghĩa đen thành ngữ dân gian hoặc từ ngữ giao tiếp đời thường ngô nghê:
+     * CẤM: "kỹ năng một bước lên trời" (一步登天) → PHẢI: "kỹ năng Nhất Bộ Đăng Thiên" / "Đăng Thiên Bộ".
+     * CẤM: "kỹ năng bước bằng lên mây xanh" (平步青云) → PHẢI: "kỹ năng Bình Bộ Thanh Vân" / "Thanh Vân Bộ".
+     * CẤM: "kỹ năng co đất thành tấc" (缩地成寸) → PHẢI: "kỹ năng Súc Địa Thành Thốn".
+     * CẤM: "kỹ năng bước nhẹ trên sóng" (凌波微步) → PHẢI: "kỹ năng Lăng Ba Vi Bộ".
+     * CẤM: "kỹ năng giẫm tuyết không vết" (踏雪无痕) → PHẢI: "kỹ năng Đạp Tuyết Vô Ngấn".
+     * CẤM: "kỹ năng chuyển hình đổi chỗ" (移形换位) → PHẢI: "kỹ năng Di Hình Hoán Vị".
+     * CẤM: "kỹ năng trộm trời đổi ngày" (偷天换日) → PHẢI: "kỹ năng Thâu Thiên Hoán Nhật".
+     * CẤM: "kỹ năng mười bước giết một người" (十步杀一人) → PHẢI: "kỹ năng Thập Bộ Sát Nhất Nhân".
+     * CẤM: "kỹ năng gió cuốn mây tan" (风卷残云) → PHẢI: "kỹ năng Phong Quyển Tàn Vân".
+     * CẤM: "kỹ năng khỏe mạnh / mạnh khỏe" (健壮/强壮) → PHẢI: "kỹ năng Cường Tráng" / "Thể Phách Cường Tráng" / "Khí Huyết Cường Tráng".
+     * CẤM: "chạy trốn nhanh / chạy nhanh" → PHẢI: "Thần Hành" / "Tật Phong Bộ" / "Ngự Phong".
+     * CẤM: "đấm mạnh / đánh mạnh" → PHẢI: "Trọng Quyền" / "Bạo Kích" / "Liệt Quyền".
+     * CẤM: "bị đánh không chết" → PHẢI: "Bất Tử Thân" / "Kim Cương Bất Hoại".
+     * CẤM: "nhìn thấu / nhìn xuyên" → PHẢI: "Động Sát" / "Thấu Thị" / "Chân Thị Chi Nhãn".
+     * CẤM: "hồi máu / hút máu" → PHẢI: "Khí Huyết Hồi Phục" / "Huyết Phệ" / "Thôn Phệ Khí Huyết".
+     * CẤM: "chém gió / lưỡi dao gió" → PHẢI: "Phong Nhận" / "Phong Trảm".
+     * CẤM: "bảo vệ thân thể" → PHẢI: "Hộ Thể Cương Khí" / "Hộ Thể Khí Kình".
+   - Tên kỹ năng viết hoa trang trọng: [Kỹ năng: Thể Phách Cường Tráng (Bị động)], [Thân pháp: Nhất Bộ Đăng Thiên], [Chiêu thức: Lôi Đình Vạn Quân].
+
+2. CẢNH GIỚI, PHẨM GIAI & CẤP ĐỘ (REALMS, RANKS, LEVELS):
+   - Cảnh giới tu luyện: Dịch chuẩn Hán-Việt tu tiên (Luyện Khí, Trúc Cơ, Kim Đan, Nguyên Anh, Hóa Thần, Luyện Hư, Hợp Thể, Đại Thừa, Độ Kiếp... / Tầng 1, Tầng 2, Tầng 3... / Sơ kỳ, Trung kỳ, Hậu kỳ, Đỉnh phong, Viên mãn, Đại viên mãn).
+   - Phẩm giai: Phàm phẩm, Hoàng phẩm, Huyền phẩm, Địa phẩm, Thiên phẩm, Thần phẩm / Nhất phẩm, Nhị phẩm... / Sơ giai, Trung giai, Cao giai.
+   - Thuộc tính & Chỉ số hệ thống: Thể chất, Lực lượng, Nhanh nhẹn (Mẫn tiệp), Trí lực, Tinh thần, Khí huyết, Linh lực, Chân nguyên, Sức bền, Điểm kinh nghiệm, Điểm tiềm năng.
+
+3. THÔNG BÁO HỆ THỐNG / BẢNG TRẠNG THÁI (SYSTEM PROMPTS):
+   - Dịch gọn gàng, dứt khoát, mạch lạc theo chuẩn văn phong truyện hệ thống:
+     * "[Đinh! Chúc mừng ký chủ thức tỉnh kỹ năng bị động: Cường Tráng!]"
+     * "[Nhắc nhở: Độ thuần thục kỹ năng +10, cảnh giới đột phá Luyện Khí tầng ba!]"
 
 {context_profile_prompt}
 {prev_context_block}
@@ -215,15 +259,30 @@ Nhiệm vụ: Dịch Hán văn sang tiếng Việt mượt mà, thuần Việt 1
 {dict_json}
 
 {custom_prompt_block}
-=== MỆNH LỆNH BẮT BUỘC ===
-1. Giữ nguyên cặp thẻ phân chương ở đầu ra: === [BẮT ĐẦU CHƯƠNG X] === và === [KẾT THÚC CHƯƠNG X] ===.
-2. Dịch đầy đủ 100% diễn biến nội dung, không bỏ câu, không tóm tắt, giữ dòng 'Hết chương' ở cuối mỗi chương.
-3. Bản dịch đầu ra là 100% tiếng Việt thuần túy, sạch sẽ, không để sót chữ Hán rơi vãi (trừ các mã thẻ §...§ đã được bọc bảo vệ).
-4. QUY TẮC ĐẠI TỪ 'Y' & CHÍNH TẢ: Khi dùng đại từ dẫn chuyện 'y', BẮT BUỘC có dấu cách (khoảng trắng) rõ ràng ở cả hai phía (' y ', 'y đã', 'nhìn y', 'thấy y'). TUYỆT ĐỐI CẤM viết dính liền chữ sai chính tả ('yđã', 'yđi', 'yvào', 'ngườiy', 'thấyy').
+=== QUY TẮC CẤU TRÚC PHÂN CHƯƠNG BẮT BUỘC ({chap_count} CHƯƠNG: {chap_list_str}) ===
+1. VĂN BẢN ĐẦU VÀO GỒM {chap_count} CHƯƠNG ĐỘC LẬP: {chap_list_str}.
+2. BẮT BUỘC DỊCH ĐẦY ĐỦ LẦN LƯỢT TỪNG CHƯƠNG MỘT THEO ĐÚNG THỨ TỰ TỪ ĐẦU ĐẾN CUỐI ({chap_list_str}).
+3. ĐẦU RA BẮT BUỘC CHO MỖI CHƯƠNG (Phải đóng mở tuần tự từng chương một):
+   === [BẮT ĐẦU CHƯƠNG X] ===
+   (Toàn bộ nội dung dịch đầy đủ của Chương X)
+   (Hết chương)
+   === [KẾT THÚC CHƯƠNG X] ===
+4. TUYỆT ĐỐI CẤM:
+   - CẤM xuất thẻ của chương cuối (như Chương {chap_nos_list[-1]}) ở đầu văn bản.
+   - CẤM xếp chồng các thẻ (như '=== [BẮT ĐẦU CHƯƠNG {chap_nos_list[-1]}] === === [BẮT ĐẦU CHƯƠNG {chap_nos_list[0]}] ===').
+   - CẤM gộp nội dung 2 chương vào làm một. Mỗi chương bắt buộc có cặp thẻ riêng biệt bao quanh chính xác nội dung của chương đó.
+5. Giữ nguyên 100% mã thẻ §PREFIX_XXXX§ nếu có.
+6. Bản dịch đầu ra là 100% tiếng Việt thuần túy, sạch sẽ, không để sót chữ Hán rơi vãi.
+7. QUY TẮC ĐẠI TỪ 'Y' & CHÍNH TẢ: Khi dùng đại từ dẫn chuyện 'y', BẮT BUỘC có dấu cách (khoảng trắng) rõ ràng ở cả hai phía (' y ', 'y đã', 'nhìn y', 'thấy y'). TUYỆT ĐỐI CẤM viết dính liền chữ sai chính tả ('yđã', 'yđi', 'yvào', 'ngườiy', 'thấyy').
+8. ĐỐI SOÁT CHỐNG SAI TỪ / SAI NGHĨA / LẪN LỘN SỐ ĐẾM (BẮT BUỘC): Sau khi dịch mỗi câu, PHẢI tự đối chiếu lại với câu gốc tiếng Trung. CẤM để xảy ra ảo giác lẫn lộn giữa các con số/cảnh giới trong cùng một câu (như câu gốc có cả '十境' (10 cảnh) và '三境' (3 cảnh) thì PHẢI dịch chính xác 'thập cảnh... tam cảnh', TUYỆT ĐỐI CẤM dịch ngáo thành 'tam cảnh... tam cảnh').
+9. NGẮT NGHỈ BẰNG DẤU PHẨY TỰ NHIÊN (TỐI ƯU TTS EDGE): Chủ động thêm dấu phẩy ',' ngắt các vế câu dài, trạng từ/trạng ngữ chỉ thời gian, địa điểm, tâm trạng, và giữa các hành động nối tiếp để câu văn có nhịp thở ngắt nghỉ (~200ms) tự nhiên, giúp giọng đọc AI Edge-TTS đọc mượt mà, truyền cảm, không bị nuốt chữ hay dồn dập.
+10. BỎ DẤU NGOẶC KÉP TRONG CÂU VĂN XUÔI: TUYỆT ĐỐI KHÔNG dùng dấu ngoặc kép "" hoặc “” bao quanh các danh từ, thuật ngữ, tên sự kiện, chiêu thức, kỹ năng, suy nghĩ nằm TRONG câu văn xuôi (viết 'đối phó với Phong Vân Tranh Bá', 'nhận được Hệ thống bị động', 'lý do để đăng xuất', 'kỹ năng Pháp hô hấp'). CHỈ dùng dấu ngoặc kép khi là lời thoại đối thoại trực tiếp độc lập giữa các nhân vật.
 """
 
     enable_unblock = kwargs.get("enable_unblock", True)
     if enable_unblock:
+        from app.services.unblock.rawt.rawt_pipeline import clear_rawt_trie_cache
+        clear_rawt_trie_cache()
         from app.services.unblock.unblock_pipeline import mask_text_with_dictionary, get_unblock_prompt_enforcer
         masked_text, mapping_table, _ = await mask_text_with_dictionary(combined_text, flow="rawt")
         enforcer_prompt = "\n" + get_unblock_prompt_enforcer() if mapping_table else ""
@@ -246,9 +305,9 @@ Nhiệm vụ: Dịch Hán văn sang tiếng Việt mượt mà, thuần Việt 1
     is_openrouter = (provider == "openrouter") or ("/" in model) or ("qwen" in model.lower()) or ("openrouter" in model.lower())
     print(f"[LLM-TRANSLATOR DEBUG] is_openrouter={is_openrouter}")
 
-    # === CHỈ TỰ ĐỘNG CHIA ĐÔI KHI LÔ CÓ 1 CHƯƠNG DUY NHẤT VÀ VƯỢT NGƯỠNG AN TOÀN (> 45.000 ký tự) ===
-    # Các chương như Chương 11 (42k), Chương 13 (37k) vẫn đủ 1 request an toàn và KHÔNG BỊ CHIA.
-    # Riêng các chương như Chương 14 (58k), Chương 15 (52k) sẽ tự động chia đôi thành 2 phần cân bằng.
+    # === CHỈ TỰ ĐỘNG CHIA ĐÔI KHI LÔ CÓ 1 CHƯƠNG DUY NHẤT VÀ VƯỢT NGƯỠNG AN TOÀN (> 52.000 ký tự) ===
+    # Các chương dài < 52k ký tự vẫn đủ 1 request an toàn và KHÔNG BỊ CHIA.
+    # Riêng các chương cực dài > 52k ký tự sẽ tự động chia đôi thành 2 phần cân bằng.
     def split_text_into_halves(text: str) -> List[str]:
         mid = len(text) // 2
         # Tìm vị trí xuống dòng gần điểm chính giữa nhất để cắt đôi văn bản mượt mà
@@ -260,17 +319,8 @@ Nhiệm vụ: Dịch Hán văn sang tiếng Việt mượt mà, thuần Việt 1
         return [text]
 
     is_single_chapter = (len(chapter_map) <= 1)
-    if is_single_chapter and len(masked_text) > 45000:
+    if is_single_chapter and len(masked_text) > 52000:
         text_chunks = split_text_into_halves(masked_text)
-    elif not is_single_chapter and len(masked_text) > 35000:
-        err_msg = f"❌ [QUÁ DUNG LƯỢNG LÔ] Lô gồm {len(chapter_map)} chương (Chương {list(chapter_map.values())}) có tổng độ dài ({len(masked_text)} ký tự) vượt quá giới hạn an toàn. Vui lòng giảm Số chương/Lô (Batch Size) xuống 1 chương trong Cài đặt và dịch lại!"
-        print(f"[LLM-TRANSLATOR] {err_msg}")
-        try:
-            from app.api.translation_router import add_system_log
-            add_system_log(err_msg, "error")
-        except Exception:
-            pass
-        raise ValueError(err_msg)
     else:
         text_chunks = [masked_text]
 
@@ -288,8 +338,12 @@ Nhiệm vụ: Dịch Hán văn sang tiếng Việt mượt mà, thuần Việt 1
                 pass
 
         user_task_prompt = (
-            f"=== VĂN BẢN CẦN DỊCH ===\n{chunk_text}\n\n"
-            f"=== NHẮC LẠI: Dịch đủ 100% nội dung đoạn văn trên, câu văn thuần Việt mượt mà!{unblock_final_reminder} ==="
+            f"<van_ban_goc_tieng_trung>\n{chunk_text}\n</van_ban_goc_tieng_trung>\n\n"
+            f"LỆNH THỰC THI: Hãy dịch đầy đủ 100% toàn bộ {chap_count} chương ({chap_list_str}) ở trên từ tiếng Trung sang tiếng Việt. "
+            f"BẮT BUỘC dịch tuần tự từng chương một, bọc nội dung dịch của từng chương riêng biệt trong đúng cặp thẻ "
+            f"=== [BẮT ĐẦU CHƯƠNG X] === và === [KẾT THÚC CHƯƠNG X] === theo đúng số chương tương ứng. "
+            f"YÊU CẦU ĐỐI SOÁT: Dịch câu nào phải đối chiếu kỹ lại câu đó với văn bản gốc, tuyệt đối không dịch sai từ, không sai nghĩa, không lẫn lộn giữa các con số/cảnh giới trong cùng một câu! "
+            f"TUYỆT ĐỐI không tóm tắt, không bỏ sót chương nào!{unblock_final_reminder}"
         )
 
         if is_openrouter:
@@ -356,15 +410,13 @@ Nhiệm vụ: Dịch Hán văn sang tiếng Việt mượt mà, thuần Việt 1
                 from app.services.unblock.unblock_pipeline import mask_text_with_dictionary
                 re_masked_text, extra_mapping, _ = await mask_text_with_dictionary(chunk_text, flow="rawt")
                 
-                # System prompt tối giản sạch sẽ để không bị dính từ nhạy cảm từ ngữ cảnh cũ
-                clean_system_instruction = f"""Bạn là một đại sư dịch giả văn học chuyên ngữ Hán - Việt.
-Nhiệm vụ: Dịch Hán văn sang tiếng Việt mượt mà, thuần Việt 100%, câu văn gãy gọn.
-
-{context_profile_prompt}
+                # System prompt tối giản tuyệt đối, thuần túy dịch thuật, không chứa bất kỳ từ khóa cấm nào
+                clean_system_instruction = """Bạn là một đại sư dịch giả văn học chuyên ngữ Hán - Việt.
+Nhiệm vụ: Dịch Hán văn sang tiếng Việt mượt mà, thuần Việt 100%, câu văn gãy gọn, chuẩn văn học.
 
 === MỆNH LỆNH BẮT BUỘC ===
 1. Giữ nguyên cặp thẻ phân chương: === [BẮT ĐẦU CHƯƠNG X] === và === [KẾT THÚC CHƯƠNG X] ===.
-2. Dịch đầy đủ 100% nội dung, không bỏ câu. Giữ nguyên 100% các mã §PREFIX_XXXX§.
+2. Dịch đầy đủ 100% nội dung, không bỏ câu, không cắt xén. Giữ nguyên 100% các mã §PREFIX_XXXX§.
 """
                 
                 retry_user_prompt = (
@@ -400,14 +452,22 @@ Nhiệm vụ: Dịch Hán văn sang tiếng Việt mượt mà, thuần Việt 1
                     # Fallback chia đôi đoạn văn để giảm mật độ từ khóa và vượt qua bộ lọc
                     print(f"[LLM-TRANSLATOR] Thử nghiệm chia nhỏ đoạn văn để vượt qua bộ lọc Gemini Safety...")
                     mid = len(re_masked_text) // 2
-                    split_idx = re_masked_text.rfind("\n", 0, mid + 200)
-                    if split_idx == -1 or split_idx < mid - 500:
+                    split_idx = re_masked_text.find("\n\n", mid)
+                    if split_idx == -1:
+                        split_idx = re_masked_text.rfind("\n\n", 0, mid)
+                    if split_idx == -1:
+                        split_idx = re_masked_text.find("\n", mid)
+                    if split_idx == -1:
+                        split_idx = re_masked_text.rfind("\n", 0, mid)
+                    if split_idx == -1:
                         split_idx = mid
-                    part1_text = re_masked_text[:split_idx]
-                    part2_text = re_masked_text[split_idx:]
+                    part1_text = re_masked_text[:split_idx].strip()
+                    part2_text = re_masked_text[split_idx:].strip()
                     
                     sub_outs = []
+                    sub_err_info = ""
                     for sub_idx, sub_t in enumerate([part1_text, part2_text]):
+                        if not sub_t: continue
                         sub_payload = {
                             "system_instruction": {"parts": [{"text": clean_system_instruction}]},
                             "contents": [{"role": "user", "parts": [{"text": f"=== VĂN BẢN CẦN DỊCH (Phần {sub_idx+1}/2) ===\n{sub_t}\n\n=== Dịch đủ 100% nội dung, giữ nguyên mã §...§ ==="}]}],
@@ -417,15 +477,24 @@ Nhiệm vụ: Dịch Hán văn sang tiếng Việt mượt mà, thuần Việt 1
                         async with httpx.AsyncClient(timeout=600.0) as client:
                             sub_resp = await post_gemini_with_retry(client, url, headers, sub_payload)
                         sub_j = sub_resp.json()
-                        sub_c = sub_j.get("candidates", [{}])[0]
-                        if sub_c.get("content") and sub_c.get("finishReason") not in ["SAFETY", "PROHIBITED_CONTENT"]:
-                            sub_outs.append(sub_c["content"]["parts"][0]["text"].strip())
+                        sub_cands = sub_j.get("candidates", [])
+                        sub_c = sub_cands[0] if sub_cands else {}
+                        sub_pb = sub_j.get("promptFeedback", {}).get("blockReason")
+                        sub_fr = sub_c.get("finishReason")
+                        print(f"[LLM-TRANSLATOR DEBUG] Sub Part {sub_idx+1}: finishReason={sub_fr}, promptBlock={sub_pb}, hasContent={bool(sub_c.get('content'))}")
+                        if not sub_pb and sub_c.get("content") and sub_fr not in ["SAFETY", "PROHIBITED_CONTENT", "BLOCK", "OTHER"]:
+                            sub_text = sub_c["content"]["parts"][0]["text"].strip() if sub_c["content"].get("parts") else ""
+                            if sub_text:
+                                sub_outs.append(sub_text)
+                        else:
+                            sub_err_info = sub_pb or sub_fr or "BLOCK"
+                            print(f"[LLM-TRANSLATOR DEBUG] Sub Part {sub_idx+1} Error response: {sub_j}")
                     
                     if len(sub_outs) == 2:
                         candidate = {"content": {"parts": [{"text": "\n\n".join(sub_outs)}]}, "finishReason": "STOP"}
                         mapping_table.update(extra_mapping)
                     else:
-                        err_block = retry_prompt_block or retry_finish_reason or "PROHIBITED_CONTENT"
+                        err_block = sub_err_info or retry_prompt_block or retry_finish_reason or "PROHIBITED_CONTENT"
                         raise Exception(f"Bị chặn bởi Gemini Safety Policy ({err_block}): {retry_resp.text}")
 
             finish_reason = candidate.get("finishReason")

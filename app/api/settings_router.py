@@ -257,3 +257,59 @@ async def test_api_connection(payload: TestConnectionPayload):
                 "status": "failed",
                 "message": f"Lỗi trong quá trình kết nối thử nghiệm: {str(e)}"
             }
+
+@router.get("/network-info")
+async def get_network_info():
+    """Lấy thông tin mạng nội bộ thực tế để kết nối từ điện thoại."""
+    import socket
+    import subprocess
+    import re
+
+    hostname = socket.gethostname()
+    primary_ip = "127.0.0.1"
+    adapters = []
+
+    # 1. Lấy IP qua socket route (nhanh, chuẩn xác nhất theo định tuyến OS)
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.5)
+        s.connect(("8.8.8.8", 80))
+        primary_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        pass
+
+    # 2. Duyệt qua danh sách adapter để tìm tất cả IP cục bộ
+    try:
+        res = subprocess.run(["ipconfig"], capture_output=True, text=True, timeout=2)
+        lines = res.stdout.splitlines()
+        curr_adapter = ""
+        for line in lines:
+            if ("adapter" in line.lower() or "interface" in line.lower()) and ":" in line:
+                curr_adapter = line.strip().rstrip(":")
+            m_ip = re.search(r"IPv4 Address[.\s]+:\s*([\d.]+)", line)
+            if m_ip:
+                ip_val = m_ip.group(1).strip()
+                if ip_val and not ip_val.startswith("127."):
+                    name_clean = curr_adapter.replace("adapter", "").replace("Ethernet", "").strip() or "LAN/Wi-Fi"
+                    adapters.append({"name": name_clean, "ip": ip_val})
+    except Exception:
+        pass
+
+    if not adapters and primary_ip != "127.0.0.1":
+        adapters.append({"name": "Mạng LAN chính", "ip": primary_ip})
+
+    if primary_ip == "127.0.0.1" and adapters:
+        primary_ip = adapters[0]["ip"]
+
+    return {
+        "status": "success",
+        "lan_ip": primary_ip,
+        "adapters": adapters,
+        "hostname": hostname,
+        "port": 8000,
+        "ip_url": f"http://{primary_ip}:8000",
+        "hostname_url": f"http://{hostname.lower()}.local:8000",
+        "direct_host_url": f"http://{hostname.lower()}:8000",
+        "domain_url": "http://nghianeaudio0980.net:8000"
+    }

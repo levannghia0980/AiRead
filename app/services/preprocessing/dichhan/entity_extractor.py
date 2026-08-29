@@ -4,6 +4,7 @@ from sqlalchemy import select
 from app.core.database import AsyncSessionLocal
 from app.models.schema import NamesDictionary, NovelEntity
 from app.services.preprocessing.dichhan.common_lists import CHINESE_SURNAMES, TITLE_SUFFIXES, TITLE_PREFIXES, ENTITY_COMPOUND_SUFFIXES
+from app.services.preprocessing.dichhan.realm_detector import detect_realms
 from app.services.unblock.unblock_pipeline import is_exact_sensitive_word
 
 # Các ký tự tiếng Trung thông dụng không dùng làm tên riêng
@@ -133,19 +134,46 @@ async def extract_ner_branch(novel_id: int, raw_text: str) -> List[dict]:
                         "char_end": match.end()
                     })
 
-        # e. Quét Compound Entities (Địa danh, Tông môn, Vật phẩm, Chiêu thức)
+        # e. Quét thực thể trong dấu ngoặc kép / sách / bảo vật / bí tịch / chiêu thức (《...》, 「...」, 『...』, 【...】)
+        for quote_match in re.finditer(r"[《「『【〖]([\u4e00-\u9fff]{2,10})[》」』】〗]", line):
+            m = quote_match.group(1).strip()
+            if is_valid_chinese_term(m) and m not in found_terms:
+                found_terms[m] = [{
+                    "line_index": line_idx,
+                    "char_start": quote_match.start(1),
+                    "char_end": quote_match.end(1)
+                }]
+
+        # f. Quét Compound Entities (Địa danh, Tông môn, Vật phẩm, Võ công, Chiêu thức)
         for etype_compound, suffixes_compound in ENTITY_COMPOUND_SUFFIXES.items():
             for suffix_c in suffixes_compound:
-                for match in re.finditer(rf"[\u4e00-\u9fff]{{2,5}}{re.escape(suffix_c)}", line):
+                for match in re.finditer(rf"[\u4e00-\u9fff]{{2,7}}{re.escape(suffix_c)}", line):
                     m = match.group()
                     if is_valid_chinese_term(m) and m not in found_terms and m not in db_examples_map:
                         if not any(c in CHINESE_STOP_CHARS for c in m[:2]):
-                            found_terms[m] = []
-                            found_terms[m].append({
+                            found_terms[m] = [{
                                 "line_index": line_idx,
                                 "char_start": match.start(),
                                 "char_end": match.end()
-                            })
+                            }]
+
+        # g. Quét cảnh giới tu luyện (Cultivation Realm Detection)
+        #    Phát hiện các cụm cảnh giới (炼灵三境, 筑基后期, 炼气九重...) và dịch Hán-Việt tự động
+        realm_results = detect_realms(line)
+        for realm in realm_results:
+            realm_han = realm["han"]
+            if realm_han not in found_terms and realm_han not in db_examples_map:
+                # Tìm vị trí trong line
+                for rm in re.finditer(re.escape(realm_han), line):
+                    if realm_han not in found_terms:
+                        found_terms[realm_han] = []
+                    found_terms[realm_han].append({
+                        "line_index": line_idx,
+                        "char_start": rm.start(),
+                        "char_end": rm.end()
+                    })
+                # Lưu bản dịch Hán-Việt vào db_examples_map để tự động có db_example
+                db_examples_map[realm_han] = (realm["viet"], "REALM")
 
     ner_results = []
     for term, positions in found_terms.items():
@@ -161,22 +189,23 @@ async def extract_ner_branch(novel_id: int, raw_text: str) -> List[dict]:
         type_mapping = {
             "PERSON": "NAME",
             "LOCATION": "PLACE",
-            "SECT_SKILL": "SECT",
-            "ORGANIZATION": "SECT"
+            "SECT_SKILL": "SKILL",
+            "ORGANIZATION": "SECT",
+            "REALM": "REALM"
         }
         ent_type = type_mapping.get(raw_type, raw_type)
         
         if not db_info:
             if any(s in term for s in TITLE_SUFFIXES) or any(s in term for s in ["哥", "姐", "弟", "妹", "伯", "叔", "爷", "奶"]):
                 ent_type = "NAME"
-            elif any(s in term for s in ["集团", "公司", "宗", "门", "派", "帮", "教", "盟", "会", "庄", "院"]):
-                ent_type = "SECT"
-            elif any(s in term for s in ["市", "城", "山", "谷", "峰", "海", "域", "界", "洲", "省", "县", "关", "岛", "村", "河", "江", "潭", "原"]):
-                ent_type = "PLACE"
-            elif any(s in term for s in ["制药", "重工", "电子", "剑", "珠", "镜", "丹", "符", "鼎", "瓶", "铠", "轮", "刀", "枪", "戟", "弓", "扇", "琴", "甲", "宝", "石", "令", "图"]):
-                ent_type = "ITEM"
-            elif any(s in term for s in ["掌", "拳", "指", "剑法", "功", "诀", "经", "术", "阵", "法", "印", "吟", "步", "体", "腿", "爪", "身法", "斩"]):
+            elif any(s in term for s in ["掌", "拳", "指", "功", "诀", "经", "术", "阵", "圈", "法", "印", "吟", "步", "体", "腿", "爪", "斩", "剑法", "刀法", "指法", "枪法", "棍法", "身法", "心法", "神功", "大法", "真经", "宝典", "秘籍", "图录", "剑谱", "绝技", "神通", "剑气", "剑意"]):
                 ent_type = "SKILL"
+            elif any(s in term for s in ["集团", "公司", "宗", "门", "派", "帮", "教", "盟", "会", "庄", "院", "世家", "镖局", "神教"]):
+                ent_type = "SECT"
+            elif any(s in term for s in ["市", "城", "山", "谷", "峰", "海", "域", "界", "洲", "省", "县", "关", "岛", "村", "河", "江", "潭", "原", "窟", "寨", "堡", "山庄", "崖"]):
+                ent_type = "PLACE"
+            elif any(s in term for s in ["制药", "重工", "电子", "剑", "珠", "镜", "丹", "符", "鼎", "瓶", "铠", "轮", "刀", "枪", "戟", "弓", "扇", "琴", "甲", "宝", "石", "令", "图", "环", "膏", "丸", "散", "棒", "杖", "鞭", "索", "尺", "幡", "佩", "玉"]):
+                ent_type = "ITEM"
             else:
                 ent_type = "OTHER"
 

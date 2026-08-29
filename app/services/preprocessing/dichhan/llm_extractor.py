@@ -56,19 +56,20 @@ Văn bản tiếng Trung:
 Quy tắc phân loại (entity_type):
 - 'PERSON': Tên nhân vật (ví dụ: "莫雅依", "周佐", "苏浅浅", "刘震", "萧七修").
 - 'LOCATION': Địa danh, sông, núi, thành trì (ví dụ: "青云宗" nếu là địa điểm, "天玄山", "灵法阁").
-- 'SECT_SKILL': Tông môn, bang phái, pháp bảo, tên võ công chiêu thức (ví dụ: "青云宗" nếu là môn phái, "天玄剑诀", "紫光雷翼").
+- 'SECT_SKILL': Tông môn, bang phái, võ công, chiêu thức, bí tịch, kiếm pháp, chưởng pháp, quyền pháp, trận pháp, pháp bảo (ví dụ: "金刚伏魔圈", "降龙十八掌", "太极拳", "独孤九剑", "天玄剑诀", "紫光雷翼").
 - 'OTHER': Các thuật ngữ danh từ riêng đặc thù khác.
 
 QUY TẮC ĐỐI CHIẾU ÂM HÁN-VIỆT CHUẨN XÁC TỪNG CHỮ (BẮT BUỘC):
 - Dịch chuẩn âm Hán-Việt từng chữ vào cột 'rough_translation'.
 - Phân biệt chính xác: 佐 = 'Tá' (Chu Tá), 修 = 'Tu' (Thất Tu), 事 = 'Sự' (Linh Sự Các), 浅 = 'Thiển' (Tô Thiển Thiển), 阁 = 'Các' (Linh Pháp Các), 震 = 'Chấn' (Lưu Chấn).
+- Võ công & Trận pháp: 圈/阵 = 'Trận/Quyển' (金刚伏魔圈 = 'Kim Cương Phục Ma Trận / Kim Cương Phục Ma Quyển', CẤM: 'Khuyên'), 拳 = 'Quyền' (CẤM: 'đấm'), 掌 = 'Chưởng', 指 = 'Chỉ', 爪 = 'Trảo', 腿 = 'Cước'.
 - TUYỆT ĐỐI NGHIÊM CẤM trả về tên dính chữ Hán lai tạp (CẤM 'Tô T浅浅', CẤM 'Linh Pháp C阁', CẤM 'L岚'). Cột rough_translation phải là 100% chữ tiếng Việt có dấu.
 
 Yêu cầu trả về kết quả định dạng JSON Array chứa các object có cấu trúc như ví dụ sau:
 [
   {{"chinese_name": "莫雅依", "rough_translation": "Mạc Nhã Y", "entity_type": "PERSON"}},
   {{"chinese_name": "周佐", "rough_translation": "Chu Tá", "entity_type": "PERSON"}},
-  {{"chinese_name": "苏浅浅", "rough_translation": "Tô Thiển Thiển", "entity_type": "PERSON"}},
+  {{"chinese_name": "金刚伏魔圈", "rough_translation": "Kim Cương Phục Ma Trận", "entity_type": "SECT_SKILL"}},
   {{"chinese_name": "青云宗", "rough_translation": "Thanh Vân Tông", "entity_type": "SECT_SKILL"}}
 ]
 CHỈ trả về JSON Array, không kèm giải thích.
@@ -185,6 +186,10 @@ async def process_2branch_evidence_via_llm(evidence_data: Dict[str, Any]) -> Dic
 Bạn là chuyên gia dịch thuật và chuẩn hóa tên nhân vật, chiêu thức, tên kiếm, bảo vật, địa danh trong tiểu thuyết Trung - Việt.
 
 {instruction}
+
+⚠️ NGUYÊN TẮC HÀNG ĐẦU KHI XỬ LÝ DỮ LIỆU GỢI Ý:
+- Tuyệt đối KHÔNG cố dựa vào các ví dụ nhỏ bên cạnh của Hán/Google Dịch nếu thấy ngô nghê/tối nghĩa.
+- BẮT BUỘC dịch thật hay, đặt tên bóng bẩy, chuẩn phong vị tiên hiệp/kiếm hiệp cho chiêu thức võ công, pháp bảo, dược liệu hoặc dịch thuần Việt dễ hiểu.
 
 === TỪ ĐIỂN THỰC THỂ ĐÃ TỒN TẠI TỪ CÁC CHƯƠNG TRƯỚC ===
 Giữ nguyên bản dịch vietnamese_name và entity_type nếu từ Hán đã có trong từ điển:

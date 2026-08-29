@@ -124,7 +124,7 @@ async def get_novel_detail(novel_id: int = Path(...)) -> Dict[str, Any]:
                     pass
 
             if text_to_check:
-                if 'fallback-word' in text_to_check:
+                if 'fallback-word' in text_to_check or 'fixed-word' in text_to_check or 'fixed-sentence' in text_to_check:
                     fallback_map[ch_id] = True
                 if 'swept-error' in text_to_check or 'swept-chinese' in text_to_check:
                     swept_error_map[ch_id] = True

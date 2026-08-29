@@ -17,6 +17,12 @@ export const useSSE = () => {
           store.addLog(data)
         } else if (eventType === 'progress') {
           store.setProgress(data)
+        } else if (eventType === 'chapter_updated' || eventType === 'batch_done') {
+          store.fetchNovels()
+          const currentSelected = store.selectedNovel
+          if (currentSelected?.novel?.id) {
+            store.fetchNovelDetails(currentSelected.novel.id)
+          }
         } else if (eventType === 'packaged') {
           store.setPackagedResult(data)
           store.fetchNovels()

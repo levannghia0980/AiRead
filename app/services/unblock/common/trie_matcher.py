@@ -16,12 +16,12 @@ SAFE_COMPOUNDS: Set[str] = {
     # ==================== Nhóm 奸 (gian / xảo quyệt) ====================
     "奸细", "奸商", "奸雄", "奸诈", "奸贼", "汉奸", "奸佞", "抓奸", "捉奸",
     # ==================== Nhóm 骚 (quấy rối / náo loạn) ====================
-    "骚动", "骚乱", "骚扰", "风骚", "离骚", "骚客",
+    "骚动", "骚乱", "骚扰", "离骚", "骚客",
     # ==================== Nhóm 骨 (xương) ====================
     "骨髓", "深入骨髓", "透骨", "脱胎换骨", "骨肉", "骨气", "骨头", "白骨",
     "露骨", "刻骨铭心",
     # ==================== Nhóm 瘫 (tê liệt) ====================
-    "瘫痪", "瘫坐", "瘫倒", "瘫软",
+    "瘫痪", "瘫坐", "瘫倒",
     # ==================== Nhóm 干/幹 (làm / khô / xương sống) ====================
     "干净", "干脆", "干燥", "干涉", "干扰", "干预", "干部", "骨干", "干活",
     "干嘛", "能干", "晒干", "风干", "干杯", "干什么", "干事", "干线", "饼干",
@@ -59,9 +59,11 @@ SAFE_COMPOUNDS: Set[str] = {
     # ==================== Nhóm 情 (tình cảm / tình huống) ====================
     "情感", "情况", "情绪", "事情", "热情", "友情", "亲情", "爱情", "心情",
     "表情", "详情", "剧情", "行情", "人情", "恩情", "豪情", "风情",
-    # ==================== Nhóm 欲 (mong muốn / ý muốn) ====================
-    "欲望", "食欲", "求知欲", "望眼欲穿", "随心所欲", "欲言又止", "畅所欲言",
-    "为所欲为", "跃跃欲试", "欲盖弥彰",
+    # ==================== Nhóm 欲 (mong muốn / ý muốn / dục) ====================
+    "食欲", "求知欲", "望眼欲穿", "随心所欲", "欲言又止", "畅所欲言",
+    "为所欲为", "跃跃欲试", "欲盖弥彰", "欲望", "欲念", "求胜欲", "控制欲",
+    # ==================== Nhóm 触 / 碰 / 撞 (đụng chạm / va chạm) ====================
+    "接触", "碰触", "碰撞", "触碰", "撞见", "相撞", "触动", "触犯", "触觉", "触及", "触摸", "感触", "触目惊心", "碰见", "碰到", "撞倒", "撞碎", "撞击",
     # ==================== Nhóm 爱 (yêu thương / sở thích) ====================
     "热爱", "喜爱", "关爱", "博爱", "友爱", "爱护", "爱惜", "爱心", "可爱", "爱好者",
     # ==================== Nhóm 色 (màu sắc / phong cảnh) ====================
@@ -104,6 +106,10 @@ SAFE_COMPOUNDS: Set[str] = {
     "放屁", "屁话", "拍马屁",
 }
 
+def is_latin_word_char(c: str) -> bool:
+    """Kiểm tra ký tự có phải là ký tự từ tiếng Latin/Việt (chữ cái, chữ có dấu, số)."""
+    return c.isalnum() and not ('\u4e00' <= c <= '\u9fff')
+
 class TrieNode:
     def __init__(self):
         self.children: Dict[str, TrieNode] = {}
@@ -119,11 +125,11 @@ class LongestMatchTrie:
         if not word or not word.strip():
             return
         clean_word = word.strip().lower()
-        
-        # BẢO VỆ CHỮ HÁN: Từ tiếng Trung bắt buộc phải từ 2 ký tự trở lên
-        # Tuyệt đối cấm từ 1 ký tự đơn lẻ để tránh phá hỏng từ ghép thông thường
+        # BẢO VỆ CHỮ HÁN: Từ tiếng Trung bắt buộc phải từ 2 ký tự trở lên (trừ các từ thuần 18+ tuyệt đối như 肏, 屄, 屌)
+        EXPLICIT_SINGLE_CHARS = {'肏', '屄', '屌', '尻'}
         if len(clean_word) < 2 and any('\u4e00' <= c <= '\u9fff' for c in clean_word):
-            return
+            if clean_word not in EXPLICIT_SINGLE_CHARS:
+                return
             
         self.words.add(clean_word)
         node = self.root
@@ -148,6 +154,12 @@ class LongestMatchTrie:
         i = 0
         
         while i < n:
+            # KIỂM TRA RANH GIỚI BÊN TRÁI (LEFT BOUNDARY):
+            # Với từ Latin/tiếng Việt, không bắt đầu tìm khớp từ vị trí ở giữa một từ khác
+            if i > 0 and is_latin_word_char(text_lower[i-1]) and is_latin_word_char(text_lower[i]):
+                i += 1
+                continue
+
             node = self.root
             longest_match_len = 0
             longest_categories = set()
@@ -158,10 +170,12 @@ class LongestMatchTrie:
                 j += 1
                 if node.is_end_of_word:
                     is_valid_end = True
+                    # KIỂM TRA RANH GIỚI BÊN PHẢI (RIGHT BOUNDARY):
+                    # Nếu ký tự cuối và ký tự tiếp theo đều là ký tự Latin/Việt -> không phải kết thúc từ
                     if j < n:
                         prev_char = text_lower[j-1]
                         next_char = text_lower[j]
-                        if re.match(r'[a-zA-Z0-9]', prev_char) and re.match(r'[a-zA-Z0-9]', next_char):
+                        if is_latin_word_char(prev_char) and is_latin_word_char(next_char):
                             is_valid_end = False
                             
                     if is_valid_end:
@@ -170,18 +184,22 @@ class LongestMatchTrie:
             
             if longest_match_len > 0:
                 matched_str = text[i:i + longest_match_len]
+                matched_str_lower = matched_str.lower()
                 
                 # KIỂM TRA BẢO VỆ TỪ AN TOÀN (SAFE COMPOUNDS)
-                # Nếu từ khớp nằm trong một từ ghép an toàn (ví dụ: '操' nằm trong '贞操' hay '骨' nằm trong '骨髓') -> BỎ QUA
+                # Chỉ coi là từ an toàn nếu từ an toàn DÀI HƠN từ khớp (ví dụ: '操' ngắn nằm trong '贞操' hay '骨' nằm trong '骨髓') -> BỎ QUA
+                # Nếu từ khớp dài hơn hoặc bằng từ an toàn (ví dụ: '征服的欲望' chứa '欲望'), đó là cụm từ nhạy cảm được cấu hình chủ đích -> BẮT BUỘC MASK
                 is_safe_compound = False
-                check_window = text[max(0, i-6):min(n, i + longest_match_len + 6)]
                 for safe_word in SAFE_COMPOUNDS:
-                    if safe_word in check_window:
-                        safe_idx = check_window.find(safe_word)
-                        safe_start = max(0, i-6) + safe_idx
-                        safe_end = safe_start + len(safe_word)
-                        if not (i + longest_match_len <= safe_start or i >= safe_end):
-                            is_safe_compound = True
+                    if len(safe_word) > longest_match_len and matched_str in safe_word:
+                        # Kiểm tra vị trí overlap chính xác của safe_word bao bọc matched_str tại vị trí i
+                        safe_len = len(safe_word)
+                        start_min = max(0, i - safe_len + 1)
+                        for s in range(start_min, min(n - safe_len + 1, i + 1)):
+                            if text[s:s + safe_len] == safe_word:
+                                is_safe_compound = True
+                                break
+                        if is_safe_compound:
                             break
                             
                 if not is_safe_compound:
@@ -193,3 +211,4 @@ class LongestMatchTrie:
                 i += 1
                 
         return matches
+

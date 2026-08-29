@@ -4,12 +4,17 @@
 
 @layer base {
   body {
-    font-family: 'Inter', sans-serif;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
     background-color: #070A13;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    word-spacing: 0.04em;
+    text-rendering: optimizeLegibility;
   }
   
   h1, h2, h3, h4, h5, h6 {
     font-family: 'Outfit', sans-serif;
+    word-spacing: normal;
   }
 }
 
@@ -345,19 +350,33 @@ html.theme-light ::-webkit-scrollbar-thumb:hover,
 
 .fixed-sentence {
   text-decoration: underline !important;
-  text-decoration-color: rgba(16, 185, 129, 0.6) !important;
+  text-decoration-color: rgba(245, 158, 11, 0.6) !important;
   text-underline-offset: 4px !important;
 }
 
 .fixed-word {
-  color: #10b981 !important;
+  color: #f59e0b !important;
   font-weight: 700 !important;
-  background-color: rgba(16, 185, 129, 0.15) !important;
+  background-color: rgba(245, 158, 11, 0.15) !important;
   padding: 1px 4px !important;
   border-radius: 4px !important;
-  box-shadow: 0 0 8px rgba(16, 185, 129, 0.2) !important;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.2) !important;
   display: inline-block !important;
 }
 
+/* Sepia Reader Theme */
+.theme-sepia-reader {
+  background-color: #f4ecd8 !important;
+  color: #3d2c1d !important;
+}
+.theme-sepia-reader p,
+.theme-sepia-reader div {
+  color: #3d2c1d !important;
+}
 
-
+/* Mobile Safe Area Padding */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}

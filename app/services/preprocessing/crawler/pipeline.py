@@ -254,7 +254,11 @@ async def delete_novel_completely(novel_id: int) -> Dict[str, Any]:
         novel = res.scalar_one_or_none()
 
         if not novel:
-            raise Exception(f"Không tìm thấy bộ truyện ID {novel_id}")
+            return {
+                "novel_id": novel_id,
+                "title_rough": "",
+                "message": f"Bộ truyện ID {novel_id} đã được xóa trước đó hoặc không tồn tại."
+            }
 
         novel_title_rough = novel.title_rough or novel.title_raw
 

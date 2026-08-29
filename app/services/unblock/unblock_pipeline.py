@@ -62,7 +62,8 @@ def get_unblock_prompt_enforcer() -> str:
     return """
 [QUY TẮC BẢO TOÀN THẺ MARKUP §PREFIX_XXXX§ - BẮT BUỘC TUÂN THỦ 100%]
 1. GIỮ NGUYÊN 100% CÁC MÃ §PREFIX_XXXX§: Đặt đúng vị trí ngữ pháp trong câu tiếng Việt. Tuyệt đối không xóa, không sửa mã.
-2. DỊCH 100% TOÀN BỘ CHỮ HÁN SANG TIẾNG VIỆT: Tuyệt đối CẤM copy giữ lại bất kỳ chữ Hán nào (như 妩媚, 滋润, 素股...) trong câu tiếng Việt. Toàn bộ câu chữ xung quanh mã thẻ BẮT BUỘC PHẢI dịch sang tiếng Việt thuần túy 100%!
+2. DỊCH 100% TOÀN BỘ CHỮ HÁN SANG TIẾNG VIỆT: Tuyệt đối CẤM copy giữ lại bất kỳ chữ Hán nào trong câu tiếng Việt. Toàn bộ câu chữ xung quanh mã thẻ BẮT BUỘC PHẢI dịch sang tiếng Việt thuần túy 100%!
+3. TUYỆT ĐỐI KHÔNG TỰ CHÊM TỪ ĐỒNG NGHĨA SÁT CẠNH THẺ: Thẻ §PREFIX_XXXX§ đã đại diện trọn vẹn cho cụm từ. Không tự ý thêm danh từ/tính từ đồng nghĩa (như 'người vợ', 'thân xác', 'đôi/cặp'...) ngay sát cạnh thẻ để tránh gây lặp từ luộm thuộm khi giải mã.
 """
 
 async def is_sensitive_text(text: str) -> bool:

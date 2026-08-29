@@ -12,46 +12,78 @@ from app.services.translation.contextt.llm_context_editor import edit_context_ba
 from app.api.translation_router import add_system_log
 
 async def _ensure_chapters_crawled(batch: List[int]):
-    """Đảm bảo tất cả các chương trong batch đã có văn bản RAW/GG sẵn sàng trên đĩa"""
+    """
+    GIAI ĐOẠN 0: Quét vét & cào lại liên tục cho đến khi TẤT CẢ các chương trong lô
+    đều có đầy đủ 100% văn bản RAW & GG trên đĩa (không giới hạn số lần thử).
+    """
     import os
     from app.models.schema import ChapterVersion
-    async with AsyncSessionLocal() as session:
-        for cid in batch:
-            stmt = select(Chapter).where(Chapter.id == cid)
-            res = await session.execute(stmt)
-            ch = res.scalar_one_or_none()
-            if not ch:
-                continue
+    from app.services.preprocessing.crawler.pipeline import process_single_chapter_crawl
+    chap_nos = await _get_chap_numbers(batch)
+    
+    sweep_round = 1
+    while True:
+        missing_items = []
+        async with AsyncSessionLocal() as session:
+            for cid in batch:
+                stmt = select(Chapter).where(Chapter.id == cid)
+                res = await session.execute(stmt)
+                ch = res.scalar_one_or_none()
+                if not ch:
+                    continue
 
-            # Kiểm tra xem bản RAW và GG có tồn tại cả trong DB và đĩa không
-            stmt_raw = select(ChapterVersion).where(
-                ChapterVersion.chapter_id == cid,
-                ChapterVersion.version_type == "RAW"
-            )
-            res_raw = await session.execute(stmt_raw)
-            v_raw = res_raw.scalar_one_or_none()
+                stmt_raw = select(ChapterVersion).where(
+                    ChapterVersion.chapter_id == cid,
+                    ChapterVersion.version_type == "RAW"
+                )
+                res_raw = await session.execute(stmt_raw)
+                v_raw = res_raw.scalar_one_or_none()
 
-            stmt_gg = select(ChapterVersion).where(
-                ChapterVersion.chapter_id == cid,
-                ChapterVersion.version_type == "GG"
-            )
-            res_gg = await session.execute(stmt_gg)
-            v_gg = res_gg.scalar_one_or_none()
+                stmt_gg = select(ChapterVersion).where(
+                    ChapterVersion.chapter_id == cid,
+                    ChapterVersion.version_type == "GG"
+                )
+                res_gg = await session.execute(stmt_gg)
+                v_gg = res_gg.scalar_one_or_none()
 
-            raw_exists = v_raw and v_raw.file_path and os.path.exists(v_raw.file_path)
-            gg_exists = v_gg and v_gg.file_path and os.path.exists(v_gg.file_path)
+                raw_ok = bool(v_raw and v_raw.file_path and os.path.exists(v_raw.file_path) and os.path.getsize(v_raw.file_path) > 50)
+                gg_ok = bool(v_gg and v_gg.file_path and os.path.exists(v_gg.file_path) and os.path.getsize(v_gg.file_path) > 50)
 
-            if not (raw_exists and gg_exists):
-                try:
-                    from app.services.preprocessing.crawler.pipeline import process_single_chapter_crawl
-                    msg = f"🌐 [1/3 TIỀN XỬ LÝ] Tự động cào văn bản cho Chương {ch.chapter_no}..."
-                    print(msg)
-                    add_system_log(msg, "pre")
-                    await process_single_chapter_crawl(cid)
-                except Exception as e:
-                    err_msg = f"❌ [1/3 TIỀN XỬ LÝ] Lỗi cào chương {ch.chapter_no}: {e}"
-                    print(err_msg)
-                    add_system_log(err_msg, "error")
+                if not (raw_ok and gg_ok):
+                    missing_items.append((cid, ch.chapter_no))
+
+        # Nếu đã có đủ 100% chương trong lô -> Hoàn tất Giai đoạn 0!
+        if not missing_items:
+            break
+
+        missing_chap_nos = [m[1] for m in missing_items]
+        if sweep_round == 1:
+            msg_check = f"📥 [CÀO LÔ ĐẦY ĐỦ] Bắt đầu cào {len(missing_items)}/{len(batch)} chương trong lô {chap_nos} (Chương: {missing_chap_nos})..."
+            print(msg_check)
+            add_system_log(msg_check, "pre")
+        else:
+            msg_retry = f"🔁 [CÀO LẠI LÔ - VÒNG {sweep_round}] Đang cào lại {len(missing_items)} chương còn thiếu: {missing_chap_nos}..."
+            print(msg_retry)
+            add_system_log(msg_retry, "pre")
+
+        for cid, c_no in missing_items:
+            try:
+                msg_c = f"🌐 [CÀO VĂN BẢN] Đang cào Chương {c_no}..."
+                print(msg_c)
+                add_system_log(msg_c, "pre")
+                await process_single_chapter_crawl(cid)
+            except Exception as e_crawl:
+                err_msg = f"⚠️ [CÀO TẠM LỖI] Chương {c_no}: {e_crawl}. Sẽ tự động cào lại ở vòng quét tiếp theo..."
+                print(err_msg)
+                add_system_log(err_msg, "warning")
+                await asyncio.sleep(2.0)
+
+        sweep_round += 1
+        await asyncio.sleep(2.5)
+
+    msg_ok = f"✅ [CÀO LÔ HOÀN TẤT 100%] Toàn bộ {len(batch)} chương trong lô {chap_nos} đã có đầy đủ dữ liệu RAW & GG!"
+    print(msg_ok)
+    add_system_log(msg_ok, "pre")
 
 
 async def _get_chap_numbers(batch: List[int]) -> str:
@@ -118,13 +150,15 @@ async def _process_evidence_and_save(
     enable_names_dict: bool = True,
     enable_gg_corrections: bool = True
 ):
-    """BƯỚC 1: Tiền xử lý (Bóc tách thực thể & Gom lỗi tự động cho batch)"""
+    """BƯỚC 1: Tiền xử lý (Đảm bảo cào đủ 100% lô trước, sau đó bóc tách thực thể & gom lỗi)"""
+    # 1. BẮT BUỘC cào đủ 100% tất cả các chương trong lô trước
+    await _ensure_chapters_crawled(batch)
+
     chap_nos = await _get_chap_numbers(batch)
     msg_start = f"🛠️ [1/3 TIỀN XỬ LÝ] Bắt đầu gom từ nghi vấn & bóc tách thực thể cho lô Chương {chap_nos}..."
     print(msg_start)
     add_system_log(msg_start, "pre")
     
-    await _ensure_chapters_crawled(batch)
     if not enable_llm_extract:
         msg_skip = f"👌 [1/3 TIỀN XỬ LÝ] Đã tắt AI bóc tách thực thể/lỗi tự động cho lô Chương {chap_nos}."
         print(msg_skip)

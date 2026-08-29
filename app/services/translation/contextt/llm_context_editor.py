@@ -119,7 +119,8 @@ async def edit_context_batch_llm(chapter_ids: List[int], enable_names_dict: bool
             )
             res_gg = await session.execute(stmt_gg)
             ver_gg = res_gg.scalar_one_or_none()
-            if not ver_gg: continue
+            if not ver_gg:
+                raise ValueError(f"Chương {chap.chapter_no} chưa có bản GG để biên tập. Tạm dừng để cào lại!")
                 
             if ver_gg.content:
                 gg_text = ver_gg.content
@@ -127,7 +128,7 @@ async def edit_context_batch_llm(chapter_ids: List[int], enable_names_dict: bool
                 with open(ver_gg.file_path, "r", encoding="utf-8", errors="ignore") as f:
                     gg_text = f.read()
             else:
-                continue
+                raise ValueError(f"Tệp GG của Chương {chap.chapter_no} bị rỗng hoặc không tồn tại trên đĩa. Tạm dừng để cào lại!")
                 
             # Đảm bảo mã thẻ neo là duy nhất (Unique Tag ID) không trùng lặp giữa các chương trong lô
             gg_text_unique_tags = re.sub(r'⟦\s*T(\d+)\s*:', f'⟦C{chap.chapter_no}_T\\1:', gg_text)
@@ -198,7 +199,7 @@ async def edit_context_batch_llm(chapter_ids: List[int], enable_names_dict: bool
             from app.services.translation.entity_matcher import build_entity_dict
             entities_mapping = build_entity_dict(chapter_entity_list, combined_text, corrections=all_ch_corrections, include_details=True)
 
-            # 4. Dự phòng: Nếu entities_mapping vẫn trống, nạp toàn bộ thực thể của Novel
+            # 4. Dự phòng: Nếu entities_mapping vẫn trống hoàn toàn, nạp toàn bộ thực thể của Novel
             if not entities_mapping:
                 stmt_all_entities = select(NovelEntity).where(
                     NovelEntity.novel_id == novel.id,
@@ -251,6 +252,7 @@ async def edit_context_batch_llm(chapter_ids: List[int], enable_names_dict: bool
         "NHIEM_VU": "Bien tap ban dich tho Google Translate thanh Tieng Viet 100% tu nhien, thoat y, chau chuot, chuan ngu phap.",
         "MUC_TIEU_BAT_BUOC": [
             "KHONG_DUOC_CAT_GOT: Giu nguyen 100% dung luong va tinh tiet, chuan hoa ngu phap tieng Viet muot ma dung nguyen tac, KHONG tu y them that tu ngu ngoai van ban.",
+            "DICH_CAU_NGAN_CAM_THAN_TU_NHIEN: Voi cac cau cuc ngan, than tu, khau ngu, menh lenh (nhu: 疼！, 好疼！, 救命！, 等等！, 走！, 快！, 闭嘴！...), DUOC PHEP them tro tu/tu tinh thai hop ly ('Đau quá!', 'Cứu với!', 'Khoan đã!', 'Đi thôi!', 'Nhanh lên!', 'Im đi!'), CAM dich tho coc loc ('Đau!', 'Đóng miệng!'). Tuyet doi tiet che, khong lam dung tu tinh thai khien cau bi deo/sen/van noi qua da, va khong bia them tinh tiet.",
             "BAM_SAT_NGUYEN_TAC: TUYET DOI KHONG tu y bia them cau ngan, khong tu tien chen cac cau hoi tu tu thua thai (nhu 'sao?', 'u?', 'roi sao?'), khong suy dien them cam xuc hay tinh tiet ngoai van ban goc.",
             "TRAT_TU_DANH_XUNG_XUNG_HO_THEO_BOI_CANH: BAT BUOC tuan thu trat tu danh xung theo the loai:",
             "  * TU TIEN / CO PHONG / KIEM HIEP: Hau to danh xung/chuc vi BAT BUOC DUNG SAU [Ten/Ho] (Vd: Van su huynh, Tu su huynh, Kieu truong lao, Tang lao, Tieu tong chu, Tu huynh, Trieu su muoi, Truong dao huu). CAM dich nguoc thanh 'Su huynh Van', 'Truong lao Kieu', 'Lao Tang'. Tien to dung truoc: 'Tieu Uy', 'Lao Vuong', 'A Luong'.",
@@ -266,7 +268,9 @@ async def edit_context_batch_llm(chapter_ids: List[int], enable_names_dict: bool
             "LAM_SACH_LA_HET_VA_CAM_THAN: TUYET DOI KHONG de cac chuoi chu la het, cuoi, ren ri lap lai dai vo nghia (nhu 'A a a a a...', 'Ha ha ha ha ha...'). Chuan hoa gon gang thanh tu cam than suc tich (1-3 tu: 'A!', 'Ha ha ha!', 'Á...', 'Ưm...') de AI Edge-TTS phat am tu nhien, khong bi vap hay doc e a.",
             "CHUAN_HOA_DAU_CHAM_PHAY_TIENG_VIET: Cham cau '.' dut khoat khi het mot y tron ven, KHONG lam dung dau phay ',' noi dai ca doan theo van Trung khien TTS bi hut hoi doc don dap. Dung dau phay ngat ve cau hop ly theo ngu phap tieng Viet.",
             "KHONG_DUNG_KY_HIEU_DAC_BIET: KHONG dung ky hieu trang tri la ('★', '◆', '※', '^', '_', '~', ngoac giai nghia thua). Viet thang thanh cau van xuoi tieng Viet hoan chinh.",
-            "TUYET_DOI_KHONG_DE_KY_TU_VIET_TAT: Viet day du 100% tat ca cac tu/ky tu viet tat (vi du: EXP -> diem kinh nghiem, HP -> luong mau, MP -> nang luong, Lv/Level -> cap do, NPC -> nhan vat phu, VIP -> khach quy, TP.HCM -> Thanh pho Ho Chi Minh...). Phai viet hoan chinh ra chu tieng Viet de Edge-TTS phat am chuan xac."
+            "TUYET_DOI_KHONG_DE_KY_TU_VIET_TAT: Viet day du 100% tat ca cac tu/ky tu viet tat (vi du: EXP -> diem kinh nghiem, HP -> luong mau, MP -> nang luong, Lv/Level -> cap do, NPC -> nhan vat phu, VIP -> khach quy, TP.HCM -> Thanh pho Ho Chi Minh...). Phai viet hoan chinh ra chu tieng Viet de Edge-TTS phat am chuan xac.",
+            "CHUAN_HOA_CANH_GIOI_TU_TIEN_BAT_BUOC: TUYET DOI SUA TRIET DE loi dich tho ngo nghe cua Google Translate ve canh gioi tu luyen. CAM de: 'cảnh giới thứ ba', 'cảnh giới thứ tư', 'cảnh giới thứ năm', 'cảnh giới thứ 4', 'mười cảnh luyện linh', 'kỳ Luyện Khí', 'xây dựng nền tảng', 'giai đoạn cuối'. BAT BUOC NANG CAP THANH AM HAN-VIET CHUAN: 'Luyện Linh tam cảnh', 'Luyện Linh tứ cảnh', 'Luyện Linh ngũ cảnh', 'tam cảnh', 'tứ cảnh', 'ngũ cảnh', 'lục cảnh', 'thất cảnh', 'bát cảnh', 'cửu cảnh', 'thập cảnh', 'Luyện Khí nhất trọng', 'Trúc Cơ sơ kỳ / trung kỳ / hậu kỳ', 'Kim Đan đỉnh phong', 'thập cảnh Luyện Linh'.",
+            "DOI_SOAT_TU_KIEM_CHINH_XAC_TUNG_CAU: BAT BUOC doi chieu ky tung cau voi van ban goc. TUYET DOI CAM de bi lan lon giua cac con so hoac canh gioi khac nhau trong cung mot cau (vi du: '十境... 三境' thi phai dung 'thập cảnh... tam cảnh', CAM bien ca hai thanh 'tam cảnh... tam cảnh'). Khong duoc de sai tu, sai so luong hay sai lech y nghia goc!"
         ],
         "TU_DIEN_THUC_THE": entities_mapping,
         "BANG_SUA_LOI_GG": corrections_mapping
@@ -283,7 +287,9 @@ async def edit_context_batch_llm(chapter_ids: List[int], enable_names_dict: bool
 
     user_task_prompt = (
         f"<ban_dich_tho_google_translate>\n{masked_text}\n</ban_dich_tho_google_translate>\n\n"
-        f"LỆNH THỰC THI: Hãy biên tập toàn bộ văn bản thô trên theo đúng chuẩn JSON specification ở trên. Giữ nguyên 100% mã §PREFIX_XXXX§, nắn xưng hô theo thẻ Hán gốc, và trả về văn bản hoàn chỉnh bọc trong các thẻ === [BẮT ĐẦU CHƯƠNG X] === và === [KẾT THÚC CHƯƠNG X] ===."
+        f"LỆNH THỰC THI: Hãy biên tập toàn bộ văn bản thô trên theo đúng chuẩn JSON specification ở trên. "
+        f"YÊU CẦU ĐỐI SOÁT: Biên tập câu nào phải đối chiếu kỹ lại câu đó, tuyệt đối không dịch sai từ, không sai nghĩa, không lẫn lộn giữa các con số/cảnh giới trong cùng một câu! "
+        f"Giữ nguyên 100% mã §PREFIX_XXXX§, nắn xưng hô theo thẻ Hán gốc, và trả về văn bản hoàn chỉnh bọc trong các thẻ === [BẮT ĐẦU CHƯƠNG X] === và === [KẾT THÚC CHƯƠNG X] ===."
     )
 
     provider_val = os.environ.get("AIREAD_PROVIDER") or await get_active_setting("AIREAD_PROVIDER") or "gemini"
@@ -314,9 +320,7 @@ async def edit_context_batch_llm(chapter_ids: List[int], enable_names_dict: bool
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
         ]
 
-    # === CHỈ TỰ ĐỘNG CHIA ĐÔI KHI LÔ CÓ 1 CHƯƠNG DUY NHẤT VÀ VƯỢT NGƯỠNG AN TOÀN (> 45.000 ký tự) ===
-    # Các chương như Chương 11 (42k), Chương 13 (37k) vẫn đủ 1 request an toàn và KHÔNG BỊ CHIA.
-    # Riêng các chương như Chương 14 (58k), Chương 15 (52k) sẽ tự động chia đôi thành 2 phần cân bằng.
+    # === CHỈ TỰ ĐỘNG CHIA ĐÔI KHI LÔ CÓ 1 CHƯƠNG DUY NHẤT VÀ VƯỢT NGƯỠNG AN TOÀN (> 145.000 ký tự tương đương 52k ký tự Hán) ===
     def split_text_into_halves(text: str) -> List[str]:
         mid = len(text) // 2
         # Tìm vị trí xuống dòng gần điểm chính giữa nhất để cắt đôi văn bản mượt mà
@@ -328,17 +332,8 @@ async def edit_context_batch_llm(chapter_ids: List[int], enable_names_dict: bool
         return [text]
 
     is_single_chapter = (len(chapter_map) <= 1)
-    if is_single_chapter and len(masked_text) > 140000:
+    if is_single_chapter and len(masked_text) > 145000:
         text_chunks = split_text_into_halves(masked_text)
-    elif not is_single_chapter and len(masked_text) > 120000:
-        err_msg = f"❌ [QUÁ DUNG LƯỢNG LÔ CONTEXTT] Lô gồm {len(chapter_map)} chương (Chương {list(chapter_map.values())}) có tổng độ dài ({len(masked_text)} ký tự tiếng Việt) vượt quá giới hạn an toàn 120.000 ký tự. Vui lòng giảm Số chương/Lô (Batch Size) trong Cài đặt và dịch lại!"
-        print(f"[LLM-CONTEXT-EDITOR] {err_msg}")
-        try:
-            from app.api.translation_router import add_system_log
-            add_system_log(err_msg, "error")
-        except Exception:
-            pass
-        raise ValueError(err_msg)
     else:
         text_chunks = [masked_text]
 

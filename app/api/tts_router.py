@@ -24,8 +24,12 @@ async def test_synthesize_audio(text: str = Query(...), voice: str = Query("vi-V
     """Tổng hợp âm thanh trực tiếp qua Microsoft Edge-TTS bằng Python backend"""
     import edge_tts
     from fastapi import Response
+    from app.services.tts.pipeline import sanitize_tts_text
+    clean_text = sanitize_tts_text(text) if text else ""
+    if not clean_text or not clean_text.strip():
+        raise HTTPException(status_code=400, detail="Văn bản rỗng hoặc chỉ chứa thông báo kết thúc chương sau khi làm sạch.")
     try:
-        comm = edge_tts.Communicate(text, voice)
+        comm = edge_tts.Communicate(clean_text, voice)
         audio_data = b""
         async for chunk in comm.stream():
             if chunk.get("type") == "audio":
@@ -368,11 +372,14 @@ async def audio_events_stream(novel_id: int = Path(...)):
                         "progress_pct": percent,
                         "msg": msg,
                         "eta_display": eta_display,
+                        "done_chapters": job.get("done_chapters", 0),
+                        "last_completed_chapter": job.get("last_completed_chapter"),
                         "last_chunk_log": job.get("last_chunk_log", ""),
                         "logs": job.get("logs", []),
                         "progress": {
                             "total_chunks": total,
                             "done_chunks": done,
+                            "done_chapters": job.get("done_chapters", 0),
                             "done_subchunks": done_sc,
                             "total_subchunks": total_sc,
                             "failed_chapters": job.get("failed_chapters", 0),
@@ -420,6 +427,8 @@ async def get_audio_job_status(novel_id: int = Path(...)):
                 "progress_pct": percent,
                 "msg": job.get("status_msg") or f"Đang tạo audio: {done_sc}/{total_sc} đoạn ({percent}%)",
                 "eta_display": eta_display,
+                "done_chapters": job.get("done_chapters", 0),
+                "last_completed_chapter": job.get("last_completed_chapter"),
                 "last_chunk_log": job.get("last_chunk_log", ""),
                 "logs": job.get("logs", []),
                 "done_subchunks": done_sc,
@@ -434,7 +443,7 @@ async def generate_volume(
     voice_profile: str = Query("default"),
     chapters_per_volume: int = Query(50, ge=1),
     force_regenerate: bool = Query(False),
-    workers: Optional[int] = Query(None, ge=1, le=16)
+    workers: Optional[int] = Query(None, ge=1, le=128)
 ):
     """Kích hoạt tiến trình sinh tệp audiobook bất đồng bộ cho một tập cụ thể"""
     import gc
@@ -492,7 +501,7 @@ async def generate_range(
     end_chapter: int = Query(..., ge=1),
     voice_profile: str = Query("default"),
     force_regenerate: bool = Query(False),
-    workers: Optional[int] = Query(None, ge=1, le=16)
+    workers: Optional[int] = Query(None, ge=1, le=128)
 ):
     """Kích hoạt tiến trình sinh tệp audiobook cho khoảng chương tùy chỉnh (luồng tương tự dịch truyện)"""
     import gc
@@ -581,9 +590,10 @@ async def cancel_audio_job(novel_id: int = Path(...)):
 async def merge_custom_range(
     novel_id: int = Path(...),
     start_chapter: int = Query(..., ge=1),
-    end_chapter: int = Query(..., ge=1)
+    end_chapter: int = Query(..., ge=1),
+    speed: float = Query(1.0, ge=0.25, le=4.0)
 ):
-    """Ghép nối nhanh bằng FFmpeg các chương MP3 đã có sẵn trong cache thành một file gộp duy nhất"""
+    """Ghép nối nhanh bằng FFmpeg các chương MP3 đã có sẵn trong cache thành một file gộp duy nhất kèm hỗ trợ chọn tốc độ phát (speed)"""
     if start_chapter > end_chapter:
         raise HTTPException(status_code=400, detail="Chương bắt đầu không được lớn hơn chương kết thúc.")
         
@@ -608,22 +618,43 @@ async def merge_custom_range(
             cached_chapters.append(c)
     
     if not cached_chapters:
-        raise HTTPException(status_code=400, detail="Chưa có chương nào trong khoảng này có tệp Audio MP3. Vui lòng bấm 'Tạo Audio' trước!")
+        all_cached = []
+        if os.path.exists(chapters_cache_dir):
+            for f in os.listdir(chapters_cache_dir):
+                if f.endswith(".mp3") and not f.startswith("_"):
+                    try:
+                        c_num = int(os.path.splitext(f)[0])
+                        all_cached.append(c_num)
+                    except ValueError:
+                        pass
+        all_cached.sort()
+        if all_cached:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Khoảng chương {start_chapter} → {end_chapter} chưa có Audio MP3 nào! Hiện truyện có sẵn Audio từ Chương {all_cached[0]} đến Chương {all_cached[-1]} ({len(all_cached)} chương). Vui lòng chọn khoảng có sẵn hoặc bấm 'Tạo Audio' trước."
+            )
+        else:
+            raise HTTPException(
+                status_code=400, 
+                detail="Truyện này chưa có chương nào được tạo Audio MP3. Vui lòng bấm 'Tạo Audio' trước khi xuất file gộp!"
+            )
         
     short_title = novel_folder[:30].strip() if len(novel_folder) > 30 else novel_folder
-    final_name = f"{short_title}_Ch{cached_chapters[0]}_to_Ch{cached_chapters[-1]}.mp3"
+    speed_tag = f"_{speed}x" if abs(speed - 1.0) >= 0.01 else ""
+    final_name = f"{short_title}_Ch{cached_chapters[0]}_to_Ch{cached_chapters[-1]}{speed_tag}.mp3"
     final_path = os.path.join(out_dir, final_name)
     
-    success = await asyncio.to_thread(generate_range_mp3, chapters_cache_dir, cached_chapters, final_path)
+    success = await asyncio.to_thread(generate_range_mp3, chapters_cache_dir, cached_chapters, final_path, 0.35, False, speed)
     if not success:
         raise HTTPException(status_code=500, detail="Lỗi khi ghép nối âm thanh bằng FFmpeg.")
         
     dur_str = await asyncio.to_thread(get_audio_duration_ffmpeg, final_path)
     sz = os.path.getsize(final_path) if os.path.exists(final_path) else 0
     
+    speed_info = f" (Tốc độ {speed}x)" if abs(speed - 1.0) >= 0.01 else ""
     return {
         "status": "success",
-        "message": f"Ghép thành công {len(cached_chapters)} chương vào tệp {final_name}!",
+        "message": f"Ghép thành công {len(cached_chapters)} chương (Chương {cached_chapters[0]} → {cached_chapters[-1]}){speed_info} vào tệp {final_name}!",
         "filename": final_name,
         "download_url": f"/api/novels/{novel_id}/audio/download/{final_name}",
         "file_size": format_file_size(sz),
@@ -635,7 +666,7 @@ async def download_audio_file(
     novel_id: int = Path(...),
     filename: str = Path(...)
 ):
-    """FileResponse cho phép tải xuống hoặc chơi trực tiếp tệp audio trên browser"""
+    """FileResponse cho phép tải xuống hoặc chơi trực tiếp tệp audio trên browser/mobile với hỗ trợ Range Streaming"""
     async with AsyncSessionLocal() as session:
         stmt = select(Novel).where(Novel.id == novel_id)
         res = await session.execute(stmt)
@@ -650,7 +681,12 @@ async def download_audio_file(
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Tệp âm thanh không tồn tại trên máy chủ.")
         
-    return FileResponse(file_path, media_type="audio/mpeg", filename=filename)
+    return FileResponse(
+        file_path,
+        media_type="audio/mpeg",
+        filename=filename,
+        headers={"Accept-Ranges": "bytes"}
+    )
 
 @router.delete("/files/{filename}")
 @router.post("/delete_file/{filename}")
@@ -719,12 +755,19 @@ async def delete_single_chapter_audio(
         base_tts_text_dir = r"D:\NENGHIA0980\AIREAD\Output\04b_VanBanTTS"
         novel_folder = sanitize_filename(novel.title_rough if novel.title_rough else novel.title_raw)
         
-        # 1. Xóa file mp3 chương
+        # 1. Xóa file mp3 chương và file json subtitle
         chapters_cache_dir = os.path.join(base_audio_dir, novel_folder, "chapters")
         found_p = _find_chapter_audio_path(chapters_cache_dir, chapter_no)
         if found_p and os.path.exists(found_p):
             try:
                 os.remove(found_p)
+            except Exception:
+                pass
+
+        found_j = _find_chapter_json_path(chapters_cache_dir, chapter_no)
+        if found_j and os.path.exists(found_j):
+            try:
+                os.remove(found_j)
             except Exception:
                 pass
                 
@@ -817,6 +860,22 @@ def _find_chapter_audio_path(chapters_dir: str, c_no: int) -> Optional[str]:
     return None
 
 
+def _find_chapter_json_path(chapters_dir: str, c_no: int) -> Optional[str]:
+    if not os.path.exists(chapters_dir):
+        return None
+    candidates = [
+        f"{c_no:06d}.json",
+        f"{c_no:05d}.json",
+        f"{c_no:04d}.json",
+        f"{c_no}.json"
+    ]
+    for c in candidates:
+        p = os.path.join(chapters_dir, c)
+        if os.path.exists(p) and os.path.getsize(p) > 10:
+            return p
+    return None
+
+
 @router.get("/playlist")
 async def get_audio_playlist(novel_id: int = Path(...)):
     """
@@ -856,7 +915,9 @@ async def get_audio_playlist(novel_id: int = Path(...)):
         created_count = 0
         for ch in all_chapters:
             found_p = _find_chapter_audio_path(chapters_audio_dir, ch.chapter_no)
+            found_j = _find_chapter_json_path(chapters_audio_dir, ch.chapter_no)
             has_audio = found_p is not None
+            has_json = (found_j is not None) or has_audio
             if has_audio:
                 created_count += 1
                 f_size = os.path.getsize(found_p)
@@ -883,7 +944,9 @@ async def get_audio_playlist(novel_id: int = Path(...)):
                 "chapter_no": ch.chapter_no,
                 "title": ch.title_rough or ch.title_raw or f"Chương {ch.chapter_no}",
                 "has_audio": has_audio,
+                "has_json": has_json,
                 "audio_url": f"/api/novels/{novel_id}/audio/stream_chapter/{ch.chapter_no}" if has_audio else None,
+                "json_url": f"/api/novels/{novel_id}/audio/json/{ch.chapter_no}" if has_json else None,
                 "file_size": size_str,
                 "size_bytes": f_size
             })
@@ -899,7 +962,7 @@ async def get_audio_playlist(novel_id: int = Path(...)):
 
 @router.get("/stream_chapter/{chapter_no}")
 async def stream_chapter_audio(novel_id: int = Path(...), chapter_no: int = Path(...)):
-    """Phát trực tiếp tệp audio của một chương cụ thể hỗ trợ Range Stream"""
+    """Phát trực tiếp hoặc tải tệp audio của một chương cụ thể hỗ trợ Range Stream"""
     async with AsyncSessionLocal() as session:
         stmt = select(Novel).where(Novel.id == novel_id)
         res = await session.execute(stmt)
@@ -916,4 +979,161 @@ async def stream_chapter_audio(novel_id: int = Path(...), chapter_no: int = Path
         raise HTTPException(status_code=404, detail=f"Chưa có tệp âm thanh cho chương {chapter_no}.")
         
     return FileResponse(file_path, media_type="audio/mpeg", filename=f"chapter_{chapter_no}.mp3")
+
+
+@router.get("/json/{chapter_no}")
+async def get_chapter_subtitle_json(
+    novel_id: int = Path(...),
+    chapter_no: int = Path(...)
+):
+    """Tải file JSON mốc thời gian phụ đề Karaoke của một chương lẻ"""
+    async with AsyncSessionLocal() as session:
+        stmt = select(Novel).where(Novel.id == novel_id)
+        res = await session.execute(stmt)
+        novel = res.scalar_one_or_none()
+        if not novel:
+            raise HTTPException(status_code=404, detail="Không tìm thấy truyện.")
+
+    base_audio_dir = r"D:\NENGHIA0980\AIREAD\Output\05_Audio_TTS"
+    novel_folder = sanitize_filename(novel.title_rough if novel.title_rough else novel.title_raw)
+    chapters_dir = os.path.join(base_audio_dir, novel_folder, "chapters")
+    json_path = _find_chapter_json_path(chapters_dir, chapter_no)
+
+    if json_path and os.path.exists(json_path):
+        return FileResponse(json_path, media_type="application/json", filename=f"chap_{chapter_no:02d}.json")
+
+    # Nếu chưa có JSON nhưng đã có Audio MP3 -> fallback tự sinh JSON từ text & duration
+    audio_path = _find_chapter_audio_path(chapters_dir, chapter_no)
+    if not audio_path or not os.path.exists(audio_path):
+        raise HTTPException(status_code=404, detail=f"Chưa có tệp âm thanh hoặc subtitle cho chương {chapter_no}.")
+
+    from app.services.tts.pipeline import get_audio_duration_ffmpeg, _read_chapter_text_from_db_or_disk, sanitize_tts_text
+    from app.services.tts.tts_exporter import estimate_chapter_json_from_text
+
+    raw_text = ""
+    ch_title = f"Chương {chapter_no}"
+    async with AsyncSessionLocal() as session:
+        stmt_ch = select(Chapter).where(Chapter.novel_id == novel_id, Chapter.chapter_no == chapter_no)
+        res_ch = await session.execute(stmt_ch)
+        db_ch = res_ch.scalar_one_or_none()
+        if db_ch:
+            ch_title = db_ch.title_rough or db_ch.title_raw or ch_title
+            raw_text = await _read_chapter_text_from_db_or_disk(session, novel_id, novel_folder, db_ch)
+
+    clean_text = sanitize_tts_text(raw_text or "")
+    dur_str = get_audio_duration_ffmpeg(audio_path)
+    dur_parts = [float(p) for p in dur_str.split(":")]
+    tot_sec = dur_parts[0]*3600 + dur_parts[1]*60 + dur_parts[2] if len(dur_parts) == 3 else 60.0
+
+    target_json_path = os.path.join(chapters_dir, f"{chapter_no:06d}.json")
+    estimate_chapter_json_from_text(
+        text=clean_text,
+        total_duration_sec=tot_sec,
+        chapter_no=chapter_no,
+        chapter_title=ch_title,
+        output_json_path=target_json_path
+    )
+
+    return FileResponse(target_json_path, media_type="application/json", filename=f"chap_{chapter_no:02d}.json")
+
+
+@router.get("/export_timeline_json")
+async def export_timeline_json(
+    novel_id: int = Path(...),
+    start_chapter: int = Query(..., ge=1),
+    end_chapter: int = Query(..., ge=1),
+    speed: float = Query(1.0, ge=0.25, le=4.0)
+):
+    """Xuất file JSON gộp toàn bộ timeline chuỗi chương (Karaoke Subtitle Full) hỗ trợ scale tốc độ (speed)"""
+    if start_chapter > end_chapter:
+        raise HTTPException(status_code=400, detail="Chương bắt đầu không được lớn hơn chương kết thúc.")
+
+    async with AsyncSessionLocal() as session:
+        stmt = select(Novel).where(Novel.id == novel_id)
+        res = await session.execute(stmt)
+        novel = res.scalar_one_or_none()
+        if not novel:
+            raise HTTPException(status_code=404, detail="Không tìm thấy truyện.")
+
+    base_audio_dir = r"D:\NENGHIA0980\AIREAD\Output\05_Audio_TTS"
+    novel_folder = sanitize_filename(novel.title_rough if novel.title_rough else novel.title_raw)
+    out_dir = os.path.join(base_audio_dir, novel_folder)
+    chapters_dir = os.path.join(out_dir, "chapters")
+
+    from app.services.tts.tts_exporter import merge_chapters_timeline, estimate_chapter_json_from_text
+    from app.services.tts.pipeline import get_audio_duration_ffmpeg, _read_chapter_text_from_db_or_disk, sanitize_tts_text
+
+    chapters_data_list = []
+    
+    async with AsyncSessionLocal() as session:
+        for c_no in range(start_chapter, end_chapter + 1):
+            json_p = _find_chapter_json_path(chapters_dir, c_no)
+            if json_p and os.path.exists(json_p):
+                try:
+                    with open(json_p, "r", encoding="utf-8") as f:
+                        chapters_data_list.append(json.load(f))
+                    continue
+                except Exception:
+                    pass
+
+            # Fallback nếu có file MP3 nhưng chưa có JSON
+            audio_p = _find_chapter_audio_path(chapters_dir, c_no)
+            if audio_p and os.path.exists(audio_p):
+                stmt_ch = select(Chapter).where(Chapter.novel_id == novel_id, Chapter.chapter_no == c_no)
+                res_ch = await session.execute(stmt_ch)
+                db_ch = res_ch.scalar_one_or_none()
+                raw_text = ""
+                ch_title = f"Chương {c_no}"
+                if db_ch:
+                    ch_title = db_ch.title_rough or db_ch.title_raw or ch_title
+                    raw_text = await _read_chapter_text_from_db_or_disk(session, novel_id, novel_folder, db_ch)
+
+                clean_text = sanitize_tts_text(raw_text or "")
+                dur_str = get_audio_duration_ffmpeg(audio_p)
+                dur_parts = [float(p) for p in dur_str.split(":")]
+                tot_sec = dur_parts[0]*3600 + dur_parts[1]*60 + dur_parts[2] if len(dur_parts) == 3 else 60.0
+
+                target_json_path = os.path.join(chapters_dir, f"{c_no:06d}.json")
+                c_data = estimate_chapter_json_from_text(
+                    text=clean_text,
+                    total_duration_sec=tot_sec,
+                    chapter_no=c_no,
+                    chapter_title=ch_title,
+                    output_json_path=target_json_path
+                )
+                chapters_data_list.append(c_data)
+
+    if not chapters_data_list:
+        raise HTTPException(status_code=400, detail="Chưa có chương nào có file Audio hoặc Subtitle trong khoảng này.")
+
+    # Thu thập độ dài thực tế của từng file MP3 để đồng bộ 100% với file MP3 ghép nối
+    actual_durations = []
+    for c_no in range(start_chapter, end_chapter + 1):
+        audio_p = _find_chapter_audio_path(chapters_dir, c_no)
+        if audio_p and os.path.exists(audio_p):
+            dur_str = get_audio_duration_ffmpeg(audio_p)
+            dur_parts = [float(p) for p in dur_str.split(":")]
+            tot_sec = dur_parts[0]*3600 + dur_parts[1]*60 + dur_parts[2] if len(dur_parts) == 3 else 0.0
+            actual_durations.append(round(tot_sec, 3))
+        else:
+            actual_durations.append(0.0)
+
+    novel_title = novel.title_rough or novel.title_raw or novel.title
+    speed_tag = f"_{speed}x" if abs(speed - 1.0) >= 0.01 else ""
+    merged_filename = f"{novel_folder}_Ch{start_chapter}_to_Ch{end_chapter}{speed_tag}_timeline.json"
+    merged_output_path = os.path.join(out_dir, merged_filename)
+
+    merge_chapters_timeline(
+        chapters_data_list=chapters_data_list,
+        output_json_path=merged_output_path,
+        novel_title=novel_title,
+        actual_durations=actual_durations,
+        speed=speed
+    )
+
+    return FileResponse(
+        merged_output_path,
+        media_type="application/json",
+        filename=merged_filename
+    )
 

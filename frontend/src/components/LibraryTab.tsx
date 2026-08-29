@@ -121,7 +121,7 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
   const yellowChaptersCount = useMemo(() => {
     if (!selectedNovel?.chapters) return 0
     return selectedNovel.chapters.filter((ch: any) => 
-      (ch.status === 'COMPLETED' || ch.status === 'RESCUED') && (ch.has_fallback_words || (ch.translated_text && ch.translated_text.includes('class="fallback-word"')))
+      (ch.status === 'COMPLETED' || ch.status === 'RESCUED') && (ch.has_fallback_words || (ch.translated_text && (ch.translated_text.includes('class="fallback-word"') || ch.translated_text.includes('class="fixed-word"') || ch.translated_text.includes('class="fixed-sentence"'))))
     ).length
   }, [selectedNovel?.chapters])
 
@@ -166,97 +166,173 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
     }
   }, [isEditing])
 
+  // Reader Customization State
+  const [readerFontSize, setReaderFontSize] = useState<number>(() => {
+    const saved = localStorage.getItem('reader_font_size')
+    return saved ? Number(saved) : 17
+  })
+
+  const [readerTheme, setReaderTheme] = useState<'dark' | 'sepia' | 'oled' | 'light'>(() => {
+    const saved = localStorage.getItem('reader_theme_mode')
+    return (saved as any) || 'dark'
+  })
+
+  const handleFontSizeChange = (delta: number) => {
+    setReaderFontSize(prev => {
+      const next = Math.max(14, Math.min(26, prev + delta))
+      localStorage.setItem('reader_font_size', String(next))
+      return next
+    })
+  }
+
+  const handleReaderThemeChange = (t: 'dark' | 'sepia' | 'oled' | 'light') => {
+    setReaderTheme(t)
+    localStorage.setItem('reader_theme_mode', t)
+  }
+
   // 1. EMBEDDED READER VIEW
   if (readingChapter) {
     const prevChapter = selectedNovel?.chapters.find((c: any) => c.chapter_no === readingChapter.chapter_no - 1 && (c.status === 'COMPLETED' || c.status === 'RESCUED'))
     const nextChapter = selectedNovel?.chapters.find((c: any) => c.chapter_no === readingChapter.chapter_no + 1 && (c.status === 'COMPLETED' || c.status === 'RESCUED'))
 
+    const readerBgClasses = {
+      dark: 'bg-slate-950/90 text-slate-200',
+      sepia: 'bg-[#f4ecd8] text-[#3d2c1d] theme-sepia-reader',
+      oled: 'bg-black text-slate-100',
+      light: 'bg-white text-slate-900'
+    }[readerTheme]
+
     return (
-      <div className="relative flex flex-col h-full w-full overflow-hidden bg-slate-950/60 rounded-2xl border border-cyber-border/40 reader-container">
+      <div className={`relative flex flex-col h-full w-full overflow-hidden rounded-2xl border border-cyber-border/40 reader-container transition-colors duration-200 ${readerBgClasses}`}>
         {/* Reader Header Controls */}
-        <div className="flex-shrink-0 border-b border-cyber-border/40 px-4 sm:px-6 py-3.5 flex items-center justify-between bg-slate-950/95 z-30 flex-wrap gap-2 reader-header">
-          <div className="flex items-center gap-3">
+        <div className="flex-shrink-0 border-b border-cyber-border/40 px-3 sm:px-6 py-2.5 sm:py-3.5 flex items-center justify-between bg-slate-950/95 z-30 flex-wrap gap-2 reader-header">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             <button
               onClick={() => {
                 setReadingChapter(null)
                 window.history.pushState({ tab: 'library' }, '', '?tab=library')
               }}
-              className="p-1.5 rounded-lg border border-cyber-border hover:bg-slate-800 text-slate-300 hover:text-white transition-all flex items-center gap-1.5 text-xs font-bold"
+              className="p-1.5 rounded-xl border border-cyber-border/80 hover:bg-slate-800 text-slate-300 hover:text-white transition-all flex items-center gap-1 text-xs font-bold flex-shrink-0"
+              title="Quay lại Danh Sách Chương"
             >
               <ArrowLeft className="w-4 h-4 text-cyber-accent" />
-              <span>Thoát Đọc (Danh Sách)</span>
+              <span className="hidden sm:inline">Danh Sách</span>
             </button>
-            <div>
-              <h2 className="text-sm font-bold text-cyber-accent reader-title">
+            <div className="min-w-0">
+              <h2 className="text-xs sm:text-sm font-bold text-cyber-accent reader-title truncate max-w-[150px] xs:max-w-[220px] sm:max-w-[320px]">
                 Chương {readingChapter.chapter_no}: {readingChapter.title}
               </h2>
-              <p className="text-[10px] text-cyber-muted font-medium flex items-center gap-1">
-                <span>{selectedNovel?.novel.title}</span>
-                <span className="text-cyber-accent font-mono font-bold">• Chương {readingChapter.chapter_no}/{selectedNovel?.chapters?.length || 0}</span>
+              <p className="text-[9px] sm:text-[10px] text-cyber-muted font-medium flex items-center gap-1 truncate">
+                <span className="truncate">{selectedNovel?.novel.title}</span>
+                <span className="text-cyber-accent font-mono font-bold flex-shrink-0">• {readingChapter.chapter_no}/{selectedNovel?.chapters?.length || 0}</span>
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap justify-end">
+            {/* Font Size Adjuster */}
+            <div className="flex items-center bg-slate-900 border border-cyber-border rounded-lg p-0.5 text-xs">
+              <button
+                onClick={() => handleFontSizeChange(-1)}
+                className="px-2 py-0.5 text-slate-300 hover:text-white font-bold"
+                title="Giảm cỡ chữ"
+              >
+                A-
+              </button>
+              <span className="text-[10px] text-cyber-accent font-mono px-1 font-bold">{readerFontSize}</span>
+              <button
+                onClick={() => handleFontSizeChange(1)}
+                className="px-2 py-0.5 text-slate-300 hover:text-white font-bold"
+                title="Tăng cỡ chữ"
+              >
+                A+
+              </button>
+            </div>
+
+            {/* Theme Selector */}
+            <div className="hidden xs:flex items-center bg-slate-900 border border-cyber-border rounded-lg p-0.5 text-xs gap-0.5">
+              <button
+                onClick={() => handleReaderThemeChange('dark')}
+                className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${readerTheme === 'dark' ? 'bg-cyber-accent text-white' : 'text-slate-400'}`}
+                title="Giao diện Tối"
+              >
+                Tối
+              </button>
+              <button
+                onClick={() => handleReaderThemeChange('sepia')}
+                className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${readerTheme === 'sepia' ? 'bg-amber-600 text-white' : 'text-slate-400'}`}
+                title="Giấy Sepia"
+              >
+                Giấy
+              </button>
+              <button
+                onClick={() => handleReaderThemeChange('oled')}
+                className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${readerTheme === 'oled' ? 'bg-slate-700 text-white' : 'text-slate-400'}`}
+                title="Đen OLED"
+              >
+                OLED
+              </button>
+            </div>
+
             <select
               value={readingChapter.chapter_no}
               onChange={(e) => handleReadChapter(selectedNovel.novel.id, Number(e.target.value))}
-              className="bg-slate-900 border border-cyber-border text-cyber-accent text-xs font-bold font-mono px-2.5 py-1.5 rounded-lg focus:outline-none focus:border-cyber-accent cursor-pointer"
+              className="bg-slate-900 border border-cyber-border text-cyber-accent text-xs font-bold font-mono px-2 py-1 rounded-lg focus:outline-none focus:border-cyber-accent cursor-pointer max-w-[110px] sm:max-w-[180px] truncate"
             >
               {selectedNovel?.chapters
                 ?.filter((c: any) => c.status === 'COMPLETED' || c.status === 'RESCUED')
                 ?.map((c: any) => (
                   <option key={c.chapter_no} value={c.chapter_no}>
-                    Chương {c.chapter_no}/{selectedNovel?.chapters?.length || 0}: {c.title}
+                    Chương {c.chapter_no}: {c.title}
                   </option>
                 ))}
             </select>
 
             {isEditing ? (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
                 <button
                   onClick={handleSaveEdit}
                   disabled={isSavingEdit}
-                  className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 shadow-lg shadow-emerald-500/20 transition-all disabled:opacity-50"
+                  className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold px-2.5 sm:px-3 py-1 rounded-lg text-xs flex items-center gap-1 shadow-lg shadow-emerald-500/20 transition-all disabled:opacity-50"
                   title="Lưu bản dịch đã chỉnh sửa"
                 >
                   {isSavingEdit ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-                  Lưu Chỉnh Sửa
+                  <span>Lưu</span>
                 </button>
                 <button
                   onClick={() => handleToggleEdit(false)}
                   disabled={isSavingEdit}
-                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 border border-cyber-border transition-all"
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-2.5 sm:px-3 py-1 rounded-lg text-xs flex items-center gap-1 border border-cyber-border transition-all"
                   title="Hủy bỏ chỉnh sửa"
                 >
                   <XCircle className="w-3.5 h-3.5" />
-                  Hủy
+                  <span>Hủy</span>
                 </button>
               </div>
             ) : (
               <button
                 onClick={() => handleToggleEdit(true)}
-                className="border border-cyber-accent/40 bg-cyber-accent/10 hover:bg-cyber-accent/20 text-cyber-accent font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition-all"
+                className="border border-cyber-accent/40 bg-cyber-accent/10 hover:bg-cyber-accent/20 text-cyber-accent font-bold px-2.5 sm:px-3 py-1 rounded-lg text-xs flex items-center gap-1 transition-all"
               >
                 <Wand2 className="w-3.5 h-3.5" />
-                Sửa Bản Dịch
+                <span className="hidden sm:inline">Sửa Bản Dịch</span>
               </button>
             )}
 
             <button
               onClick={() => prevChapter && handleReadChapter(selectedNovel.novel.id, prevChapter.chapter_no)}
               disabled={!prevChapter || isEditing}
-              className="px-3 py-1.5 border border-cyber-border/60 rounded-lg text-xs font-semibold text-slate-300 hover:border-cyber-accent hover:text-cyber-accent disabled:opacity-30 disabled:hover:border-cyber-border/60 transition-all flex items-center gap-1"
+              className="px-2.5 py-1 border border-cyber-border/60 rounded-lg text-xs font-semibold text-slate-300 hover:border-cyber-accent hover:text-cyber-accent disabled:opacity-30 transition-all flex items-center gap-0.5"
             >
-              <ChevronLeft className="w-4 h-4" /> Trước
+              <ChevronLeft className="w-4 h-4" /> <span className="hidden sm:inline">Trước</span>
             </button>
 
             <button
               onClick={() => nextChapter && handleReadChapter(selectedNovel.novel.id, nextChapter.chapter_no)}
               disabled={!nextChapter || isEditing}
-              className="px-3 py-1.5 border border-cyber-border/60 rounded-lg text-xs font-semibold text-slate-300 hover:border-cyber-accent hover:text-cyber-accent disabled:opacity-30 disabled:hover:border-cyber-border/60 transition-all flex items-center gap-1"
+              className="px-2.5 py-1 border border-cyber-border/60 rounded-lg text-xs font-semibold text-slate-300 hover:border-cyber-accent hover:text-cyber-accent disabled:opacity-30 transition-all flex items-center gap-0.5"
             >
-              Sau <ChevronRight className="w-4 h-4" />
+              <span className="hidden sm:inline">Sau</span> <ChevronRight className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -267,19 +343,20 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
           onScroll={(e) => {
             scrollPosRef.current = (e.target as HTMLDivElement).scrollTop
           }}
-          className="flex-1 overflow-y-auto px-4 sm:px-8 py-5 text-slate-200 leading-relaxed font-sans text-base pb-44 md:pb-32 reader-content-body w-full"
+          className="flex-1 overflow-y-auto px-4 sm:px-10 md:px-16 py-6 leading-relaxed font-sans pb-44 md:pb-32 reader-content-body w-full max-w-4xl mx-auto"
+          style={{ fontSize: `${readerFontSize}px`, lineHeight: 1.8 }}
         >
           {isEditing ? (
             <div
               ref={editorRef}
               contentEditable
               suppressContentEditableWarning
-              className="focus:outline-none min-h-[500px] w-full leading-relaxed font-sans text-base text-slate-200"
-              style={{ letterSpacing: 'normal' }}
+              className="focus:outline-none min-h-[500px] w-full leading-relaxed font-sans"
+              style={{ letterSpacing: 'normal', fontSize: `${readerFontSize}px`, lineHeight: 1.8 }}
               dangerouslySetInnerHTML={{ __html: formatChapterTextForReader(readingChapter.translated_text) }}
             />
           ) : (
-            <div className="w-full leading-relaxed text-slate-200 font-sans text-base">
+            <div className="w-full leading-relaxed font-sans" style={{ fontSize: `${readerFontSize}px`, lineHeight: 1.8 }}>
               {splitParagraphs(readingChapter.translated_text).map((pText, idx) => (
                 <ParagraphItem key={idx} htmlContent={pText} paraIdx={idx} />
               ))}
@@ -440,17 +517,17 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
 
           </div>
 
-          <div className="flex gap-2 flex-wrap justify-end">
+          <div className="flex gap-1.5 sm:gap-2 flex-wrap items-center justify-start sm:justify-end w-full sm:w-auto">
             {/* Quick Fix All Yellow Sentences Button */}
             {yellowChaptersCount > 0 && (
               <button
                 onClick={() => handleQuickFixAll(selectedNovel.novel.id)}
                 disabled={isFixingAll || isFixingRed}
-                className="bg-amber-500/20 border border-amber-500/50 hover:bg-amber-500/30 text-amber-300 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg disabled:opacity-40 animate-pulse"
+                className="bg-amber-500/20 border border-amber-500/50 hover:bg-amber-500/30 text-amber-300 font-bold px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg disabled:opacity-40 animate-pulse"
                 title="Gom tất cả các câu chứa chữ vàng gửi AI biên tập mượt mà 1 lượt duy nhất"
               >
                 {isFixingAll ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
-                ⚡ Sửa Chữ Vàng ({yellowChaptersCount})
+                <span>Sửa Vàng ({yellowChaptersCount})</span>
               </button>
             )}
 
@@ -459,11 +536,11 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
               <button
                 onClick={() => handleBatchFixRed(selectedNovel.novel.id)}
                 disabled={isFixingAll || isFixingRed}
-                className="bg-rose-500/20 border border-rose-500/50 hover:bg-rose-500/30 text-rose-300 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg disabled:opacity-40 animate-pulse"
+                className="bg-rose-500/20 border border-rose-500/50 hover:bg-rose-500/30 text-rose-300 font-bold px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg disabled:opacity-40 animate-pulse"
                 title="Gom tất cả lỗi Hán tự dịch sai gửi AI sửa mượt mà 1 lượt duy nhất"
               >
                 {isFixingRed ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
-                ⚡ Sửa Hán Tự ({redChaptersCount})
+                <span>Sửa Đỏ ({redChaptersCount})</span>
               </button>
             )}
 
@@ -471,42 +548,42 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
             <button
               onClick={() => handleDownloadNovel(selectedNovel.novel.id, 'txt')}
               disabled={isDownloading || completedCount === 0}
-              className="border border-cyber-accent/40 hover:bg-cyber-accent/10 text-cyber-accent font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg disabled:opacity-40"
+              className="border border-cyber-accent/40 hover:bg-cyber-accent/10 text-cyber-accent font-bold px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs flex items-center gap-1 transition-all shadow-lg disabled:opacity-40"
               title="Tải file TXT gộp tất cả chương"
             >
               {isDownloading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-              TXT
+              <span>TXT</span>
             </button>
 
             {/* Download DOCX */}
             <button
               onClick={() => handleDownloadNovel(selectedNovel.novel.id, 'docx')}
               disabled={isDownloading || completedCount === 0}
-              className="border border-cyber-purple/40 hover:bg-cyber-purple/10 text-cyber-purple font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg disabled:opacity-40"
+              className="border border-cyber-purple/40 hover:bg-cyber-purple/10 text-cyber-purple font-bold px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs flex items-center gap-1 transition-all shadow-lg disabled:opacity-40"
               title="Tải file DOCX gộp tất cả chương"
             >
               {isDownloading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-              DOCX
+              <span>DOCX</span>
             </button>
 
             <button
               onClick={() => handleResetChapters(selectedNovel.novel.id)}
               disabled={isResetting}
-              className="border border-cyber-danger/30 hover:bg-cyber-danger/10 text-cyber-danger font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg disabled:opacity-40"
+              className="border border-cyber-danger/30 hover:bg-cyber-danger/10 text-cyber-danger font-bold px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs flex items-center gap-1 transition-all shadow-lg disabled:opacity-40"
             >
               {isResetting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
-              Reset Tất Cả
+              <span>Reset</span>
             </button>
 
-            {/* Nút Restart Toàn Bộ - Xóa sạch entities, audio, corrections */}
+            {/* Nút Restart Toàn Bộ */}
             <button
               onClick={() => setShowRestartConfirm(true)}
               disabled={isRestarting}
-              className="border-2 border-red-500/50 hover:bg-red-500/20 text-red-400 font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg shadow-red-500/10 disabled:opacity-40"
+              className="border-2 border-red-500/50 hover:bg-red-500/20 text-red-400 font-bold px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl text-xs flex items-center gap-1 transition-all shadow-lg shadow-red-500/10 disabled:opacity-40"
               title="Xóa SẠCH tất cả: bản dịch, audio, thực thể, lỗi — dịch lại từ đầu"
             >
               {isRestarting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <span>🔄</span>}
-              Restart Toàn Bộ
+              <span>Restart</span>
             </button>
           </div>
         </div>
@@ -558,7 +635,7 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
               const isRescued = ch.status === 'RESCUED'
               const isCompleted = ch.status === 'COMPLETED' || isRescued
               const isFailed = ch.status === 'FAILED'
-              const hasYellowText = isCompleted && Boolean(ch.has_fallback_words || (ch.translated_text && ch.translated_text.includes('class="fallback-word"')))
+              const hasYellowText = isCompleted && Boolean(ch.has_fallback_words || (ch.translated_text && (ch.translated_text.includes('class="fallback-word"') || ch.translated_text.includes('class="fixed-word"') || ch.translated_text.includes('class="fixed-sentence"'))))
               const hasRedText = isCompleted && Boolean(ch.has_swept_errors || (ch.translated_text && (ch.translated_text.includes('class="swept-error"') || ch.translated_text.includes('class="swept-chinese"'))))
 
               return (

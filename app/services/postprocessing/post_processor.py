@@ -13,28 +13,41 @@ async def sweep_chinese_characters(text: str) -> str:
     """
     Quét và tự động dịch vét các Hán tự còn sót lại trong văn bản sang tiếng Việt.
     Ưu tiên tra từ điển Unblock/Sắc hiệp trước (tránh dịch 骚 thành 'Sao', 奸 thành 'độc ác').
+    Tự động gọt bỏ phần giải nghĩa trong ngoặc đơn đi kèm (VD: '玲珑有致 (tinh xảo)' -> bọc dịch 'Linh Lung Hữu Trí' và bỏ '(tinh xảo)').
     Bọc thẻ gạch chân xanh dương để đánh dấu ở Frontend.
     """
     if not text:
         return text
 
+    # Bảo vệ các thẻ span đã tồn tại từ trước
+    span_placeholders = {}
+    def _save_span(m):
+        key = f"__SAVED_SPAN_{len(span_placeholders)}__"
+        span_placeholders[key] = m.group(0)
+        return key
+
+    text = re.sub(r'<span\b[^>]*>.*?</span>', _save_span, text, flags=re.DOTALL | re.IGNORECASE)
+
     pattern = re.compile(r'([\u4e00-\u9fff]+)')
     matches = list(set(pattern.findall(text)))
     if not matches:
+        for ph, orig in span_placeholders.items():
+            text = text.replace(ph, orig)
         return text
         
     if len(matches) > 50:
         print(f"[POST-PROCESS] Cảnh báo: Tìm thấy {len(matches)} cụm Hán tự (>50), bỏ qua tự động dịch để tránh treo hệ thống.")
+        for ph, orig in span_placeholders.items():
+            text = text.replace(ph, orig)
         return text
         
     # Tra từ điển Unblock / Sắc hiệp trước để dịch chuẩn xác ngữ cảnh
     from app.services.unblock.rawt.rawt_decoder import ZH_TO_EROTIC_VN_MAP
     from app.services.preprocessing.dichhan.hanviet_data import build_hanviet_name
 
-    # Sắp xếp chuỗi Hán tự dài trước, ngắn sau để tránh thay thế nhầm cụm con trước cụm cha
-    sorted_matches = sorted(matches, key=len, reverse=True)
-
-    for chunk in sorted_matches:
+    # Dịch tất cả các chunks trước
+    chunk_map = {}
+    for chunk in sorted(matches, key=len, reverse=True):
         try:
             # 1. Ưu tiên từ điển sắc văn / unblock (giữ đúng độ tục, giấu TTS nhẹ)
             translated = ZH_TO_EROTIC_VN_MAP.get(chunk)
@@ -48,7 +61,7 @@ async def sweep_chinese_characters(text: str) -> str:
                 try:
                     raw_trans = await translate_text_via_google(chunk)
                     if raw_trans:
-                        # Ưu tiên lấy nghĩa giải nghĩa chuẩn xác trong ngoặc đơn (VD: 'trò chơi tục tĩu (chà đạp quấy rối)' -> 'chà đạp quấy rối')
+                        # Ưu tiên lấy nghĩa giải nghĩa chuẩn xác trong ngoặc đơn
                         match_paren = re.search(r'\((.*?)\)', raw_trans)
                         if match_paren and match_paren.group(1).strip():
                             translated = match_paren.group(1).strip()
@@ -58,22 +71,38 @@ async def sweep_chinese_characters(text: str) -> str:
                     pass
                 
             if translated and translated != chunk:
-                # Bọc thẻ gạch chân xanh kèm data-raw để phục vụ UI Frontend & Sửa lỗi nhanh
-                # Tự động chèn khoảng trắng nếu Hán tự bị dính liền với chữ tiếng Việt trước/sau (chống lỗi dính chữ như quyĐầu, bịtrò chơi)
-                vn_char = r'[a-zA-Zà-ỹÀ-Ỹ0-9]'
-                escaped_chunk = re.escape(chunk)
-                
-                def _smart_replace(m):
-                    pre = m.group(1) or ""
-                    post = m.group(2) or ""
-                    prefix_space = f"{pre} " if pre else ""
-                    suffix_space = f" {post}" if post else ""
-                    return f'{prefix_space}<span style="text-decoration: underline; text-decoration-color: blue;" class="swept-chinese" data-raw="{chunk}">{translated}</span>{suffix_space}'
-                
-                pattern = rf'({vn_char})?{escaped_chunk}({vn_char})?'
-                text = re.sub(pattern, _smart_replace, text)
+                chunk_map[chunk] = translated
         except Exception as e:
             print(f"[POST-PROCESS] Lỗi dịch Hán tự '{chunk}': {e}")
+
+    # Thay thế bằng placeholder để chuỗi con không đè vào thẻ HTML của chuỗi cha
+    # Đồng thời tự động gọt bỏ phần chú thích giải nghĩa trong ngoặc đơn đi liền sau Hán tự (VD: '玲珑有致 (tinh xảo)' -> chỉ lấy 'Linh Lung Hữu Trí')
+    replacement_placeholders = {}
+    vn_char = r'[a-zA-Zà-ỹÀ-Ỹ0-9]'
+    for chunk in sorted(chunk_map.keys(), key=len, reverse=True):
+        translated = chunk_map[chunk]
+        escaped_chunk = re.escape(chunk)
+        
+        def _smart_replace(m, c=chunk, t=translated):
+            pre = m.group(1) or ""
+            post = m.group(2) or ""
+            prefix_space = f"{pre} " if pre else ""
+            suffix_space = f" {post}" if post else ""
+            ph_key = f"__SWEPT_SPAN_{len(replacement_placeholders)}__"
+            replacement_placeholders[ph_key] = f'{prefix_space}<span style="text-decoration: underline; text-decoration-color: blue;" class="swept-chinese" data-raw="{c}">{t}</span>{suffix_space}'
+            return ph_key
+        
+        # Match Hán tự kèm ngoặc đơn chú thích giải nghĩa thừa phía sau (nếu có)
+        pattern = rf'({vn_char})?{escaped_chunk}(?:\s*[\(（][^()（）]{{1,50}}[\)）])?({vn_char})?'
+        text = re.sub(pattern, _smart_replace, text)
+
+    # Khôi phục các thẻ swept span vừa tạo
+    for ph, span_html in replacement_placeholders.items():
+        text = text.replace(ph, span_html)
+
+    # Khôi phục các thẻ span ban đầu
+    for ph, orig in span_placeholders.items():
+        text = text.replace(ph, orig)
             
     return text
 
@@ -185,7 +214,6 @@ def reformat_fragmented_paragraphs(text: str) -> str:
 def fix_broken_words(text: str, protected_names: list = None) -> str:
     """
     Phát hiện và sửa lỗi dính chữ từ LLM output (Gemini):
-    - Tách đại từ 'y' dính chữ (VD: yđang → y đang, ngươiy → ngươi y, củay → của y, biếty → biết y)
     - Chữ thường dính chữ HOA giữa câu (VD: nhìnKhiếu → nhìn Khiếu)
     - Dấu câu dính chữ liền sau (VD: rồi.Hắn → rồi. Hắn)
     - Chuẩn hóa khoảng trắng thừa
@@ -296,6 +324,10 @@ def fix_broken_words(text: str, protected_names: list = None) -> str:
     # Khử lỗi tiền tố Hán dính từ thừa (VD: "Tiểu bé gái" -> "cô bé", "Tiểu con gái" -> "cô bé")
     text = re.sub(r'(?i)\bTiểu\s+(<span\b[^>]*>(?:bé\s+gái|con\s+gái|cô\s+bé|cô\s+gái)</span>)', r'\1', text)
     text = re.sub(r'(?i)\bTiểu\s+(?:bé\s+gái|con\s+gái)\b', 'cô bé', text)
+
+    # Chuẩn hóa cụm từ chức danh giáo phái tránh lặp từ (VD: "Minh Giáo giáo chủ" -> "Giáo chủ Minh Giáo")
+    sects_pattern = r'Minh|Ma|Thần|Nhật\s+Nguyệt\s+Thần|Bạch\s+Liên|Huyết|Thiên|Cửu\s+U|Hắc\s+Phong|Ngũ\s+Độc|La\s+Sát'
+    text = re.sub(rf'(?i)\b((?:{sects_pattern})\s+Giáo)\s+giáo\s+chủ\b', r'Giáo chủ \1', text)
     
     if text != original_text:
         print("[POST-PROCESS] 🔧 fix_broken_words: Đã tự động chuẩn hóa dính chữ & khoảng trắng.")
@@ -398,7 +430,11 @@ def extract_chapter_text(full_text: str, cid: int, next_cid: int = None, chap_no
         )
         match = pattern_pair.search(full_text)
         if match and len(match.group(1).strip()) > 20:
-            return clean_extracted(match.group(1))
+            extracted_raw = match.group(1).strip()
+            # Kiểm tra an toàn: nếu đoạn trích xuất chứa thẻ BEGIN của chương khác (do LLM xếp chồng thẻ ở đầu),
+            # thì đây là đoạn lồng thẻ lỗi, không được lấy.
+            if not re.search(r"(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU)\s*(?:ID|NO|NO\.)?[_\s:-]*\d+", extracted_raw, re.IGNORECASE):
+                return clean_extracted(extracted_raw)
 
         # 2. Match từ BEGIN tag của target_id tới BEGIN tag của chương kế tiếp
         next_ids_to_try = []
@@ -520,6 +556,15 @@ async def process_and_split_batch(
             chap_nos_in_batch = [chapter_map[c] for c in cids]
             print(f"[POST-PROCESS] 📋 Bắt đầu tách {len(cids)} chương: {chap_nos_in_batch}")
             
+            # Dọn dẹp các thẻ BEGIN mồ côi bị xếp chồng ở đầu văn bản (nếu LLM nhầm lẫn chèn thẻ chương cuối lên đầu)
+            tag_p = r"(?:===\s*)?(?:\[|\()? *(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU)\s*(?:ID|NO|NO\.)?[_\s:-]*\d+\b[^\n\]\)]*(?:\]|\))?(?:\s*===)?"
+            stacked_p = re.compile(rf"({tag_p})\s*({tag_p})", re.IGNORECASE)
+            while True:
+                m_st = stacked_p.search(full_text)
+                if not m_st:
+                    break
+                full_text = full_text[:m_st.start()] + m_st.group(2) + full_text[m_st.end():]
+
             # Bước 2a: Thử bóc tách chuẩn / mềm dẻo cho từng chương
             for idx, cid in enumerate(cids):
                 chap_no = chapter_map[cid]
@@ -649,7 +694,24 @@ async def process_and_split_batch(
                             f"HỦY BỎ TOÀN BỘ LÔ (Chương {chap_nos_in_batch}), XÓA SẠCH DỮ LIỆU DỞ DANG VÀ DỊCH LẠI!"
                         )
                         print(err_msg)
-                        raise ValueError(err_msg)
+            # 3e. Kiểm tra chống trùng lặp nội dung giữa các chương trong lô (khi LLM bị ảo giác chỉ dịch 1 chương)
+            if len(cids) > 1:
+                seen_snippets = {}
+                for cid in cids:
+                    c_text = extracted_map.get(cid, "").strip()
+                    # Lấy đoạn văn mẫu 100 ký tự (bỏ khoảng trắng và dấu câu)
+                    snippet = re.sub(r"[\s\W_]+", "", c_text[:200].lower())
+                    if len(snippet) >= 30:
+                        if snippet in seen_snippets:
+                            dup_chap = chapter_map[seen_snippets[snippet]]
+                            curr_chap = chapter_map[cid]
+                            err_msg = (
+                                f"❌ [TRÙNG LẶP NỘI DUNG] Chương {curr_chap} bị trùng lặp nội dung với Chương {dup_chap} "
+                                f"(do LLM xếp chồng thẻ và chỉ dịch 1 chương). HỦY BỎ LÔ {chap_nos_in_batch} ĐỂ DỊCH LẠI!"
+                            )
+                            print(err_msg)
+                            raise ValueError(err_msg)
+                        seen_snippets[snippet] = cid
 
             # Bước 4: Hậu xử lý từng nội dung và Lưu DB
             # Lấy danh sách tên thực thể Tiếng Việt để bảo vệ không bị tách nhầm
@@ -667,12 +729,11 @@ async def process_and_split_batch(
                 print(f"[POST-PROCESS] Đang xử lý hoàn thiện chương {chap_no}...")
                 chap_text = extracted_map[cid]
 
-                # 3a. Sweep Chinese
+                # 3a. Sweep Chinese (Dịch vá Hán tự sót bằng Hán-Việt/HanLP hoặc Google Dịch và bọc thẻ xanh báo lỗi)
                 chap_text = await sweep_chinese_characters(chap_text)
                 
                 # 3b. Fix broken words (dính chữ từ LLM output) — có bảo vệ tên thực thể
                 chap_text = fix_broken_words(chap_text, protected_names=protected_names)
-                
                 
                 # 3c. Enforce entity names (lưới an toàn cuối cùng)
                 chap_text = await enforce_entity_names(chap_text, novel_id)
@@ -703,32 +764,23 @@ async def process_and_split_batch(
                     
                 saved_files.append(file_path)
 
-                # 4b. Tự động tạo và lưu văn bản đã làm sạch cho TTS vào 04b_VanBanTTS
-                from app.services.tts.pipeline import sanitize_tts_text
-                from app.services.storage.file_storage import save_tts_text_file
-
-                tts_clean_text = sanitize_tts_text(chap_text)
-                tts_file_path = save_tts_text_file(novel_folder, chap_no, tts_clean_text)
-                
-                # Cập nhật DB cho tất cả các loại phiên bản kết quả: FINAL, CONTEXTT, EDITED, LLM, TTS_TEXT
-                for v_type in ["FINAL", "CONTEXTT", "EDITED", "LLM", "TTS_TEXT"]:
+                # 4b. Cập nhật DB cho tất cả các loại phiên bản kết quả: FINAL, CONTEXTT, EDITED, LLM
+                for v_type in ["FINAL", "CONTEXTT", "EDITED", "LLM"]:
                     stmt_ver = select(ChapterVersion).where(
                         ChapterVersion.chapter_id == cid, 
                         ChapterVersion.version_type == v_type
                     )
                     res_ver = await session.execute(stmt_ver)
                     ver = res_ver.scalar_one_or_none()
-                    v_path = tts_file_path if v_type == "TTS_TEXT" else file_path
-                    v_content = tts_clean_text if v_type == "TTS_TEXT" else chap_text
                     if ver:
-                        ver.file_path = v_path
-                        ver.content = v_content
+                        ver.file_path = file_path
+                        ver.content = chap_text
                     else:
                         session.add(ChapterVersion(
                             chapter_id=cid, 
                             version_type=v_type, 
-                            file_path=v_path, 
-                            content=v_content
+                            file_path=file_path, 
+                            content=chap_text
                         ))
                     
                 # Update status
@@ -762,6 +814,16 @@ async def process_and_split_batch(
         raise e
         
     print(f"[POST-PROCESS] Hoàn tất Hậu xử lý cho {len(saved_files)} chương.")
+    
+    # 5b. Thông báo real-time tới Frontend để tự động cập nhật danh sách chương ngay lập tức
+    try:
+        from app.api.translation_router import broadcast_sse
+        broadcast_sse("chapter_updated", {
+            "novelId": novel_id,
+            "completedBatchCount": len(saved_files)
+        })
+    except Exception:
+        pass
     
     # 6. Tổng hợp file truyện hoàn chỉnh (Full TXT)
     exp_res = await export_full_novel_txt(novel_id)
