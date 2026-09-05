@@ -38,6 +38,8 @@ def sanitize_chinese_raw_text(text: str) -> str:
     t = re.sub(r'(?m)^\s*(?:蘑菇面要加蛋|Mì\s+nấm\s+.*)\s*\n?', '', t)
     t = re.sub(r'(?m)^\s*\d+\s*(?:字|Chữ|từ)\s*\n?', '', t)
     t = re.sub(r'(?m)^\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s*\n?', '', t)
+    # Loại bỏ tiền tố "Chương XXX:" ở đầu văn bản (do crawler tự gắn, thường bị lệch số chương so với thực tế truyện)
+    t = re.sub(r'^\s*Chương\s*\d+\s*[:\-–]\s*', '', t, flags=re.IGNORECASE)
     
     return t
 

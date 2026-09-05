@@ -98,6 +98,15 @@ async def post_gemini_with_retry(
                 await asyncio.sleep(wait_seconds)
             else:
                 return resp
+        elif resp.status_code == 503:
+            wait_s = min(4.0 * attempt + 3.0, 25.0)
+            log_503 = f"⚠️ [LLM 503 Server Busy] Google AI Studio đang quá tải tạm thời (High Demand). Đang chờ {wait_s:.0f}s để thử lại ({attempt}/{max_retries})..."
+            print(log_503)
+            _safe_add_log(log_503, "warning")
+            if attempt < max_retries:
+                await asyncio.sleep(wait_s)
+            else:
+                return resp
         else:
             # Lỗi khác (400, 500...), thử lại với exponential backoff ngắn
             log_err = f"⚠️ [LLM HTTP {resp.status_code}] Gặp lỗi API: {resp.text[:150]}... Đang chờ 5s để thử lại ({attempt}/{max_retries})."

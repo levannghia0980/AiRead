@@ -164,6 +164,9 @@ def estimate_chapter_json_from_text(
     curr = 0.0
 
     for i, s_text in enumerate(sentences):
+        s_text = re.sub(r'\s+', ' ', s_text).strip()
+        if not s_text:
+            continue
         dur = total_duration_sec * (sent_weights[i] / tot_weight)
         s_start = round(curr, 3)
         s_end = round(total_duration_sec if i == len(sentences) - 1 else curr + dur, 3)

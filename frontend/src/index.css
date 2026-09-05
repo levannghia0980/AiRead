@@ -288,6 +288,7 @@ html.theme-light ::-webkit-scrollbar-thumb:hover,
 .theme-light .text-cyber-muted {
   color: #6b635b !important;
 }
+  border-radius: 2px;
 
 .theme-light .text-cyber-accent {
   color: #b45309 !important;
@@ -346,6 +347,25 @@ html.theme-light ::-webkit-scrollbar-thumb:hover,
   background-color: rgba(56, 189, 248, 0.08) !important;
   padding: 0 2px !important;
   border-radius: 2px !important;
+}
+
+/* Cụm từ được giải mã từ tính năng Giấu Từ (Unblock) -> Bôi màu Tím nổi bật */
+.unblock-sensitive {
+  color: #d8b4fe !important;
+  text-decoration: underline !important;
+  text-decoration-color: #a855f7 !important;
+  text-underline-offset: 3px !important;
+  font-weight: 600 !important;
+  background-color: rgba(168, 85, 247, 0.22) !important;
+  padding: 1px 4px !important;
+  border-radius: 4px !important;
+  box-shadow: 0 0 10px rgba(168, 85, 247, 0.3) !important;
+  display: inline !important;
+  transition: all 0.2s ease !important;
+}
+.unblock-sensitive:hover {
+  background-color: rgba(168, 85, 247, 0.4) !important;
+  color: #faf5ff !important;
 }
 
 .fixed-sentence {

@@ -3,10 +3,12 @@ from app.services.preprocessing.crawler.plugins.shuba69 import Shuba69Scraper
 from app.services.preprocessing.crawler.plugins.nr41 import Nr41Scraper
 from app.services.preprocessing.crawler.plugins.alicesw import AliceswScraper
 from app.services.preprocessing.crawler.plugins.zongheng import ZonghengScraper
+from app.services.preprocessing.crawler.plugins.fanqie import FanqieScraper
 from app.services.preprocessing.crawler.plugins.generic import GenericScraper
 
 # Registered scraper plugins in check order
 SCRAPERS = [
+    FanqieScraper,
     Shuba69Scraper,
     Nr41Scraper,
     AliceswScraper,

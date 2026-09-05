@@ -60,11 +60,12 @@ PROXY_SOURCES = [
 
 def _calc_timeout(text: str) -> float:
     """
-    Adaptive timeout [12s, 30s]:
-    - Tối thiểu 12s: đảm bảo đủ thời gian bắt tay TLS/WebSocket.
-    - Tối đa 30s: chunk dài vẫn hoàn tất an toàn, proxy chết không treo lâu.
+    Adaptive timeout [15s, 90s]:
+    - Tối thiểu 15s: đảm bảo đủ thời gian bắt tay TLS/WebSocket.
+    - An toàn theo độ dài: ~10 chars/s + 15s buffer.
+    - Với chunk 650 chars: 650 / 10 + 15 = 80s timeout, đủ thời gian cho câu có ngắt nghỉ sâu.
     """
-    return min(max(len(text) / 25.0 + 10.0, 12.0), 30.0)
+    return min(max(len(text) / 10.0 + 15.0, 15.0), 90.0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -354,16 +355,37 @@ class DedicatedWorker:
                 task_queue.task_done()
                 continue
 
-            # Nếu chunk MP3 đã tồn tại và hợp lệ (> 1KB), bỏ qua
+            # Nếu chunk MP3 đã tồn tại và hợp lệ (> 1KB), kiểm tra cả tính toàn vẹn từ vựng nếu có json
             if os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
-                results[task_id] = True
-                task_queue.task_done()
-                if on_chunk_done:
+                json_path_check = os.path.join(cur_output_dir, f"chunk_{chunk_idx:04d}.json")
+                chunk_valid = True
+                if os.path.exists(json_path_check):
                     try:
-                        on_chunk_done(task_ref, True, 0.01, out_path, self.worker_id)
+                        with open(json_path_check, "r", encoding="utf-8") as _f_cj:
+                            _chk_data = json.load(_f_cj)
+                        _chk_exp = len(re.findall(r'[\wÀ-ỹ]+', text))
+                        _chk_words = [w["word"] for w in _chk_data.get("words", []) if isinstance(w, dict) and "word" in w]
+                        _chk_act = len(re.findall(r'[\wÀ-ỹ]+', " ".join(_chk_words))) if _chk_words else len(_chk_data.get("words", []))
+                        if _chk_exp >= 10 and _chk_act < _chk_exp * 0.88:
+                            chunk_valid = False
                     except Exception:
                         pass
-                continue
+                if chunk_valid:
+                    results[task_id] = True
+                    task_queue.task_done()
+                    if on_chunk_done:
+                        try:
+                            on_chunk_done(task_ref, True, 0.01, out_path, self.worker_id)
+                        except Exception:
+                            pass
+                    continue
+                else:
+                    try:
+                        os.remove(out_path)
+                        if os.path.exists(json_path_check):
+                            os.remove(json_path_check)
+                    except Exception:
+                        pass
 
             # Nếu chunk rỗng hoàn toàn → tạo silence
             if not text or not text.strip() or not re.search(r'[\wÀ-ỹ]', text):
@@ -438,12 +460,16 @@ class DedicatedWorker:
             duration = 0.0
             t0 = time.time()
 
-            # Chuẩn bị văn bản cho TTS (Edge-TTS tự ngắt nghỉ tự nhiên theo dấu câu)
+            # Chuẩn bị văn bản cho TTS (Edge-TTS tự ngắt nghỉ tự nhiên theo đúng dấu câu chuẩn)
             tts_text = text.strip()
             if tts_text and tts_text[-1] not in '.!?…"':
                 tts_text += '.'
+            # Thêm khoảng đệm cuối chunk để Edge-TTS giải phóng 100% âm tiết cuối
+            tts_text += ' '
 
             cur_timeout = _calc_timeout(tts_text)
+            if self.engine and hasattr(self.engine, "chunk_timeout") and self.engine.chunk_timeout:
+                cur_timeout = max(cur_timeout, float(self.engine.chunk_timeout))
 
             try:
                 if os.path.exists(tmp_path):
@@ -456,12 +482,26 @@ class DedicatedWorker:
                 submaker = edge_tts.SubMaker()
 
                 async def _download_stream(c_instance):
+                    _sub_fallback = None
                     with open(tmp_path, "wb") as f_mp3:
                         async for chunk in c_instance.stream():
                             if chunk["type"] == "audio":
                                 f_mp3.write(chunk["data"])
                             elif chunk["type"] in ("WordBoundary", "SentenceBoundary"):
-                                submaker.feed(chunk)
+                                try:
+                                    submaker.feed(chunk)
+                                except ValueError:
+                                    # SubMaker rejects mixed types - use fallback
+                                    if _sub_fallback is None:
+                                        _sub_fallback = edge_tts.SubMaker()
+                                    try:
+                                        _sub_fallback.feed(chunk)
+                                    except Exception:
+                                        pass
+                    # If primary submaker got nothing but fallback did, swap
+                    if not submaker.cues and _sub_fallback and _sub_fallback.cues:
+                        submaker.cues = _sub_fallback.cues
+                        submaker.type = _sub_fallback.type
 
                 if used_direct:
                     comm = edge_tts.Communicate(text=tts_text, voice=self.voice, rate=self.rate, pitch=self.pitch, proxy=None)
@@ -471,10 +511,61 @@ class DedicatedWorker:
                 await asyncio.wait_for(_download_stream(comm), timeout=cur_timeout)
 
                 duration = time.time() - t0
-                if os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 1024:
+
+                # ── KIỂM TRA ĐỘ TOÀN VẸN 100% CỦA ÂM THANH & TỪ VỰNG ──
+                text_len = len(tts_text.strip())
+                min_expected_bytes = max(1500, int(text_len * 130))
+                actual_bytes = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
+
+                if actual_bytes < min_expected_bytes:
+                    raise RuntimeError(
+                        f"Âm thanh bị cụt/thiếu ({actual_bytes} bytes < tối thiểu {min_expected_bytes} bytes cho {text_len} ký tự). Cần thử lại!"
+                    )
+
+                # Chuyển đổi cues sang segments & words để kiểm tra nội dung
+                c_segs, c_words = cues_to_segments_and_words(submaker.cues, tts_text)
+
+                # Kiểm tra độ bao phủ thời gian của cues (tối thiểu 0.04s / ký tự cho tiếng Việt)
+                if submaker.cues and text_len > 100:
+                    total_cue_sec = (submaker.cues[-1].end.total_seconds() - submaker.cues[0].start.total_seconds())
+                    min_expected_sec = text_len * 0.04
+                    if total_cue_sec < min_expected_sec:
+                        raise RuntimeError(
+                            f"Subtitle cues bị cụt ({total_cue_sec:.1f}s < tối thiểu {min_expected_sec:.1f}s cho {text_len} ký tự). Cần thử lại!"
+                        )
+
+                # KIỂM TRA TỪ VỰNG CHÍNH XÁC (Chống rớt từ, nuốt câu, ngắt stream sớm)
+                input_words = re.findall(r'[\wÀ-ỹ]+', tts_text)
+                actual_words = [w["word"] for w in c_words] if c_words else []
+                act_words_normalized = re.findall(r'[\wÀ-ỹ]+', " ".join(actual_words)) if actual_words else []
+                actual_count = len(act_words_normalized) if act_words_normalized else len(actual_words)
+
+                if len(input_words) >= 10:
+                    if not actual_words:
+                        raise RuntimeError(
+                            f"Subchunk {chunk_idx} không thu được từ vựng nào từ subtitle cues! Cần thử lại!"
+                        )
+                    word_ratio = actual_count / len(input_words)
+                    if word_ratio < 0.88:
+                        raise RuntimeError(
+                            f"Subchunk {chunk_idx} bị thiếu từ nghiêm trọng! "
+                            f"Chỉ nhận {actual_count}/{len(input_words)} từ ({word_ratio:.1%}). Cần thử lại!"
+                        )
+
+                    # KIỂM TRA ĐUÔI CÂU CUỐI (Tail Verification - Đảm bảo phát âm trọn vẹn đến câu cuối cùng)
+                    if len(input_words) >= 5:
+                        tail_candidates = [w.lower() for w in input_words[-4:]]
+                        recent_tokens = act_words_normalized[-12:] if act_words_normalized else actual_words[-12:]
+                        recent_actual = " ".join([w.lower() for w in recent_tokens])
+                        if not any(tw in recent_actual for tw in tail_candidates):
+                            raise RuntimeError(
+                                f"Subchunk {chunk_idx} bị cắt đuôi! "
+                                f"Đuôi kỳ vọng: '{' '.join(tail_candidates)}' nhưng audio dừng tại: '{recent_actual[-30:]}'. Cần thử lại!"
+                            )
+
+                if os.path.exists(tmp_path) and actual_bytes >= min_expected_bytes:
                     os.replace(tmp_path, out_path)
                     try:
-                        c_segs, c_words = cues_to_segments_and_words(submaker.cues, tts_text)
                         with open(json_path, "w", encoding="utf-8") as f_cj:
                             json.dump({"segments": c_segs, "words": c_words, "duration": duration}, f_cj, ensure_ascii=False)
                     except Exception:
@@ -496,6 +587,12 @@ class DedicatedWorker:
                         pass
 
                 err_name = type(e_chunk).__name__
+                ch_num = task_data.get("chapter_no") if isinstance(task_data, dict) else None
+                ch_pfx = f"Ch{ch_num} " if ch_num is not None else ""
+                safe_print(
+                    f"⚠️ [W#{self.worker_id:02d}] {ch_pfx}đoạn {chunk_idx+1:02d} gặp lỗi ({err_name}): {e_chunk} (Lần thử {attempts}/{self.engine.max_retries})",
+                    flush=True
+                )
                 if attempts < self.engine.max_retries:
                     high_prio = priority - 100_000_000
                     task_queue.put_nowait((high_prio, attempts + 1, task_id, task_data))

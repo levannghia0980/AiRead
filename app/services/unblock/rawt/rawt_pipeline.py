@@ -62,5 +62,5 @@ def clear_rawt_trie_cache():
     from app.services.unblock.common.dictionary_loader import clear_dictionary_cache
     clear_dictionary_cache()
 
-def unmask_rawt_text(text: str, mapping_table: Dict[str, Dict[str, str]], highlight: bool = False, enable_erotic: bool = True) -> str:
+def unmask_rawt_text(text: str, mapping_table: Dict[str, Dict[str, str]], highlight: bool = False, enable_erotic: bool = False) -> str:
     return RawtDecoder.decode(text, mapping_table, highlight=highlight, enable_erotic=enable_erotic)

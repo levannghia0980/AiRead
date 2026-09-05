@@ -1,50 +1,36 @@
 import logging
 from typing import Tuple, Dict, Any
 from app.services.unblock.rawt.rawt_pipeline import mask_rawt_text, unmask_rawt_text, get_rawt_trie
-from app.services.unblock.contextt.contextt_pipeline import mask_contextt_text, unmask_contextt_text, get_contextt_trie
 from app.services.unblock.common.validator import Validator
 
 logger = logging.getLogger(__name__)
 
 async def mask_text_with_dictionary(text: str, mask_level: str = "word", flow: str = "rawt", **kwargs) -> Tuple[str, Dict[str, Dict[str, str]], bool]:
     """
-    Điều hướng Bọc từ nhạy cảm (Masking):
-    - flow == "contextt": Gọi module contextt_pipeline (dành riêng cho tiếng Việt).
-    - flow == "rawt": Gọi module rawt_pipeline (dành riêng cho tiếng Trung).
+    Bọc từ nhạy cảm tiếng Trung (RAW Masking) trước khi gửi sang LLM.
     """
     if not text:
         return text, {}, False
         
-    flow_clean = str(flow).lower().strip()
-    if flow_clean in ["contextt", "edited_only", "convert"]:
-        return await mask_contextt_text(text, mask_level=mask_level)
-    else:
-        return await mask_rawt_text(text, mask_level=mask_level)
+    return await mask_rawt_text(text, mask_level=mask_level)
 
 def unmask_text_with_dictionary(
     translated_text: str, 
     mapping_table: Dict[str, Dict[str, str]], 
     highlight: bool = False, 
     is_draft_only: bool = False, 
-    enable_erotic: bool = True,
+    enable_erotic: bool = False,
     flow: str = "rawt",
     **kwargs
 ) -> str:
     """
-    Điều hướng Giải mã Placeholder (Unmasking):
-    - flow == "contextt": Gọi module contextt_pipeline (Tiếng Việt -> 18+ Từ Nặng / Uyển chuyển).
-    - flow == "rawt": Gọi module rawt_pipeline (Tiếng Trung -> 18+ Từ Nặng / Uyển chuyển).
+    Giải mã Placeholder tiếng Trung sang Tiếng Việt (18+ Từ Nặng hoặc Uyển chuyển).
     """
     if not translated_text and not mapping_table:
         return translated_text or ""
 
-    flow_clean = str(flow).lower().strip()
     use_erotic = bool(enable_erotic)
-
-    if flow_clean in ["contextt", "edited_only", "convert"]:
-        return unmask_contextt_text(translated_text, mapping_table, highlight=highlight, enable_erotic=use_erotic)
-    else:
-        return unmask_rawt_text(translated_text, mapping_table, highlight=highlight, enable_erotic=use_erotic)
+    return unmask_rawt_text(translated_text, mapping_table, highlight=highlight, enable_erotic=use_erotic)
 
 def validate_placeholders(output_text: str, mapping_table: dict) -> dict:
     return Validator.check_placeholders(output_text, mapping_table)
@@ -67,12 +53,11 @@ def get_unblock_prompt_enforcer() -> str:
 """
 
 async def is_sensitive_text(text: str) -> bool:
-    """Kiểm tra xem đoạn văn bản có chứa bất kỳ từ nhạy cảm nào không (dùng cho lọc văn bản lớn)."""
+    """Kiểm tra xem đoạn văn bản có chứa bất kỳ từ nhạy cảm nào không."""
     if not text:
         return False
     raw_trie = await get_rawt_trie()
-    ctx_trie = await get_contextt_trie()
-    return len(raw_trie.find_all_matches(text)) > 0 or len(ctx_trie.find_all_matches(text)) > 0
+    return len(raw_trie.find_all_matches(text)) > 0
 
 async def is_exact_sensitive_word(text: str) -> bool:
     """
@@ -85,14 +70,14 @@ async def is_exact_sensitive_word(text: str) -> bool:
         return False
     clean = text.strip().lower()
     raw_trie = await get_rawt_trie()
-    ctx_trie = await get_contextt_trie()
     
-    if clean in raw_trie.words or clean in ctx_trie.words:
+    if clean in raw_trie.words:
         return True
         
     try:
-        from app.services.preprocessing.crawler.pronoun_protector import EROTIC_SENSITIVE_ZH
-        if clean in {w.lower() for w in EROTIC_SENSITIVE_ZH}:
+        from app.services.unblock.rawt.rawt_decoder import load_zh_erotic_map
+        zh_map = load_zh_erotic_map()
+        if clean in {w.lower() for w in zh_map}:
             return True
     except Exception:
         pass
@@ -101,11 +86,9 @@ async def is_exact_sensitive_word(text: str) -> bool:
 
 def clear_unblock_trie_cache():
     """
-    Xóa cache Trie của cả luồng RAWT và CONTEXTT để tải lại từ điển mới từ DB.
+    Xóa cache Trie của luồng RAWT để tải lại từ điển mới từ DB.
     """
     import app.services.unblock.rawt.rawt_pipeline as raw_mod
-    import app.services.unblock.contextt.contextt_pipeline as ctx_mod
     raw_mod._RAW_TRIE = None
-    ctx_mod._CONTEXT_TRIE = None
-    logger.info("Cleared unblock Trie cache for both RAWT and CONTEXTT.")
+    logger.info("Cleared unblock Trie cache for RAWT.")
 

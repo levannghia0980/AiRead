@@ -24,10 +24,10 @@ Trong quá trình dịch và tạo Audio, hệ thống lưu trữ kết quả qu
 
 ```text
 Output/
-├── 01_BanGoc/      # Văn bản gốc nhập vào hệ thống
-├── 02_DichMau_GG/   # Bản dịch tham chiếu đối chiếu
-├── 03_DichAI_LLM/   # Bản dịch AI theo từng chương
-├── 04_KetQua/       # Bản dịch hoàn thiện đã hiệu đính & chuẩn hóa
+├── 01_BanGoc/      # Văn bản gốc tiếng Trung nhập vào hệ thống
+├── 03_DichAI_LLM/   # Bản dịch AI trực tiếp (RAWT) theo từng lô chương
+├── 04_KetQua/       # Bản dịch hoàn thiện đã chuẩn hóa dấu câu & ngữ điệu
+├── 04b_VanBanTTS/   # Văn bản xử lý riêng biệt tối ưu cho giọng đọc TTS
 └── 05_Audio_TTS/    # File Audio MP3 thành phẩm
 ```
 

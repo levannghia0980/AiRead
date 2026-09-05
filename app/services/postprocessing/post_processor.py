@@ -1,12 +1,11 @@
 import re
 import os
 import shutil
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
 from sqlalchemy import select
 from app.core.database import AsyncSessionLocal
 from app.models.schema import Chapter, ChapterVersion, Novel, NovelEntity
 from app.services.unblock.unblock_pipeline import unmask_text_with_dictionary
-from app.services.preprocessing.crawler.google_translator import translate_text_via_google
 from app.services.storage.file_storage import sanitize_filename
 
 async def sweep_chinese_characters(text: str) -> str:
@@ -52,23 +51,9 @@ async def sweep_chinese_characters(text: str) -> str:
             # 1. Ưu tiên từ điển sắc văn / unblock (giữ đúng độ tục, giấu TTS nhẹ)
             translated = ZH_TO_EROTIC_VN_MAP.get(chunk)
             
-            # 2. Nếu không phải từ lóng, dùng HanLP / Hán-Việt chuẩn ngữ nghĩa
+            # 2. Nếu không phải từ lóng, dùng Hán-Việt chuẩn ngữ nghĩa
             if not translated:
                 translated = build_hanviet_name(chunk)
-                
-            # 3. Phao cứu sinh cuối cùng: Google Translate (nếu Hán-Việt không tra được)
-            if not translated or translated == chunk:
-                try:
-                    raw_trans = await translate_text_via_google(chunk)
-                    if raw_trans:
-                        # Ưu tiên lấy nghĩa giải nghĩa chuẩn xác trong ngoặc đơn
-                        match_paren = re.search(r'\((.*?)\)', raw_trans)
-                        if match_paren and match_paren.group(1).strip():
-                            translated = match_paren.group(1).strip()
-                        else:
-                            translated = re.sub(r'\(.*?\)', '', raw_trans).strip()
-                except Exception:
-                    pass
                 
             if translated and translated != chunk:
                 chunk_map[chunk] = translated
@@ -89,7 +74,7 @@ async def sweep_chinese_characters(text: str) -> str:
             prefix_space = f"{pre} " if pre else ""
             suffix_space = f" {post}" if post else ""
             ph_key = f"__SWEPT_SPAN_{len(replacement_placeholders)}__"
-            replacement_placeholders[ph_key] = f'{prefix_space}<span style="text-decoration: underline; text-decoration-color: blue;" class="swept-chinese" data-raw="{c}">{t}</span>{suffix_space}'
+            replacement_placeholders[ph_key] = f'{prefix_space}{t}{suffix_space}'
             return ph_key
         
         # Match Hán tự kèm ngoặc đơn chú thích giải nghĩa thừa phía sau (nếu có)
@@ -154,13 +139,25 @@ def sanitize_false_positive_slang(text: str) -> str:
     # === NHÓM 8: Lỗi 穴 (huyệt đạo) trong ngữ cảnh y học/địa lý ===
     t = re.sub(r'(?i)\b(lỗ\s+lồn|hoa\s+huyệt|mật\s+huyệt)\s+(vị|đạo|đạo|châm\s+cứu)\b', r'huyệt \2', t)
     t = re.sub(r'(?i)\bhang\s+lỗ\s+lồn\b', 'hang động', t)
-    
+
+    # === NHÓM 9: Lỗi 瓶颈 (bình cảnh) bị dịch nhầm thành 'bình phong' ===
+    t = re.sub(r'(?i)\b(chạm\s+(?:đến|tới)|phá\s+vỡ|đột\s+phá|vượt\s+qua|kẹt\s+ở|bế\s+tắc\s+ở)\s+(?:cái|bức|đạo)?\s*bình\s+phong\b', r'\1 bình cảnh', t)
+    t = re.sub(r'(?i)\bbình\s+phong\s+(tu\s+vi|tu\s+luyện|đột\s+phá|cảnh\s+giới)\b', r'bình cảnh \1', t)
+    t = re.sub(r'(?i)\b(?:cái|bức|đạo)\s+bình\s+phong\s+mà\s+(hắn|y|tên|gã|người|ai|ta)\b', r'bình cảnh mà \1', t)
+    t = re.sub(r'(?i)\bchạm\s+tới\s+bình\s+phong\b', 'chạm tới bình cảnh', t)
+    t = re.sub(r'(?i)\bphá\s+vỡ\s+bình\s+phong\b', 'phá vỡ bình cảnh', t)
+    t = re.sub(r'(?i)\b(?:bức|đạo|cái)\s+bình\s+phong\s+không\s+tài\s+nào\s+(vượt|bước|phá)\b', r'bình cảnh không tài nào \1', t)
+    # === NHÓM 10: Lỗi danh xưng thủ lĩnh / 老大 bị dịch nhầm thành 'đầu đàn' / 'ngón đầu đàn' ===
+    t = re.sub(r'(?i)\bngón\s+đầu\s+đàn\b', 'Văn lão đại', t)
+    t = re.sub(r'(?i)\b([A-ZÀ-Ỹ][a-zà-ỹ]+)\s+đầu\s+đàn\b', r'\1 lão đại', t)
     return t
 
 def reformat_fragmented_paragraphs(text: str) -> str:
     """
     Tự động ghép nối các câu văn miêu tả bị ngắt dòng vụn vặt từng câu thành các đoạn văn thuần Việt mượt mà.
-    Giữ nguyên các dòng hội thoại ("...", “...”) và các thẻ phân chương (=== [BẮT ĐẦU CHƯƠNG X] ===).
+    Giữ nguyên các dòng hội thoại, tiêu đề chương ("Chương X: ...") và các thẻ phân chương (=== [BẮT ĐẦU CHƯƠNG X] ===).
+    TUYỆT ĐỐI KHÔNG BAO GIỜ gộp dòng Tiêu đề chương vào đoạn văn thân truyện!
+    Giới hạn độ dài đoạn văn tối đa (~350-500 ký tự) để không dồn toàn bộ cả chương thành 1 dòng khổng lồ.
     """
     if not text:
         return text
@@ -178,11 +175,19 @@ def reformat_fragmented_paragraphs(text: str) -> str:
             new_lines.append("")
             continue
 
-        # Kiểm tra xem có phải thẻ phân chương, tiêu đề, hoặc lời thoại hội thoại
+        # 1. Kiểm tra xem có phải tiêu đề chương (Chương X: ...)
+        is_chapter_title = bool(re.match(r'^(?:Chương|Chapter|Hồi|Tiết)\s*\d*[\s:.-]', stripped, re.IGNORECASE))
+        if is_chapter_title:
+            if buffer:
+                new_lines.append(buffer)
+                buffer = ""
+            new_lines.append(stripped)
+            new_lines.append("")  # Luôn ngắt 1 dòng trống sau tiêu đề chương
+            continue
+
+        # 2. Kiểm tra xem có phải thẻ phân chương hoặc lời thoại hội thoại
         is_tag_or_dialogue = (
             stripped.startswith("===") or 
-            stripped.startswith("Chương") or 
-            stripped.startswith("CHAPTER") or
             re.match(r'^[“"‘\'「『【\[\(]', stripped) or
             re.match(r'^[-–—]\s*', stripped)
         )
@@ -195,7 +200,11 @@ def reformat_fragmented_paragraphs(text: str) -> str:
         else:
             if buffer:
                 # Nếu buffer kết thúc bằng dấu ngoặc kép hội thoại thì dừng buffer cũ
-                if re.search(r'[”"’\'」』】\]\)]$]', buffer.strip()):
+                if re.search(r'[”"’\'」』】\]\)]\s*$', buffer.strip()):
+                    new_lines.append(buffer)
+                    buffer = stripped
+                # Nếu buffer đã đủ độ dài 1 đoạn văn (>= 350 ký tự) và kết thúc bằng dấu chấm ngắt câu
+                elif len(buffer) >= 350 and re.search(r'(?:\.{1,4}|[!?…])\s*$', buffer.strip()):
                     new_lines.append(buffer)
                     buffer = stripped
                 else:
@@ -209,6 +218,147 @@ def reformat_fragmented_paragraphs(text: str) -> str:
     res = "\n".join(new_lines)
     res = re.sub(r'\n{3,}', '\n\n', res)
     return res
+
+
+def normalize_chapter_title(text: str, chap_no: int, fallback_title: str = "") -> str:
+    """
+    Đảm bảo dòng đầu tiên của chương LUÔN LUÔN là Tiêu đề chương độc lập:
+    Format: 'Chương {chap_no}: {tên_chương}'
+    Theo sau là 1 dòng trống '\\n\\n' để tách biệt hoàn toàn với thân truyện.
+    Tuyệt đối không để mất tiền tố 'Chương X:' và không dính tiêu đề vào câu truyện.
+    """
+    if not text:
+        return f"Chương {chap_no}:\n\n"
+        
+    text = text.strip()
+    lines = text.split('\n')
+    
+    # Tìm dòng đầu tiên có nội dung
+    first_idx = -1
+    for i, l in enumerate(lines):
+        if l.strip():
+            first_idx = i
+            break
+            
+    if first_idx == -1:
+        return f"Chương {chap_no}:\n\n"
+        
+    first_line = lines[first_idx].strip()
+    
+    # 1. Nếu dòng đầu tiên đã có dạng Chương X / Chapter X
+    ch_match = re.match(r'^(?:Chương|Chapter|Hồi|Tiết)\s*\d*[\s:.-]*(.*)$', first_line, re.IGNORECASE)
+    if ch_match:
+        raw_t = ch_match.group(1).strip()
+        # Loại bỏ các từ rác "(Hết chương)" hoặc "(Cầu phiếu)" dính trong tiêu đề nếu có
+        raw_t = re.sub(r'[\(（](?:cầu|hết|chương).*?[\)）]', '', raw_t, flags=re.IGNORECASE).strip()
+        
+        actual_title = raw_t
+        body_prefix = ""
+        
+        # Nếu có fallback_title sạch từ DB
+        clean_fb = ""
+        if fallback_title and len(fallback_title) <= 80:
+            clean_fb = re.sub(r'^(?:第?\s*\d+\s*章\s*[:.:-]?|Chương\s*\d+\s*[:.:-]?)', '', fallback_title, flags=re.IGNORECASE).strip()
+            clean_fb = re.sub(r'^[.:,\s-]+|[.:,\s-]+$', '', clean_fb)
+
+        # Phát hiện nếu dòng tiêu đề bị dính câu mở đầu của thân truyện:
+        if clean_fb and raw_t.lower().startswith(clean_fb.lower()) and len(raw_t) > len(clean_fb) + 5:
+            actual_title = clean_fb
+            body_prefix = raw_t[len(clean_fb):].strip()
+            body_prefix = re.sub(r'^[.:,\s-]+', '', body_prefix).strip()
+        elif len(raw_t) > 60:
+            # Tìm điểm ngắt câu đầu tiên (!.. | ?. | .. | ! | ? | .)
+            split_m = re.search(r'(?:\!\.\.|\?\.\.|\.\.|\!|\?|\.)\s+', raw_t)
+            if split_m and split_m.start() < 60:
+                actual_title = raw_t[:split_m.start() + 1].strip()
+                body_prefix = raw_t[split_m.end():].strip()
+            elif len(raw_t) > 80:
+                actual_title = raw_t[:60].strip()
+                body_prefix = raw_t[60:].strip()
+                
+        actual_title = re.sub(r'^[.:,\s-]+|[.:,\s-]+$', '', actual_title)
+        clean_title_line = f"Chương {chap_no}: {actual_title}".strip() if actual_title else f"Chương {chap_no}:"
+        
+        rest_lines = [l for l in lines[first_idx + 1:] if l.strip()]
+        if body_prefix:
+            rest_lines.insert(0, body_prefix)
+        rest = '\n'.join(rest_lines).strip()
+        return f"{clean_title_line}\n\n{rest}"
+        
+    # 2. Nếu dòng đầu tiên ngắn (<= 80 ký tự), không phải lời thoại/suy nghĩ,
+    # thì đây chính là tên chương mà LLM bỏ sót tiền tố "Chương X:"
+    # (Ví dụ: "Bánh xe quay màu đen.." hoặc "Kẻ thu thây")
+    if len(first_line) <= 80 and not re.search(r'^[“"‘\'\-–—\[\(]', first_line) and not re.search(r'[“"‘\']', first_line):
+        clean_t = re.sub(r'^[.:,\s-]+|[.:,\s-]+$', '', first_line)
+        clean_t = re.sub(r'[\(（](?:cầu|hết|chương).*?[\)）]', '', clean_t, flags=re.IGNORECASE).strip()
+        clean_title_line = f"Chương {chap_no}: {clean_t}".strip() if clean_t else f"Chương {chap_no}:"
+        rest = '\n'.join([l for l in lines[first_idx + 1:] if l.strip()]).strip()
+        return f"{clean_title_line}\n\n{rest}"
+        
+    # 3. Nếu dòng đầu tiên dài (> 80 ký tự), có thể tên chương bị LLM dính liền vào câu đầu tiên
+    # Ví dụ: "Bánh xe quay màu đen.. Mẹ kiếp!.." hoặc "Kẻ thu thây Cỏ cây đẫm sương đêm,,"
+    if fallback_title and len(fallback_title) <= 80:
+        clean_fb = re.sub(r'^(?:第?\s*\d+\s*章\s*[:.:-]?|Chương\s*\d+\s*[:.:-]?)', '', fallback_title, flags=re.IGNORECASE).strip()
+        clean_fb = re.sub(r'^[.:,\s-]+|[.:,\s-]+$', '', clean_fb)
+        if clean_fb and first_line.lower().startswith(clean_fb.lower()):
+            rest_line = first_line[len(clean_fb):].strip()
+            rest_line = re.sub(r'^[.:,\s-]+', '', rest_line).strip()
+            clean_title_line = f"Chương {chap_no}: {clean_fb}"
+            lines[first_idx] = rest_line
+            rest = '\n'.join([l for l in lines[first_idx:] if l.strip()]).strip()
+            return f"{clean_title_line}\n\n{rest}"
+
+    # 4. Fallback: Nếu không tách được, thêm tiêu đề chuẩn lên đầu chương
+    clean_fb = ""
+    if fallback_title and len(fallback_title) <= 80:
+        clean_fb = re.sub(r'^(?:第?\s*\d+\s*章\s*[:.:-]?|Chương\s*\d+\s*[:.:-]?)', '', fallback_title, flags=re.IGNORECASE).strip()
+        clean_fb = re.sub(r'^[.:,\s-]+|[.:,\s-]+$', '', clean_fb)
+    title_str = f"Chương {chap_no}: {clean_fb}".strip() if clean_fb else f"Chương {chap_no}:"
+    return f"{title_str}\n\n{text}"
+
+
+def format_dialogue_flow(text: str) -> str:
+    """
+    Chuẩn hóa nhịp ngắt thoại để giọng đọc TTS không bị dính câu / mất nhịp:
+    - Nhận diện lời dẫn thoại ('anh nói:', 'hắn bảo:', 'tôi hỏi:', 'đáp,,', v.v.):
+      Giữ nguyên dấu ',, ' và ngắt dòng '\\n' để TTS ngắt nghỉ tự nhiên trước lời thoại.
+    - Nhận diện kết thúc lời thoại trước lời thoại khác hoặc lời dẫn/phản ứng tiếp theo:
+      Ngắt dòng '\\n' để nhân vật nói xong không bị nuốt câu hoặc đọc dồn dập vào câu sau.
+    - Sau khi lời dẫn của nhân vật kết thúc (vd 'Anh đáp.. '), nếu có câu tiếp theo thì ngắt dòng '\\n'.
+    - Tuyệt đối giữ nguyên dấu nhân bản (.. và ,,), KHÔNG chuyển thành '...'.
+    """
+    if not text:
+        return text
+
+    # 1. Lead-in: Người nói + động từ nói + dấu hai chấm/phẩy -> đổi chuẩn ',,\n'
+    lead_in_pat = re.compile(
+        r'(?<!\bchính xác mà )(?<!\bnói tóm lại )(?<!\bthực tế mà )'
+        r'(\b(?:nói|bảo|hỏi|đáp|thốt lên|kêu lên|quát|hét|gầm lên|cười nói|lên tiếng hỏi|trầm giọng hỏi|gật đầu đáp|lắc đầu đáp|thì thầm|lẩm bẩm))\s*([,:;]+)\s+(?=[A-ZÀ-Ỹ0-9])',
+        re.IGNORECASE
+    )
+    text = lead_in_pat.sub(r'\1,,\n', text)
+
+    # 2. Xong câu nói của nhân vật + lời dẫn truyện/người đáp tiếp theo
+    attr_after_pat = re.compile(
+        r'([.!?…]+)\s+(?=(?:[A-ZÀ-Ỹ][\w\dÀ-ỹ\s]{0,25}?\s+)?(?:nói|bảo|hỏi|đáp|thốt lên|kêu lên|quát|hét|gầm lên|lên tiếng hỏi|ngạc nhiên hỏi|trầm giọng hỏi|gật đầu đáp|lắc đầu đáp)\s*[.!?…]+)',
+        re.IGNORECASE
+    )
+    text = attr_after_pat.sub(r'\1\n', text)
+
+    # 3. Sau khi lời dẫn của nhân vật kết thúc (vd: "Anh đáp.. "), nếu có câu tiếp theo thì ngắt dòng \n
+    tag_end_pat = re.compile(
+        r'(\b(?:nói|bảo|hỏi|đáp|thốt lên|kêu lên|quát|hét|gầm lên|lên tiếng hỏi|ngạc nhiên hỏi|trầm giọng hỏi|gật đầu đáp|lắc đầu đáp)\s*[.!?…]+)\s+(?=[A-ZÀ-Ỹ0-9])',
+        re.IGNORECASE
+    )
+    text = tag_end_pat.sub(r'\1\n', text)
+
+    # 4. Dọn dẹp khoảng trắng và xuống dòng thừa: không quá 2 dòng trống liên tiếp
+    text = re.sub(r'[^\S\r\n]+', ' ', text)
+    text = re.sub(r'\n[^\S\r\n]+', '\n', text)
+    text = re.sub(r'[^\S\r\n]+\n', '\n', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    return text.strip()
 
 
 def fix_broken_words(text: str, protected_names: list = None) -> str:
@@ -389,6 +539,21 @@ def enforce_chapter_corrections(text: str, corrections: Dict[str, str]) -> str:
                 text = re.sub(pattern, correct_text, text)
     return text
 
+def make_chapter_begin_pattern(target_id: Union[str, int]) -> str:
+    """Tạo regex bắt thẻ bắt đầu chương (hỗ trợ cả thẻ XML <chapter_X> siêu bền bỉ và thẻ văn bản)."""
+    return (
+        rf"(?:<\s*chapter_{target_id}\s*>|"
+        rf"(?:===\s*)?(?:\[|\()?\s*(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{target_id}\b[^\n\]\)]*(?:\]|\))?(?:\s*===)?|"
+        rf"(?:===\s*(?:\[|\()?\s*|(?:\[|\()\s*)(?:CHƯƠNG|CHAPTER)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{target_id}\b[^\n\]\)]*(?:\]|\))?(?:\s*===)?)"
+    )
+
+def make_chapter_end_pattern(target_id: Union[str, int]) -> str:
+    """Tạo regex bắt thẻ kết thúc chương (hỗ trợ cả thẻ XML </chapter_X> siêu bền bỉ và thẻ văn bản)."""
+    return (
+        rf"(?:<\s*/\s*chapter_{target_id}\s*>|"
+        rf"(?:===\s*)?(?:\[|\()?\s*(?:END_CHAPTER|END\s+CHAPTER|KẾT\s+TH[ÚUƯ][CCh]\s+CHƯƠNG|KẾT\s+TH[ÚUƯ][CCh])[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{target_id}\b[^\n\]\)]*(?:\]|\))?(?:\s*===)?)"
+    )
+
 def extract_chapter_text(full_text: str, cid: int, next_cid: int = None, chap_no: int = None, next_chap_no: int = None) -> Optional[str]:
     """
     Trích xuất nội dung chương cực kỳ bền bỉ (robust), chịu lỗi tốt.
@@ -425,7 +590,7 @@ def extract_chapter_text(full_text: str, cid: int, next_cid: int = None, chap_no
     for target_id in ids_to_try:
         # 1. Matching BEGIN tag và END tag mềm dẻo (BẮT BUỘC có target_id ở cả 2 thẻ để tránh khớp nhầm chữ 'kết thúc' trong lời thoại/văn bản)
         pattern_pair = re.compile(
-            rf"(?:===\s*)?(?:\[|\()? \s*(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU|CHƯƠNG|CHAPTER)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{target_id}\b[^\n\]\)]*(?:\]|\))?(?:\s*===)?(.*?)(?:===\s*)?(?:\[|\()? \s*(?:END_CHAPTER|END\s+CHAPTER|KẾT\s+THÚC\s+CHƯƠNG|KẾT\s+THÚC)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{target_id}\b[^\n\]\)]*(?:\]|\))?(?:\s*===)?",
+            rf"{make_chapter_begin_pattern(target_id)}(.*?){make_chapter_end_pattern(target_id)}",
             re.DOTALL | re.IGNORECASE
         )
         match = pattern_pair.search(full_text)
@@ -433,7 +598,7 @@ def extract_chapter_text(full_text: str, cid: int, next_cid: int = None, chap_no
             extracted_raw = match.group(1).strip()
             # Kiểm tra an toàn: nếu đoạn trích xuất chứa thẻ BEGIN của chương khác (do LLM xếp chồng thẻ ở đầu),
             # thì đây là đoạn lồng thẻ lỗi, không được lấy.
-            if not re.search(r"(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU)\s*(?:ID|NO|NO\.)?[_\s:-]*\d+", extracted_raw, re.IGNORECASE):
+            if not re.search(r"(?:<\s*chapter_\d+\s*>|BEGIN_CHAPTER|BEGIN\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU)\s*(?:ID|NO|NO\.)?[_\s:-]*\d+", extracted_raw, re.IGNORECASE):
                 return clean_extracted(extracted_raw)
 
         # 2. Match từ BEGIN tag của target_id tới BEGIN tag của chương kế tiếp
@@ -441,18 +606,12 @@ def extract_chapter_text(full_text: str, cid: int, next_cid: int = None, chap_no
         if next_chap_no is not None:
             next_ids_to_try.extend([str(next_chap_no), f"{next_chap_no:02d}", f"{next_chap_no:03d}"])
 
-        begin_pattern = re.compile(
-            rf"(?:===\s*)?(?:\[|\()? \s*(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU|CHƯƠNG|CHAPTER)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{target_id}\b[^\n\]\)]*(?:\]|\))?(?:\s*===)?",
-            re.IGNORECASE
-        )
+        begin_pattern = re.compile(make_chapter_begin_pattern(target_id), re.IGNORECASE)
         begin_match = begin_pattern.search(full_text)
         if begin_match:
             start_idx = begin_match.end()
             for nid in next_ids_to_try:
-                next_pattern = re.compile(
-                    rf"(?:===\s*)?(?:\[|\()? \s*(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU|CHƯƠNG|CHAPTER)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{nid}\b[^\n\]\)]*(?:\]|\))?(?:\s*===)?",
-                    re.IGNORECASE
-                )
+                next_pattern = re.compile(make_chapter_begin_pattern(nid), re.IGNORECASE)
                 next_match = next_pattern.search(full_text, pos=start_idx)
                 if next_match:
                     end_idx = next_match.start()
@@ -460,10 +619,15 @@ def extract_chapter_text(full_text: str, cid: int, next_cid: int = None, chap_no
                     if len(extracted) > 20:
                         return extracted
 
-            # Nếu là chương cuối lô, lấy đến thẻ KẾT THÚC CHƯƠNG {target_id} hoặc hết text
+            # Nếu là chương cuối lô, lấy đến thẻ KẾT THÚC CHƯƠNG {target_id} hoặc trước thẻ BẮT ĐẦU kế tiếp
             remaining = full_text[start_idx:]
+            # Cắt ngay nếu gặp bất kỳ thẻ BẮT ĐẦU CHƯƠNG tiếp theo nào (kể cả XML <chapter_X>)
+            # BẮT BUỘC có dấu ngoặc [ / ( hoặc dấu === hoặc số chương để không cắt nhầm từ 'bắt đầu' trong câu thoại
+            next_any_begin = re.search(r"(?:<\s*chapter_\d+\s*>|(?:===\s*\[?|\[)\s*(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU)\b|\bBẮT\s+ĐẦU\s+CHƯƠNG\s*\d+\b|\bBEGIN_CHAPTER\s*\d+\b)", remaining, re.IGNORECASE)
+            if next_any_begin:
+                remaining = remaining[:next_any_begin.start()]
             end_tag_pattern = re.compile(
-                rf"(?:===\s*)?(?:\[|\()? \s*(?:END_CHAPTER|END\s+CHAPTER|KẾT\s+THÚC\s+CHƯƠNG|KẾT\s+THÚC)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{target_id}\b[^\n\]\)]*(?:\]|\))?(?:\s*===)?.*",
+                rf"{make_chapter_end_pattern(target_id)}.*",
                 re.IGNORECASE | re.DOTALL
             )
             remaining = end_tag_pattern.sub("", remaining)
@@ -516,9 +680,17 @@ async def process_and_split_batch(
     4. Lưu vào file và cập nhật DB.
     """
     # 1. Unmask (Giải mã từ nhạy cảm - hỗ trợ Phong cách Dịch Sắc 18+ Từ Nặng vs Dịch Uyển Chuyển YouTube)
-    is_contextt = (version_type.upper() == "CONTEXTT")
-    print(f"[POST-PROCESS] Đang giải mã các từ nhạy cảm (Unmasking - Phong cách Dịch Sắc 18+ Từ Nặng: {enable_erotic} | Flow: {version_type})...")
-    full_text = unmask_text_with_dictionary(translated_text_masked, mapping_table, is_draft_only=is_contextt, enable_erotic=enable_erotic, flow=version_type.lower())
+    print(f"[POST-PROCESS] Đang giải mã các từ nhạy cảm (Unmasking - Phong cách Dịch Sắc 18+ Từ Nặng: {enable_erotic})...")
+    full_text = unmask_text_with_dictionary(translated_text_masked, mapping_table, highlight=True, enable_erotic=enable_erotic)
+    
+    # Khử sạch tiền tố rác PREFIX_ do LLM hiểu nhầm prompt tự sinh ra quanh thực thể
+    full_text = re.sub(r'§?\s*PREFIX_([A-Za-z0-9_一-鿿\s]+?)§?', r'\1', full_text)
+    full_text = re.sub(r'\bPREFIX_', '', full_text)
+    full_text = full_text.replace('PREFIX_', '')
+    
+    # Collapse double-spacing do LLM tự thêm: loại bỏ dòng trống lẻ xen giữa các câu
+    # (giữ lại các dòng trống liền kề thẻ phân chương === [BẮT ĐẦU/KẾT THÚC ...] ===)
+    full_text = re.sub(r'(?<!\n)\n\n(?!\n)', '\n', full_text)
     
     # Khởi tạo thư mục
     async with AsyncSessionLocal() as session:
@@ -639,17 +811,11 @@ async def process_and_split_batch(
                     chap_text = extracted_map.get(cid, "").strip()
                     
                     # 3a. Kiểm tra thẻ BẮT ĐẦU CHƯƠNG trong LLM output
-                    begin_tag_pattern = re.compile(
-                        rf"(?:===\s*)?(?:\[|\()? *(?:BEGIN_CHAPTER|BEGIN\s+CHAPTER|BẮT\s+ĐẦU\s+CHƯƠNG|BẮT\s+ĐẦU|CHƯƠNG|CHAPTER)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{chap_no}\b[^\n\]\)]*(?:\]|\))?(?:\s*===)?",
-                        re.IGNORECASE
-                    )
+                    begin_tag_pattern = re.compile(make_chapter_begin_pattern(chap_no), re.IGNORECASE)
                     has_begin_tag = bool(begin_tag_pattern.search(full_text))
                     
                     # 3b. Kiểm tra thẻ KẾT THÚC CHƯƠNG trong LLM output
-                    end_tag_pattern = re.compile(
-                        rf"(?:===\s*)?(?:\[|\()? *(?:END_CHAPTER|END\s+CHAPTER|KẾT\s+THÚC\s+CHƯƠNG|KẾT\s+THÚC)[_\s:-]*(?:ID|NO|NO\.)?[_\s:-]*{chap_no}\b[^\n\]\)]*(?:\]|\))?(?:\s*===)?",
-                        re.IGNORECASE
-                    )
+                    end_tag_pattern = re.compile(make_chapter_end_pattern(chap_no), re.IGNORECASE)
                     has_end_tag = bool(end_tag_pattern.search(full_text))
 
                     # 3c. Lấy độ dài RAW đầu vào để so sánh tỷ lệ
@@ -694,6 +860,7 @@ async def process_and_split_batch(
                             f"HỦY BỎ TOÀN BỘ LÔ (Chương {chap_nos_in_batch}), XÓA SẠCH DỮ LIỆU DỞ DANG VÀ DỊCH LẠI!"
                         )
                         print(err_msg)
+                        raise ValueError(err_msg)
             # 3e. Kiểm tra chống trùng lặp nội dung giữa các chương trong lô (khi LLM bị ảo giác chỉ dịch 1 chương)
             if len(cids) > 1:
                 seen_snippets = {}
@@ -727,7 +894,14 @@ async def process_and_split_batch(
             for cid in cids:
                 chap_no = chapter_map[cid]
                 print(f"[POST-PROCESS] Đang xử lý hoàn thiện chương {chap_no}...")
-                chap_text = extracted_map[cid]
+                chap_text = extracted_map.get(cid)
+                if not chap_text:
+                    raise ValueError(f"Chương {chap_no} không có nội dung trích xuất được từ phản hồi LLM.")
+
+                # Khử sạch tiền tố rác PREFIX_ trước khi phân tích Hán tự & thực thể
+                chap_text = re.sub(r'§?\s*PREFIX_([A-Za-z0-9_一-鿿\s]+?)§?', r'\1', chap_text)
+                chap_text = re.sub(r'\bPREFIX_', '', chap_text)
+                chap_text = chap_text.replace('PREFIX_', '')
 
                 # 3a. Sweep Chinese (Dịch vá Hán tự sót bằng Hán-Việt/HanLP hoặc Google Dịch và bọc thẻ xanh báo lỗi)
                 chap_text = await sweep_chinese_characters(chap_text)
@@ -741,19 +915,108 @@ async def process_and_split_batch(
                 # 3d. Sanitize false positive slang (lưới an toàn cuối cùng chống thay nhầm từ lóng)
                 chap_text = sanitize_false_positive_slang(chap_text)
 
+                # 3d2. Chuẩn hóa thuật ngữ cảnh giới số đếm & khử lỗi dịch lặp thường gặp
+                chap_text = re.sub(r'(?i)\b(?:10|mười)\s*cảnh\b', 'thập cảnh', chap_text)
+                chap_text = re.sub(r'(?i)\bhành\s*xác\s*về\s*thể\s*xác\b', 'hành hạ thể xác', chap_text)
+                chap_text = re.sub(r'(?i)\b(y)\s+(lạnh lùng|nhàn nhạt|trầm giọng|khẽ|bất lực|thở dài|cười khẽ|nói|đáp|nghĩ|thầm nghĩ|bước|lao|phất tay|vung tay)\b', r'hắn \2', chap_text)
+
                 # 3e. Chuẩn hóa dấu câu tiếng Việt & làm sạch chuỗi la hét / cảm thán lặp từ quá dài
-                chap_text = re.sub(r'(?i)\b([aáàảãạ])(?:\s*[\-—.,~]*\s*\1){3,}', r'\1...', chap_text)
+                # Bảo vệ toàn bộ thẻ HTML (unblock-sensitive, swept-chinese) trước khi chuẩn hóa dấu câu
+                _saved_html_spans = {}
+                def _protect_html(m):
+                    k = f"___SPAN_SAVE_{len(_saved_html_spans):04d}___"
+                    _saved_html_spans[k] = m.group(0)
+                    return k
+
+                chap_text = re.sub(r'<span\b[^>]*>.*?</span>', _protect_html, chap_text, flags=re.DOTALL)
+
+                chap_text = re.sub(r'(?i)\b([aáàảãạ])(?:\s*[\-—.,~]*\s*\1){3,}', r'\1..', chap_text)
                 chap_text = re.sub(r'(?i)\b(ha|hả|hô|hì|hê|oa|oá|hức|hic|hừ|hừm|ơ|ô|ư|ưm)(?:\s*[\-—.,~]*\s*\1){3,}', r'\1 \1 \1!', chap_text)
                 chap_text = re.sub(r'(?i)\b(á|ối|ối dồi ôi|trời ơi)(?:\s*[\-—.,~]*\s*\1){2,}', r'\1!', chap_text)
-                chap_text = re.sub(r'[!]{2,}', '!', chap_text)
-                chap_text = re.sub(r'[?]{2,}', '?', chap_text)
-                chap_text = re.sub(r'[,]{2,}', ', ', chap_text)
-                chap_text = re.sub(r'[;]{2,}', '; ', chap_text)
-                chap_text = re.sub(r'[:]{2,}', ': ', chap_text)
-                chap_text = re.sub(r'(?:\?\!|\!\?){2,}', '!? ', chap_text)
-                chap_text = re.sub(r'[…]{1,}', '... ', chap_text)
-                chap_text = re.sub(r'\.{4,}', '... ', chap_text)
+                # Khử triệt để mọi chuỗi lặp từ suy thoái do LLM bị lặp vô tận (VD: 'uy uy uy uy uy...' -> chỉ giữ 1 từ)
+                chap_text = re.sub(r'(\b\w+\b)(?:[\s,.]+\1){4,}', r'\1', chap_text)
+                # Chặn rác cờ bạc / SEO nếu LLM bị trôi sang data quảng cáo
+                chap_text = re.sub(r'(?i)\b(cổng game|casino|nhà cái|nổ hũ|game slot|pagcor|baccarat|uy tín hơn\. Cụ thể).*', '', chap_text, flags=re.DOTALL)
+                # Tuyệt đối không dùng dấu ngoặc kép hoặc ngoặc đơn trong văn bản kết quả
+                chap_text = re.sub(r'["”»]\s*["“«]', '\n', chap_text)
+                chap_text = chap_text.replace('"', '').replace("'", '')
+                chap_text = chap_text.replace('“', '').replace('”', '').replace('‘', '').replace('’', '')
+                chap_text = chap_text.replace('«', '').replace('»', '').replace('„', '')
+
+                # Dọn dẹp dòng chỉ có dấu chấm mồ côi (do LLM sinh dòng chỉ có "..")
+                chap_text = re.sub(r'(?m)^\s*\.{1,4}\s*$', '', chap_text)
+
+                # CHUẨN HÓA DẤU CÂU (CHUẨN TIẾNG VIỆT TỰ NHIÊN, BẢO TOÀN DẤU HAI CHẤM & CHẤM PHẨY, KHÔNG NHÂN ĐÔI DẤU):
+                # 1. Dấu kết hợp hỏi + than (!? hoặc ?!) kèm mọi dấu lặp (CHỈ khớp khoảng trắng ngang [ \t], KHÔNG nuốt \n)
+                chap_text = re.sub(r'(?:![ \t]*\?|\?[ \t]*!)[!? \t\.]*', ' ___QMARK_EXCL___ ', chap_text)
+
+                # 2. Dấu cảm thán: Đổi bất kỳ cụm dấu than nào (!, !!, !..) thành ĐÚNG '! ' (KHÔNG nuốt \n)
+                chap_text = re.sub(r'!+[! \t\.]*', ' ___EXCLAMATION___ ', chap_text)
+
+                # 3. Dấu hỏi: Đổi bất kỳ cụm dấu hỏi nào (?, ??, ?.) thành ĐÚNG '? ' (KHÔNG nuốt \n)
+                chap_text = re.sub(r'\?+[! \t\.]*', ' ___QUESTION___ ', chap_text)
+
+                # 4. Dấu ba chấm hoặc ký tự ellipse
+                chap_text = re.sub(r'[…]+', ' ___ELLIPSE___ ', chap_text)
+                chap_text = re.sub(r'\.{3,}', ' ___ELLIPSE___ ', chap_text)
+
+                # 5. Dấu chấm: Đổi bất kỳ cụm dấu chấm thành ĐÚNG '. ' (chấm đơn, không nhân đôi)
+                chap_text = re.sub(r'\.+', ' ___PERIOD___ ', chap_text)
+
+                # 6a. Dấu hai chấm: Bảo toàn dấu hai chấm chuẩn ': ' (không cào bằng thành phẩy)
+                chap_text = re.sub(r':+', ' ___COLON___ ', chap_text)
+
+                # 6b. Dấu chấm phẩy: Bảo toàn dấu chấm phẩy chuẩn '; ' (không cào bằng thành phẩy)
+                chap_text = re.sub(r';+', ' ___SEMICOLON___ ', chap_text)
+
+                # 6c. Dấu phẩy: Đổi thành ', ' (phẩy đơn chuẩn tiếng Việt)
+                chap_text = re.sub(r',+', ' ___COMMA___ ', chap_text)
+
+                # 7. Khôi phục CHUẨN XÁC:
+                chap_text = chap_text.replace('___QMARK_EXCL___', '!? ')
+                chap_text = chap_text.replace('___EXCLAMATION___', '! ')
+                chap_text = chap_text.replace('___QUESTION___', '? ')
+                chap_text = chap_text.replace('___ELLIPSE___', '... ')
+                chap_text = chap_text.replace('___PERIOD___', '. ')
+                chap_text = chap_text.replace('___COLON___', ': ')
+                chap_text = chap_text.replace('___SEMICOLON___', '; ')
+                chap_text = chap_text.replace('___COMMA___', ', ')
+
+                # Chuẩn hóa khoảng trắng nội dòng (KHÔNG xóa ký tự xuống dòng \n để giữ nguyên từng câu 1 dòng)
                 chap_text = re.sub(r'([,.:;!?])([A-ZÀ-Ỹa-zà-ỹ0-9])', r'\1 \2', chap_text)
+                chap_text = re.sub(r'[^\S\r\n]+([.,!?:;])', r'\1', chap_text)
+                chap_text = re.sub(r'[^\S\r\n]+', ' ', chap_text)
+                chap_text = re.sub(r'\n{3,}', '\n\n', chap_text)
+
+                # Phục hồi nguyên vẹn các thẻ HTML đã được bảo vệ
+                for k, orig_span in _saved_html_spans.items():
+                    chap_text = chap_text.replace(k, orig_span)
+
+                # Lưới bảo vệ cuối cùng: Xóa sạch bất kỳ chữ PREFIX_ nào còn sót lại và dọn dẹp lỗi ?ỗ?.
+                chap_text = re.sub(r'\bPREFIX_', '', chap_text)
+                chap_text = chap_text.replace('PREFIX_', '')
+                chap_text = re.sub(r'\?[\s_]*[ỗôo][\s_]*\?\.?', '?.', chap_text)
+
+                chap_text = chap_text.strip()
+
+                # Lấy thông tin chapter từ DB để có fallback title nếu cần
+                stmt_chap = select(Chapter).where(Chapter.id == cid)
+                res_chap = await session.execute(stmt_chap)
+                chap = res_chap.scalar_one_or_none()
+                fb_title = (chap.title_rough or chap.title_raw) if chap else ""
+
+                # 3f. CHUẨN HÓA TIÊU ĐỀ CHƯƠNG ĐỘC LẬP & CÁCH DÒNG TRỐNG VỚI THÂN TRUYỆN:
+                chap_text = normalize_chapter_title(chap_text, chap_no, fallback_title=fb_title)
+
+                # Nếu trích xuất được tiêu đề chương tiếng Việt sạch sẽ, cập nhật lại vào DB Chapter.title_rough
+                if chap:
+                    first_l = chap_text.split('\n')[0].strip()
+                    m_t = re.match(r'^(?:Chương|Chapter)\s*\d+[\s:.-]*(.*)$', first_l, re.IGNORECASE)
+                    if m_t and m_t.group(1).strip():
+                        extracted_t = m_t.group(1).strip()
+                        if not any('\u4e00' <= c <= '\u9fff' for c in extracted_t):
+                            chap.title_rough = extracted_t
+                    chap.status = "FINAL_DONE"
                 
                 # 4. Lưu file 04_KetQua
                 file_name = f"{chap_no:06d}.txt"
@@ -782,13 +1045,6 @@ async def process_and_split_batch(
                             file_path=file_path, 
                             content=chap_text
                         ))
-                    
-                # Update status
-                stmt_chap = select(Chapter).where(Chapter.id == cid)
-                res_chap = await session.execute(stmt_chap)
-                chap = res_chap.scalar_one_or_none()
-                if chap:
-                    chap.status = "FINAL_DONE"
 
                 # Xóa cache tệp Audio cũ của chương (nếu có) để ép lần tạo Audio tới phải đọc văn bản mới
                 try:

@@ -1,6 +1,6 @@
 import React from 'react'
 import { Globe, RefreshCw, Play } from 'lucide-react'
-import { Novel } from '../../store/useNovelStore'
+import { Novel, useNovelStore } from '../../store/useNovelStore'
 
 interface CrawlerPanelProps {
   inputUrl: string
@@ -27,11 +27,102 @@ export const CrawlerPanel: React.FC<CrawlerPanelProps> = ({
   selectedNovelId,
   fetchNovelDetails
 }) => {
+  const { fetchNovels } = useNovelStore()
+
+  const handleLaunchFanqieTool = async () => {
+    try {
+      await fetch('/api/novels/tools/launch-fanqie', { method: 'POST' })
+    } catch (e) {
+      alert("Không thể mở FanqieDownloader: " + e)
+    }
+  }
+
+  const handleOpenFolder = async () => {
+    try {
+      await fetch('/api/novels/tools/open-bangoc-folder', { method: 'POST' })
+    } catch (e) {
+      alert("Không thể mở thư mục: " + e)
+    }
+  }
+
+  const [isSplitting, setIsSplitting] = React.useState(false)
+  const fileInputRef = React.useRef<HTMLInputElement>(null)
+
+  const handleChooseFile = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+      fileInputRef.current.click()
+    }
+  }
+
+  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setIsSplitting(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const res = await fetch('/api/novels/tools/upload-and-split-txt', {
+        method: 'POST',
+        body: formData
+      })
+      const data = await res.json()
+      if (res.ok) {
+        alert(data.message || `Đã tách thành công ${data.imported_chapters} chương vào bản gốc!`)
+        await fetchNovels()
+        if (data.novel_id) {
+          await fetchNovelDetails(data.novel_id)
+        }
+      } else {
+        alert("Lỗi nạp file: " + (data.detail || "Không thể bóc tách chương"))
+      }
+    } catch (err: any) {
+      alert("Lỗi tải file lên: " + err.message)
+    } finally {
+      setIsSplitting(false)
+    }
+  }
+
   return (
     <div className="glass-panel rounded-2xl p-4 lg:p-5 flex flex-col gap-3 flex-shrink-0">
-      <h2 className="text-xs font-bold text-slate-400 flex items-center gap-1.5 uppercase tracking-wider">
-        <Globe className="w-4 h-4 text-cyber-accent" /> Nhập Link & Chọn Truyện Đang Dịch
-      </h2>
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleFileSelected}
+        accept=".txt"
+        className="hidden"
+      />
+      <div className="flex items-center justify-between">
+        <h2 className="text-xs font-bold text-slate-400 flex items-center gap-1.5 uppercase tracking-wider">
+          <Globe className="w-4 h-4 text-cyber-accent" /> Nhập Link & Chọn Truyện Đang Dịch
+        </h2>
+        <div className="flex gap-1.5">
+          <button
+            onClick={handleLaunchFanqieTool}
+            title="Bật phần mềm tải Full truyện Fanqie cực nhẹ (không lag máy)"
+            className="text-[10px] bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 font-semibold px-2 py-1 rounded-lg transition-all flex items-center gap-1"
+          >
+            🍅 Bật Tool Fanqie
+          </button>
+          <button
+            onClick={handleChooseFile}
+            disabled={isSplitting}
+            title="Chọn file TXT từ máy tính để tự động bóc tách thành từng chương bản gốc chuẩn chỉnh"
+            className="text-[10px] bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 font-semibold px-2 py-1 rounded-lg transition-all flex items-center gap-1 disabled:opacity-50"
+          >
+            {isSplitting ? <RefreshCw className="w-3 h-3 animate-spin" /> : "⚡"} Chọn File TXT
+          </button>
+          <button
+            onClick={handleOpenFolder}
+            title="Mở thư mục chứa bản gốc Output/01_BanGoc"
+            className="text-[10px] bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-semibold px-2 py-1 rounded-lg transition-all flex items-center gap-1"
+          >
+            📁 Bản Gốc
+          </button>
+        </div>
+      </div>
 
       <div className="flex gap-2">
         <input

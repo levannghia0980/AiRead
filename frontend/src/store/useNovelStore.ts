@@ -77,7 +77,8 @@ export interface GenreOption {
 export const NOVEL_GENRE_OPTIONS: GenreOption[] = [
   { code: 'XIANXIA', name: 'Tiên Hiệp / Cổ Trang / Huyền Huyễn', icon: '☯️', desc: 'Ta/Ngươi, Hắn/Nàng, Trúc Cơ, Đan Điền, Tông Môn' },
   { code: 'WUXIA', name: 'Võ Lâm / Kiếm Hiệp', icon: '⚔️', desc: 'Huynh/Đệ, Tỷ/Muội, Gia Tộc, Chưởng Môn, Binh Khí' },
-  { code: 'MODERN_URBAN', name: 'Đô Thị / Hiện Đại / Thương Chiến', icon: '🏙️', desc: 'Anh/Chị/Em, Bố/Mẹ, Sếp/Chủ tịch, Công ty, Xe hơi' }
+  { code: 'MODERN_URBAN', name: 'Đô Thị / Hiện Đại / Thương Chiến', icon: '🏙️', desc: 'Tôi/Cậu/Anh/Em, Bố/Mẹ, Sếp/Chủ tịch, Công ty, Xe hơi' },
+  { code: 'URBAN_SUPERNATURAL', name: 'Linh Dị / Đô Thị Dị Năng / Cao Võ / Phong Thủy', icon: '🕯️', desc: 'Tôi/Cậu/Mày/Tao/Anh/Em, Hắn/Gã, Vớt xác, Bắt ma, Trộm mộ, Dị năng, Tu võ hiện đại' }
 ]
 
 interface NovelStore {
@@ -194,12 +195,12 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
   batchSize: Math.max(parseInt(localStorage.getItem('airead_batch_size') || '3'), 1),
   startChapter: null,
   endChapter: null,
-  translationStyle: localStorage.getItem('airead_translation_style') || 'draft_only',
+  translationStyle: localStorage.getItem('airead_translation_style') || 'original_only',
   enableUnblock: localStorage.getItem('airead_enable_unblock') !== 'false',
-  enableErotic: localStorage.getItem('airead_enable_erotic') !== 'false',
-  enableLlmExtract: true,
+  enableErotic: localStorage.getItem('airead_enable_erotic') === 'true',
+  enableLlmExtract: false,
   enableNamesDict: true,
-  enableGgCorrections: true,
+  enableGgCorrections: false,
   forceRetranslate: false,
 
   setSettings: (settings) => {
@@ -581,10 +582,10 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
         end_chapter: endChapter,
         translation_style: translationStyle,
         enable_unblock: enableUnblock,
-        enable_erotic: get().enableErotic !== false,
-        enable_llm_extract: get().enableLlmExtract !== false,
+        enable_erotic: Boolean(get().enableErotic),
+        enable_llm_extract: Boolean(get().enableLlmExtract),
         enable_names_dict: get().enableNamesDict !== false,
-        enable_gg_corrections: get().enableGgCorrections !== false,
+        enable_gg_corrections: Boolean(get().enableGgCorrections),
         force_retranslate: get().forceRetranslate || false
       })
     })

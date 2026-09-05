@@ -69,9 +69,9 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
   batchSize,
   startChapter,
   endChapter,
-  translationStyle = 'draft_only',
+  translationStyle: _translationStyle = 'original_only',
   enableUnblock = true,
-  enableErotic = true,
+  enableErotic = false,
   forceRetranslate = false,
   setSettings,
   handleTestKey,
@@ -85,8 +85,10 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
     switch (prov) {
       case 'gemini':
         return [
+          'gemini-3.1-flash-lite',
+          'gemini-3.1-flash-lite-preview',
           'gemini-3.5-flash-lite',
-          'gemini-3.1-flash-lite'
+          'gemini-3.5-flash'
         ]
       case 'openrouter':
         return [
@@ -151,14 +153,15 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
         <label className="text-[10px] font-bold text-cyber-accent block mb-1">
           🎯 Luồng Dịch AI
         </label>
-        <select
-          value={translationStyle}
-          onChange={(e) => setSettings({ translationStyle: e.target.value })}
-          className="w-full glass-input rounded-xl px-2.5 py-1.5 text-xs text-cyber-accent font-semibold bg-slate-900/90 border border-cyber-accent/40 focus:border-cyber-accent"
-        >
-          <option value="original_only">🔤 Dịch Tiếng Trung Trực Tiếp (RAWT)</option>
-          <option value="draft_only">📝 Biên Tập Văn Phong & Chuẩn Xưng Hô (CONTEXTT)</option>
-        </select>
+        <div className="w-full glass-input rounded-xl px-2.5 py-1.5 text-xs text-cyber-accent font-semibold bg-slate-900/90 border border-cyber-accent/40 flex items-center justify-between">
+          <span className="flex items-center gap-1.5">
+            <span>🔤 Dịch Tiếng Trung Trực Tiếp</span>
+            <span className="text-[10px] font-mono text-cyan-400 font-bold">(RAWT)</span>
+          </span>
+          <span className="text-[9px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.5 rounded font-mono">
+            Tối ưu Token & Tốc độ
+          </span>
+        </div>
       </div>
 
       {/* API Keys Input */}

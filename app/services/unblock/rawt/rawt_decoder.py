@@ -14,7 +14,7 @@ from app.services.unblock.common.dictionary_loader import (
     clear_dictionary_cache
 )
 
-def get_zh_to_vn_map(enable_erotic: bool = True) -> Dict[str, str]:
+def get_zh_to_vn_map(enable_erotic: bool = False) -> Dict[str, str]:
     if enable_erotic:
         return load_zh_erotic_map()
     else:
@@ -50,7 +50,7 @@ class RawtDecoder:
     Khử trùng lặp từ lóng & không chạy đè biến đổi của luồng CONTEXTT.
     """
     @staticmethod
-    def decode(text: str, mapping_table: Dict[str, Dict[str, str]], highlight: bool = False, enable_erotic: bool = True) -> str:
+    def decode(text: str, mapping_table: Dict[str, Dict[str, str]], highlight: bool = False, enable_erotic: bool = False) -> str:
         if not text:
             return ""
         if not mapping_table:
@@ -122,15 +122,17 @@ class RawtDecoder:
                 target_rep = zh_map.get(orig_term) or zh_map.get(orig_term.lower())
                 if not target_rep:
                     target_rep = build_hanviet_name(orig_term) or orig_term
+            if highlight:
+                target_rep_display = f'<span class="unblock-sensitive" title="Đã khôi phục: {orig_term} → {target_rep}">{target_rep}</span>'
             else:
-                target_rep = orig_term
+                target_rep_display = target_rep
 
             if token in restored_text:
                 def _sub_tok(m):
                     st, en = m.start(), m.end()
                     pre = " " if st > 0 and (restored_text[st-1].isalnum() or '\u00c0' <= restored_text[st-1] <= '\u1eff') else ""
                     suf = " " if en < len(restored_text) and (restored_text[en].isalnum() or '\u00c0' <= restored_text[en] <= '\u1eff') else ""
-                    return f"{pre}{target_rep}{suf}"
+                    return f"{pre}{target_rep_display}{suf}"
                 restored_text = re.sub(re.escape(token), _sub_tok, restored_text)
 
         # Dọn sạch triệt để mọi biến thể thẻ markup rò rỉ hoặc bị LLM làm mất đuôi/mất dấu §

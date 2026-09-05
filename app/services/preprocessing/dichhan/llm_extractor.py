@@ -287,42 +287,7 @@ CHỈ trả về JSON, không kèm giải thích.
             if corr_vi:
                 c["correct_vietnamese"] = sanitize_entity_vietnamese(corr_vi)
 
-        # Lọc corrections: Chỉ giữ những từ sửa đổi thành tên nhân vật/thực thể chuẩn (không sửa pronoun bừa bãi)
-        from app.services.preprocessing.dichhan.candidate_mining import is_likely_foreign_or_pinyin
-        from app.services.preprocessing.dichhan.common_lists import VIETNAMESE_STOPWORDS
-        
-        valid_correct_names = set()
-        for e in entities:
-            if isinstance(e, dict) and e.get("vietnamese_name"):
-                valid_correct_names.add(e["vietnamese_name"].strip())
-        for name, info in existing_entities.items():
-            if isinstance(info, dict) and info.get("vietnamese_name"):
-                valid_correct_names.add(info["vietnamese_name"].strip())
-            elif isinstance(info, str):
-                valid_correct_names.add(info.strip())
-
-        filtered_corrections = []
-        for c in corrections:
-            if not isinstance(c, dict):
-                continue
-            corr_vi = c.get("correct_vietnamese", "").strip()
-            gg_err = c.get("gg_error", "").strip()
-            if not corr_vi or not gg_err:
-                continue
-            if corr_vi not in valid_correct_names:
-                continue
-            
-            # Không chấp nhận sửa các từ tiếng Việt thông thường một từ (như 'mang', 'bao', 'che', 'lai', 'run', 'dai'...)
-            # Phải là Pinyin/tên tiếng Anh ngoại lai HOẶC tên viết hoa/khớp alias
-            err_lower = gg_err.lower()
-            if err_lower in VIETNAMESE_STOPWORDS or len(gg_err) <= 2:
-                continue
-            if not (is_likely_foreign_or_pinyin(gg_err) or gg_err[0].isupper() or len(gg_err.split()) >= 2):
-                continue
-                
-            filtered_corrections.append(c)
-
-        return {"entities": entities, "corrections": filtered_corrections}
+        return {"entities": entities, "corrections": []}
     except Exception as e:
         print(f"⚠️ [PREPROCESS LLM] Thất bại khi phân tích JSON trả về từ LLM: {e}")
 

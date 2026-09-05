@@ -85,12 +85,12 @@ class StartTranslationRequest(BaseModel):
     batch_size: Optional[int] = 3
     start_chapter: Optional[int] = None
     end_chapter: Optional[int] = None
-    translation_style: Optional[str] = "draft_only"
+    translation_style: Optional[str] = "original_only"
     enable_unblock: Optional[bool] = True
     enable_erotic: Optional[bool] = False
-    enable_llm_extract: Optional[bool] = True
+    enable_llm_extract: Optional[bool] = False
     enable_names_dict: Optional[bool] = True
-    enable_gg_corrections: Optional[bool] = True
+    enable_gg_corrections: Optional[bool] = False
     force_retranslate: Optional[bool] = False
 
 async def _bg_translation_worker(payload: StartTranslationRequest):
@@ -117,7 +117,7 @@ async def _bg_translation_worker(payload: StartTranslationRequest):
             import os
             os.environ["AIREAD_MODEL"] = payload.model
 
-        flow = "contextt" if payload.translation_style in ["draft_only", "edited_only", "contextt"] else "rawt"
+        flow = "rawt"
         start_ch = payload.start_chapter or 0
         end_ch = payload.end_chapter or 0
         batch_sz = payload.batch_size if (payload.batch_size is not None and payload.batch_size > 0) else 3
@@ -130,9 +130,9 @@ async def _bg_translation_worker(payload: StartTranslationRequest):
             delay_sec=delay_s,
             start_chapter=start_ch,
             end_chapter=end_ch,
-            enable_llm_extract=payload.enable_llm_extract if payload.enable_llm_extract is not None else True,
+            enable_llm_extract=payload.enable_llm_extract if payload.enable_llm_extract is not None else False,
             enable_names_dict=payload.enable_names_dict if payload.enable_names_dict is not None else True,
-            enable_gg_corrections=payload.enable_gg_corrections if payload.enable_gg_corrections is not None else True,
+            enable_gg_corrections=payload.enable_gg_corrections if payload.enable_gg_corrections is not None else False,
             enable_unblock=payload.enable_unblock if payload.enable_unblock is not None else True,
             enable_erotic=payload.enable_erotic if payload.enable_erotic is not None else False,
             force_retranslate=bool(payload.force_retranslate),
@@ -269,7 +269,7 @@ class SetContextRequest(BaseModel):
 
 @router.put("/novel/{novel_id}/context")
 async def set_novel_context(novel_id: int, payload: SetContextRequest):
-    valid_profiles = ["urban", "xianxia", "wuxia"]
+    valid_profiles = ["urban", "urban_supernatural", "xianxia", "wuxia"]
     if payload.context_profile.lower() not in valid_profiles:
         raise HTTPException(status_code=400, detail=f"Ngữ cảnh không hợp lệ: {valid_profiles}")
 
@@ -289,7 +289,7 @@ async def set_novel_context(novel_id: int, payload: SetContextRequest):
     }
 
 class PipelineRunRequest(BaseModel):
-    translation_flow: str # rawt, contextt
+    translation_flow: Optional[str] = "rawt" # pure RAWT
     start_chapter: int = 0
     end_chapter: int = 0
     batch_size: int = 3
@@ -301,13 +301,12 @@ class PipelineRunRequest(BaseModel):
 async def start_translation_pipeline(novel_id: int, payload: PipelineRunRequest):
     from app.services.translation.pipeline import run_translation_batch_pipeline
     
-    if payload.translation_flow not in ["rawt", "contextt"]:
-        raise HTTPException(status_code=400, detail="Luồng dịch không hợp lệ (phải là rawt hoặc contextt)")
+    flow = "rawt"
         
     try:
         result = await run_translation_batch_pipeline(
             novel_id=novel_id,
-            translation_flow=payload.translation_flow,
+            translation_flow=flow,
             batch_size=payload.batch_size,
             delay_sec=payload.delay_sec,
             start_chapter=payload.start_chapter,

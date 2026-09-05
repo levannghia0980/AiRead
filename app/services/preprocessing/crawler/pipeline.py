@@ -1,3 +1,4 @@
+import os
 import gc
 import logging
 from typing import Dict, Any, Optional
@@ -5,7 +6,7 @@ from sqlalchemy import select, delete
 from app.core.database import AsyncSessionLocal
 from app.models.schema import Novel, Chapter, ChapterVersion
 from app.services.preprocessing.crawler.engine import scrape_novel_metadata, scrape_chapter_content
-from app.services.preprocessing.crawler.google_translator import translate_text_via_google, translate_text_best_quality
+from app.services.preprocessing.crawler.google_translator import translate_text_best_quality
 from app.services.storage.file_storage import (
     save_chapter_version_file, 
     delete_novel_disk_files, 
@@ -98,51 +99,85 @@ async def process_novel_link(novel_url: str) -> Dict[str, Any]:
         "novel_id": novel_id,
         "title_raw": title_raw,
         "title_rough": title_rough,
+        "author": author,
+        "cover_url": cover_url,
+        "genres": genres,
+        "status": status,
         "total_chapters": added_count
     }
 
-async def process_single_chapter_crawl(chapter_id: int) -> Dict[str, Any]:
+async def process_single_chapter_crawl(chapter_id: int, skip_gg: bool = True) -> Dict[str, Any]:
     """
-    Quy trình cào 1 chương đơn lẻ (Bản Gốc RAW):
-    1. Đọc DB -> lấy URL chương.
-    2. Cào văn bản thô bằng Engine.
-    3. Ghi file TXT ra Output/01_BanGoc/[Tên_Truyện_Thô]/000001.txt.
-    4. Tự động dịch Google Translate -> Ghi file TXT ra Output/02_DichMau_GG/[Tên_Truyện_Thô]/000001.txt.
-    5. Cập nhật ChapterVersion(RAW & GG) và Chapter(status='CRAWLED').
-    6. Giải phóng RAM hoàn toàn (`del raw_content`, `del gg_content`, `gc.collect()`).
+    Xử lý cào 1 chương đơn lẻ (chỉ lưu bản gốc RAW tiếng Trung vào Output/01_BanGoc).
     """
+    logger.info(f"Bắt đầu cào chương ID: {chapter_id}")
+    
     async with AsyncSessionLocal() as session:
-        stmt = select(Chapter).where(Chapter.id == chapter_id)
+        stmt = select(Chapter, Novel).join(Novel, Chapter.novel_id == Novel.id).where(Chapter.id == chapter_id)
         res = await session.execute(stmt)
-        chapter = res.scalar_one_or_none()
-
-        if not chapter:
-            raise Exception(f"Không tìm thấy Chapter ID {chapter_id} trong DB.")
-
-        stmt_n = select(Novel).where(Novel.id == chapter.novel_id)
-        res_n = await session.execute(stmt_n)
-        novel = res_n.scalar_one_or_none()
-
-        if not novel:
-            raise Exception(f"Không tìm thấy Novel cho Chapter ID {chapter_id}.")
-
+        row = res.first()
+        if not row:
+            raise Exception(f"Không tìm thấy chapter_id: {chapter_id}")
+        chapter, novel = row
+        
+        ch_no = chapter.chapter_no
+        ch_title_raw = chapter.title_raw
+        ch_title_rough = chapter.title_rough
+        ch_url = chapter.url
+        
+        novel_title_raw = novel.title_raw
+        novel_title_rough = novel.title_rough or novel_title_raw
         chapter.status = "CRAWLING"
         await session.commit()
 
-        ch_url = chapter.url
-        ch_no = chapter.chapter_no
-        ch_title_raw = chapter.title_raw
-        import re
-        ch_title_raw = re.sub(r'(?i)(?:KHÔNG|NO)\s*\.?\s*(\d+)\s*(?:chương|Chương|章)?\s*[:.:-]?\s*', r'Chương \1: ', ch_title_raw)
-        ch_title_raw = re.sub(r'第\s*(\d+)\s*章\s*[:.:-]?\s*', r'Chương \1: ', ch_title_raw)
-        ch_title_raw = re.sub(r':\s*:', r':', ch_title_raw).strip()
-        ch_title_rough = chapter.title_rough or ch_title_raw
-        novel_title_raw = novel.title_raw
-        novel_title_rough = novel.title_rough or novel_title_raw
-
     try:
-        # 1. Cào văn bản thô (RAW)
-        raw_content = await scrape_chapter_content(ch_url)
+        # 1. Kiểm tra xem đã có sẵn file RAW trong thư mục 01_BanGoc chưa (đặc biệt hữu ích cho Fanqie khi nạp full 1 lần)
+        from app.services.storage.file_storage import get_version_dir
+        expected_raw_dir = get_version_dir("RAW", novel_title_rough or novel_title_raw)
+        expected_raw_file = expected_raw_dir / f"{ch_no:06d}.txt"
+
+        raw_content = ""
+        if expected_raw_file.exists() and expected_raw_file.stat().st_size > 100:
+            try:
+                with open(expected_raw_file, "r", encoding="utf-8", errors="ignore") as f:
+                    raw_content = f.read()
+                logger.info(f"⚡ [TẬN DỤNG BẢN GỐC CÓ SẴN] Chương {ch_no} đã có sẵn trong 01_BanGoc ({len(raw_content)} ký tự), bỏ qua cào mạng!")
+            except Exception as read_err:
+                logger.warning(f"Không thể đọc file RAW có sẵn của chương {ch_no}: {read_err}")
+                raw_content = ""
+
+        # ĐẶC BIỆT: Truyện upload bằng file TXT (URL = local://) — đọc từ DB thay vì cào web
+        if not raw_content and ch_url and ch_url.startswith("local://"):
+            async with AsyncSessionLocal() as session:
+                stmt_v_raw = select(ChapterVersion).where(
+                    ChapterVersion.chapter_id == chapter_id,
+                    ChapterVersion.version_type == "RAW"
+                )
+                res_v_raw = await session.execute(stmt_v_raw)
+                v_raw_db = res_v_raw.scalar_one_or_none()
+                if v_raw_db:
+                    # Thử đọc từ file_path trong DB
+                    if v_raw_db.file_path and os.path.exists(v_raw_db.file_path) and os.path.getsize(v_raw_db.file_path) > 100:
+                        try:
+                            with open(v_raw_db.file_path, "r", encoding="utf-8", errors="ignore") as f:
+                                raw_content = f.read()
+                            logger.info(f"🛡️ [LOCAL-FILE] Chương {ch_no} đọc RAW từ DB file_path ({len(raw_content)} ký tự)")
+                        except Exception:
+                            pass
+                    # Thử đọc từ content trong DB
+                    if not raw_content and v_raw_db.content and len(v_raw_db.content.strip()) > 50:
+                        raw_content = v_raw_db.content
+                        logger.info(f"🛡️ [LOCAL-DB] Chương {ch_no} đọc RAW từ DB content ({len(raw_content)} ký tự)")
+
+            if not raw_content:
+                raise Exception(
+                    f"Truyện upload bằng TXT: Không tìm thấy bản gốc (RAW) cho Chương {ch_no} trong DB hoặc file đĩa. "
+                    f"Vui lòng upload lại file TXT gốc hoặc khôi phục file 01_BanGoc/{ch_no:06d}.txt"
+                )
+
+        if not raw_content:
+            raw_content = await scrape_chapter_content(ch_url)
+
         file_path_raw = save_chapter_version_file(
             version_type="RAW",
             novel_title_raw=novel_title_raw,
@@ -153,24 +188,7 @@ async def process_single_chapter_crawl(chapter_id: int) -> Dict[str, Any]:
             content_text=raw_content
         )
 
-        # 2. Dịch Google thô (GG) — Bảo vệ xưng hô / bối phận tiếng Trung
-        from app.services.preprocessing.crawler.pronoun_protector import protect_pronouns, restore_pronouns
-        novel_profile = novel.context_profile or (novel.genres or "xianxia").lower()
-        protected_raw, pronoun_map = protect_pronouns(raw_content, profile=novel_profile)
-        gg_content_raw = await translate_text_best_quality(protected_raw)
-        gg_content = restore_pronouns(gg_content_raw, pronoun_map)
-        
-        file_path_gg = save_chapter_version_file(
-            version_type="GG",
-            novel_title_raw=novel_title_raw,
-            novel_title_rough=novel_title_rough,
-            chapter_no=ch_no,
-            chapter_title_raw=ch_title_raw,
-            chapter_title_rough=ch_title_rough,
-            content_text=gg_content
-        )
-
-        # 3. Ghi DB
+        # 2. Ghi DB
         async with AsyncSessionLocal() as session:
             # Ghi nhận bản RAW
             stmt_v_raw = select(ChapterVersion).where(
@@ -193,27 +211,6 @@ async def process_single_chapter_crawl(chapter_id: int) -> Dict[str, Any]:
                 ver_raw.file_path = file_path_raw
                 ver_raw.status = "COMPLETED"
 
-            # Ghi nhận bản GG
-            stmt_v_gg = select(ChapterVersion).where(
-                ChapterVersion.chapter_id == chapter_id, 
-                ChapterVersion.version_type == "GG"
-            )
-            v_res_gg = await session.execute(stmt_v_gg)
-            ver_gg = v_res_gg.scalar_one_or_none()
-
-            if not ver_gg:
-                ver_gg = ChapterVersion(
-                    chapter_id=chapter_id,
-                    version_type="GG",
-                    engine="google",
-                    file_path=file_path_gg,
-                    status="COMPLETED"
-                )
-                session.add(ver_gg)
-            else:
-                ver_gg.file_path = file_path_gg
-                ver_gg.status = "COMPLETED"
-
             # Cập nhật trạng thái chapter
             stmt_ch = select(Chapter).where(Chapter.id == chapter_id)
             ch_res = await session.execute(stmt_ch)
@@ -226,14 +223,12 @@ async def process_single_chapter_crawl(chapter_id: int) -> Dict[str, Any]:
 
         # Giải phóng RAM
         del raw_content
-        del gg_content
         gc.collect()
 
         return {
             "chapter_id": chapter_id,
             "chapter_no": ch_no,
             "raw_path": file_path_raw,
-            "gg_path": file_path_gg,
             "status": "CRAWLED"
         }
     except Exception as e:
@@ -291,7 +286,7 @@ async def delete_novel_version(novel_id: int, version_type: str) -> Dict[str, An
         if ch_ids:
             v_types = [version_type.upper()]
             if version_type.upper() == "FINAL":
-                v_types.extend(["TTS_TEXT", "AUDIO"])
+                v_types.extend(["LLM", "TTS_TEXT", "AUDIO"])
             stmt_del = delete(ChapterVersion).where(
                 ChapterVersion.chapter_id.in_(ch_ids),
                 ChapterVersion.version_type.in_(v_types)
@@ -301,6 +296,7 @@ async def delete_novel_version(novel_id: int, version_type: str) -> Dict[str, An
 
     delete_version_disk_files(version_type, novel_title_rough)
     if version_type.upper() == "FINAL":
+        delete_version_disk_files("LLM", novel_title_rough)
         delete_version_disk_files("TTS_TEXT", novel_title_rough)
         delete_version_disk_files("AUDIO", novel_title_rough)
 

@@ -508,6 +508,7 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
                   <option value="XIANXIA">☯️ Tiên Hiệp / Cổ Trang</option>
                   <option value="WUXIA">⚔️ Võ Lâm / Kiếm Hiệp</option>
                   <option value="MODERN_URBAN">🏙️ Đô Thị / Hiện Đại</option>
+                  <option value="URBAN_SUPERNATURAL">🕯️ Linh Dị / Dị Năng / Cao Võ</option>
                   <option value="ROMANCE">💕 Ngôn Tình / Điền Văn</option>
                   <option value="SYSTEM_REINCARNATION">⚡ Hệ Thống / Trọng Sinh</option>
                   <option value="SCI_FI_APOCALYPSE">🚀 Mạt Thế / Viễn Tưởng</option>

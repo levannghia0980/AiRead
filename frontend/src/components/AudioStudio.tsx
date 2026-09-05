@@ -92,7 +92,34 @@ export default function AudioStudio() {
   // Export / Download Range & Config
   const [exportRangeStart, setExportRangeStart] = useState<number>(1)
   const [exportRangeEnd, setExportRangeEnd] = useState<number>(50)
-  const [exportSpeed, setExportSpeed] = useState<number>(1.0)
+  const [exportSpeed, setExportSpeedState] = useState<number>(() => {
+    const saved = localStorage.getItem('tts_export_speed')
+    return saved ? Number(saved) : 1.5
+  })
+  const setExportSpeed = (spd: number) => {
+    setExportSpeedState(spd)
+    localStorage.setItem('tts_export_speed', String(spd))
+  }
+
+  // Auto Partition Bundles (10h - <12h)
+  const [autoBundles, setAutoBundles] = useState<any[]>([])
+  const [loadingBundles, setLoadingBundles] = useState(false)
+
+  const fetchAutoBundles = useCallback(async (novelId: number, speed: number = 1.5) => {
+    if (!novelId) return
+    setLoadingBundles(true)
+    try {
+      const res = await fetch(`/api/novels/${novelId}/audio/auto_partition_bundles?speed=${speed}&min_hours=10.0&max_hours=11.95`)
+      if (res.ok) {
+        const data = await res.json()
+        setAutoBundles(data.bundles || [])
+      }
+    } catch (e) {
+      console.error('Failed to fetch auto bundles:', e)
+    } finally {
+      setLoadingBundles(false)
+    }
+  }, [])
 
   // TTS Job Progress & Status
   const [jobStatus, setJobStatus] = useState<any>(null)
@@ -139,12 +166,13 @@ export default function AudioStudio() {
     }
   }, [])
 
-  // Auto fetch playlist when selected novel changes
+  // Auto fetch playlist & auto bundles when selected novel or speed changes
   useEffect(() => {
     if (selectedNovelId) {
       fetchPlaylist(selectedNovelId)
+      fetchAutoBundles(selectedNovelId, exportSpeed)
     }
-  }, [selectedNovelId, fetchPlaylist])
+  }, [selectedNovelId, fetchPlaylist, fetchAutoBundles, exportSpeed])
 
   const [savedHistory, setSavedHistory] = useState<any>(null)
 
@@ -441,6 +469,30 @@ export default function AudioStudio() {
     }
   }
 
+  // Tải 1 file bất kỳ qua DOM link
+  const downloadSingleFile = (url: string, filename?: string) => {
+    if (!url) return
+    const a = document.createElement('a')
+    a.href = url
+    if (filename) a.download = filename
+    else a.setAttribute('download', '')
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  }
+
+  // Tải ĐỒNG THỜI cả file MP3 và JSON Timeline (cách nhau 350ms để trình duyệt không chặn tải nhiều file)
+  const handleDownloadBoth = (mp3Url?: string, mp3Filename?: string, jsonUrl?: string, jsonFilename?: string) => {
+    if (mp3Url) {
+      downloadSingleFile(mp3Url, mp3Filename)
+    }
+    if (jsonUrl) {
+      setTimeout(() => {
+        downloadSingleFile(jsonUrl, jsonFilename)
+      }, 350)
+    }
+  }
+
   // Fast Merge with FFmpeg (kèm hỗ trợ tùy chọn tốc độ speed)
   const handleFastMerge = async () => {
     if (!selectedNovelId) return
@@ -454,6 +506,45 @@ export default function AudioStudio() {
       const data = await res.json()
       if (res.ok) {
         setMergeResult(data)
+        fetchAutoBundles(selectedNovelId, exportSpeed)
+        // Tự động tải cả 2 file (MP3 + JSON) ngay khi ghép xong
+        if (data.download_url) {
+          const jsonUrl = data.json_download_url || `/api/novels/${selectedNovelId}/audio/export_timeline_json?start_chapter=${exportRangeStart}&end_chapter=${exportRangeEnd}&speed=${exportSpeed}`
+          const jsonFilename = data.json_filename || `${data.filename?.replace(/\.mp3$/i, '') || 'bundle'}_timeline.json`
+          handleDownloadBoth(data.download_url, data.filename, jsonUrl, jsonFilename)
+        }
+      } else {
+        alert(data.detail || 'Lỗi khi ghép audio.')
+      }
+    } catch (e: any) {
+      alert(`Lỗi kết nối: ${e.message}`)
+    } finally {
+      setIsMerging(false)
+    }
+  }
+
+  // Fast Merge an Auto-Partitioned Bundle
+  const handleMergeBundle = async (bundle: any) => {
+    if (!selectedNovelId || !bundle) return
+    setExportRangeStart(bundle.start_chapter)
+    setExportRangeEnd(bundle.end_chapter)
+    setIsMerging(true)
+    setMergeResult(null)
+    try {
+      const res = await fetch(
+        `/api/novels/${selectedNovelId}/audio/merge_range?start_chapter=${bundle.start_chapter}&end_chapter=${bundle.end_chapter}&speed=${exportSpeed}`,
+        { method: 'POST' }
+      )
+      const data = await res.json()
+      if (res.ok) {
+        setMergeResult(data)
+        fetchAutoBundles(selectedNovelId, exportSpeed)
+        // Tự động tải cả 2 file (MP3 + JSON) ngay khi ghép xong
+        if (data.download_url) {
+          const jsonUrl = data.json_download_url || bundle.json_download_url || `/api/novels/${selectedNovelId}/audio/export_timeline_json?start_chapter=${bundle.start_chapter}&end_chapter=${bundle.end_chapter}&speed=${exportSpeed}`
+          const jsonFilename = data.json_filename || bundle.json_filename || `${data.filename?.replace(/\.mp3$/i, '') || 'bundle'}_timeline.json`
+          handleDownloadBoth(data.download_url, data.filename, jsonUrl, jsonFilename)
+        }
       } else {
         alert(data.detail || 'Lỗi khi ghép audio.')
       }
@@ -1234,7 +1325,123 @@ export default function AudioStudio() {
               )}
             </div>
 
-            {/* Export Range Selection */}
+            {/* 🎯 TỰ ĐỘNG CHIA TẬP 10h - <12h @ SPEED */}
+            <div className="p-3 rounded-xl bg-cyber-purple/10 border border-cyber-purple/30 flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-cyber-purple flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-cyber-purple" />
+                  Chia Tập Chuẩn 10h - 12h (Tốc độ {exportSpeed}x)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => selectedNovelId && fetchAutoBundles(selectedNovelId, exportSpeed)}
+                  disabled={loadingBundles}
+                  className="text-[10px] px-2 py-0.5 rounded-lg bg-cyber-purple/20 text-cyber-purple hover:bg-cyber-purple/30 font-medium transition-all flex items-center gap-1"
+                >
+                  <RefreshCw className={`w-3 h-3 ${loadingBundles ? 'animate-spin' : ''}`} />
+                  <span>Tính lại</span>
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-400">
+                Hệ thống tự động gom các chương thành từng tập dài 10h đến dưới 12h (chuẩn YouTube/nghe trọn gói).
+              </p>
+
+              {autoBundles.length > 0 ? (
+                <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto pr-1">
+                  {autoBundles.map((b: any) => (
+                    <div
+                      key={b.part}
+                      className="p-2 rounded-lg bg-slate-900/80 border border-cyber-border/40 hover:border-cyber-purple/50 transition-all flex items-center justify-between gap-2 text-xs"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-bold text-slate-100">{b.title}</span>
+                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-cyber-accent/20 text-cyber-accent font-mono font-bold">
+                            ⏱️ {b.duration_formatted}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-0.5">
+                          {b.chapter_count} chương ({b.duration_hours} giờ @ {b.speed}x)
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        {b.is_merged ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadBoth(b.download_url, b.filename, b.json_download_url, b.json_filename)}
+                              className="px-2.5 py-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-lg text-[11px] transition-all flex items-center gap-1 shadow-sm"
+                              title={`Tải CẢ HAI tệp: File MP3 (${b.file_size}) + File JSON timeline phụ đề`}
+                            >
+                              <Download className="w-3 h-3" />
+                              <span>Tải Cả 2 ({b.file_size})</span>
+                            </button>
+                            <a
+                              href={b.download_url}
+                              download={b.filename}
+                              className="px-1.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium rounded-lg text-[10px] transition-all"
+                              title="Chỉ tải riêng file MP3 này"
+                            >
+                              MP3
+                            </a>
+                            <a
+                              href={b.json_download_url}
+                              download={b.json_filename}
+                              className="px-1.5 py-1 bg-cyan-950/60 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-500/30 font-medium rounded-lg text-[10px] transition-all"
+                              title="Chỉ tải riêng file JSON timeline phụ đề của tập này"
+                            >
+                              JSON
+                            </a>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleMergeBundle(b)}
+                              disabled={isMerging}
+                              className="px-2.5 py-1 bg-cyber-purple hover:bg-cyber-purple/80 text-white font-bold rounded-lg text-[11px] transition-all flex items-center gap-1 shadow-sm disabled:opacity-50"
+                              title="Ghép các chương tập này và TỰ ĐỘNG TẢI CẢ HAI: File MP3 + File JSON timeline"
+                            >
+                              <Layers className="w-3 h-3" />
+                              <span>Ghép & Tải Cả 2</span>
+                            </button>
+                            <a
+                              href={b.json_download_url}
+                              download={b.json_filename}
+                              className="px-1.5 py-1 bg-cyan-950/60 hover:bg-cyan-900/60 text-cyan-300 border border-cyan-500/30 font-medium rounded-lg text-[10px] transition-all"
+                              title="Tải trước file JSON timeline phụ đề của tập này"
+                            >
+                              JSON
+                            </a>
+                          </>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setExportRangeStart(b.start_chapter)
+                            setExportRangeEnd(b.end_chapter)
+                          }}
+                          className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[10px] transition-all"
+                          title="Điền khoảng chương này vào khung tự chọn bên dưới"
+                        >
+                          Chọn
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-[10px] text-slate-500 py-1 text-center">
+                  {loadingBundles ? 'Đang tính toán các tập...' : 'Chưa có đủ audio để gom tập 10-12 tiếng.'}
+                </div>
+              )}
+            </div>
+
+            {/* Export Range Selection (Tự chọn thủ công) */}
+            <div className="text-[11px] font-bold text-slate-300 pt-1 border-t border-cyber-border/30">
+              Hoặc chọn khoảng chương thủ công:
+            </div>
             <div className="grid grid-cols-2 gap-2 text-xs">
               <div>
                 <label className="text-[10px] text-slate-400 block mb-1 font-medium">Từ chương:</label>
@@ -1301,21 +1508,21 @@ export default function AudioStudio() {
                 onClick={handleFastMerge}
                 disabled={isMerging}
                 className="py-2.5 px-2 rounded-xl bg-cyber-purple/15 hover:bg-cyber-purple text-cyber-purple hover:text-white font-bold text-xs border border-cyber-purple/30 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 shadow-sm truncate"
-                title={`Ghép các file MP3 từ chương ${exportRangeStart} đến ${exportRangeEnd} thành 1 file MP3 gộp (Tốc độ ${exportSpeed}x)`}
+                title={`Ghép các file MP3 từ chương ${exportRangeStart} đến ${exportRangeEnd} và tự động tải CẢ HAI file (MP3 + JSON Timeline)`}
               >
                 {isMerging ? (
                   <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                 ) : (
                   <Download className="w-3.5 h-3.5" />
                 )}
-                <span>{isMerging ? 'Đang ghép...' : `Ghép & Tải MP3 (${exportSpeed}x)`}</span>
+                <span>{isMerging ? 'Đang ghép...' : `⚡ Ghép & Tải Cả 2 (${exportSpeed}x)`}</span>
               </button>
 
               <a
                 href={`/api/novels/${selectedNovelId}/audio/export_timeline_json?start_chapter=${exportRangeStart}&end_chapter=${exportRangeEnd}&speed=${exportSpeed}`}
                 download={`Timeline_Ch${exportRangeStart}_to_Ch${exportRangeEnd}${exportSpeed !== 1.0 ? `_${exportSpeed}x` : ''}.json`}
                 className="py-2.5 px-2 rounded-xl bg-cyan-500/15 hover:bg-cyan-500 text-cyan-300 hover:text-slate-950 font-bold text-xs border border-cyan-500/30 transition-all flex items-center justify-center gap-1.5 shadow-sm truncate"
-                title={`Xuất file JSON timeline phụ đề karaoke từ chương ${exportRangeStart} đến ${exportRangeEnd} (Tốc độ ${exportSpeed}x)`}
+                title={`Chỉ xuất riêng file JSON timeline phụ đề karaoke từ chương ${exportRangeStart} đến ${exportRangeEnd} (Tốc độ ${exportSpeed}x)`}
               >
                 <FileText className="w-3.5 h-3.5" />
                 <span>Xuất JSON Chuỗi ({exportSpeed}x)</span>
@@ -1324,18 +1531,42 @@ export default function AudioStudio() {
 
             {/* Merge Result Download Banner */}
             {mergeResult && (
-              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center justify-between mt-1">
+              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center justify-between mt-1 flex-wrap gap-2">
                 <div>
                   <p className="font-bold">{mergeResult.message}</p>
                   <p className="text-[10px] text-slate-400">Dung lượng: {mergeResult.file_size} • Độ dài: {mergeResult.duration || 'N/A'}</p>
                 </div>
-                <a
-                  href={mergeResult.download_url}
-                  download
-                  className="px-3 py-1.5 bg-emerald-500 text-slate-950 font-bold rounded-lg text-xs hover:bg-emerald-400 transition-all flex items-center gap-1 shadow-sm"
-                >
-                  <Download className="w-3 h-3" /> Tải về
-                </a>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => handleDownloadBoth(
+                      mergeResult.download_url,
+                      mergeResult.filename,
+                      mergeResult.json_download_url,
+                      mergeResult.json_filename
+                    )}
+                    className="px-3 py-1.5 bg-emerald-500 text-slate-950 font-bold rounded-lg text-xs hover:bg-emerald-400 transition-all flex items-center gap-1 shadow-sm"
+                    title="Tải CẢ HAI tệp: File MP3 gộp + File JSON timeline phụ đề"
+                  >
+                    <Download className="w-3.5 h-3.5" /> Tải Cả 2 (MP3 + JSON)
+                  </button>
+                  <a
+                    href={mergeResult.download_url}
+                    download={mergeResult.filename}
+                    className="px-2 py-1.5 bg-slate-800 text-slate-300 hover:text-white font-medium rounded-lg text-[11px] transition-all"
+                    title="Chỉ tải file MP3"
+                  >
+                    MP3
+                  </a>
+                  <a
+                    href={mergeResult.json_download_url}
+                    download={mergeResult.json_filename}
+                    className="px-2 py-1.5 bg-cyan-950/60 text-cyan-300 hover:text-cyan-200 border border-cyan-500/30 font-medium rounded-lg text-[11px] transition-all"
+                    title="Chỉ tải file JSON timeline phụ đề"
+                  >
+                    JSON
+                  </a>
+                </div>
               </div>
             )}
           </div>

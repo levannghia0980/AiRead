@@ -1,7 +1,7 @@
 import os
 import re
 import shutil
-from fastapi import APIRouter, HTTPException, Query, Path
+from fastapi import APIRouter, HTTPException, Query, Path, UploadFile, File
 from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
 from sqlalchemy import select, func, case
@@ -738,6 +738,346 @@ async def update_novel_genre(novel_id: int = Path(...), payload: UpdateGenreRequ
         await session.commit()
     return {"status": "success", "message": f"Đã cập nhật thể loại '{payload.genre}' thành công."}
 
+@router.post("/tools/launch-fanqie")
+async def launch_fanqie_downloader():
+    """
+    Bật ứng dụng FanqieDownloader.exe ngay từ giao diện web để người dùng tải full truyện Fanqie.
+    """
+    import os, subprocess
+    exe_path = os.path.abspath(r"d:\NENGHIA0980\AIREAD\tools\FanqieDownloader.exe")
+    if not os.path.exists(exe_path):
+        raise HTTPException(status_code=404, detail="Không tìm thấy FanqieDownloader.exe trong thư mục tools.")
+    try:
+        subprocess.Popen([exe_path], cwd=os.path.dirname(exe_path))
+        return {"status": "success", "message": "Đã mở FanqieDownloader thành công!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi mở FanqieDownloader: {e}")
+
+@router.post("/tools/open-bangoc-folder")
+async def open_bangoc_folder():
+    """Mở thư mục Output/01_BanGoc trên Windows Explorer"""
+    import os, subprocess
+    folder_path = os.path.abspath(r"d:\NENGHIA0980\AIREAD\Output\01_BanGoc")
+    os.makedirs(folder_path, exist_ok=True)
+    try:
+        subprocess.Popen(["explorer", folder_path])
+        return {"status": "success", "message": "Đã mở thư mục 01_BanGoc!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi mở thư mục: {e}")
+
+@router.get("/tools/list-bangoc-txt")
+async def list_bangoc_txt_files():
+    """Liệt kê các file .txt tổng tải về đang nằm trong Output/01_BanGoc"""
+    import os
+    folder_path = os.path.abspath(r"d:\NENGHIA0980\AIREAD\Output\01_BanGoc")
+    if not os.path.exists(folder_path):
+        return []
+    files = []
+    for f in os.listdir(folder_path):
+        if f.endswith(".txt") and not f.startswith("."):
+            full_p = os.path.join(folder_path, f)
+            size_mb = round(os.path.getsize(full_p) / (1024 * 1024), 2)
+            files.append({
+                "filename": f,
+                "path": full_p,
+                "size_mb": size_mb
+            })
+    return files
+
+@router.post("/tools/auto-import-txt")
+async def auto_import_txt_file(payload: Dict[str, Any]):
+    """
+    Tự động nhập 1 file TXT tổng trong 01_BanGoc:
+    1. Đọc metadata từ file (Tên truyện, Tác giả).
+    2. Dịch thô tên truyện sang Tiếng Việt.
+    3. Tạo Novel trong CSDL nếu chưa có.
+    4. Cắt rời từng chương và lưu vào Output/01_BanGoc/[Tên_Tiếng_Việt]/00000X.txt chuẩn chỉnh!
+    5. Cập nhật ChapterVersion(RAW) để sẵn sàng dịch ngay lập tức mà KHÔNG CẦN CÀO MẠNG!
+    """
+    import os, re
+    from app.models.schema import Novel, Chapter, ChapterVersion
+    from app.services.storage.file_storage import save_chapter_version_file, get_version_dir
+    from app.services.preprocessing.crawler.google_translator import translate_text_best_quality
+
+    file_path = payload.get("file_path", "")
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=400, detail=f"Không tìm thấy file TXT: {file_path}")
+
+    # Đọc toàn bộ nội dung file TXT
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        full_text = f.read()
+
+    return await _process_and_import_txt_content(full_text, file_path)
+
+@router.post("/tools/upload-and-split-txt")
+async def upload_and_split_txt(file: UploadFile = File(...)):
+    """
+    Cho phép người dùng trực tiếp CHỌN FILE .txt từ bất kỳ thư mục nào trên máy tính.
+    Hệ thống sẽ:
+    1. Nhận file TXT.
+    2. Tự động đọc Tên truyện & Tác giả, dịch tên truyện sang Tiếng Việt.
+    3. Tự động cắt rời từng chương thành các file 00000X.txt trong Output/01_BanGoc/[Tên_Truyện]/.
+    4. Nạp thẳng vào CSDL sẵn sàng dịch ngay lập tức!
+    """
+    import os
+    if not file.filename.lower().endswith(".txt"):
+        raise HTTPException(status_code=400, detail="Vui lòng chọn file văn bản (.txt)!")
+
+    # Lưu tạm vào 01_BanGoc
+    folder_path = os.path.abspath(r"d:\NENGHIA0980\AIREAD\Output\01_BanGoc")
+    os.makedirs(folder_path, exist_ok=True)
+    saved_path = os.path.join(folder_path, file.filename)
+
+    content_bytes = await file.read()
+    try:
+        full_text = content_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        try:
+            full_text = content_bytes.decode("gb18030")
+        except Exception:
+            full_text = content_bytes.decode("utf-8", errors="ignore")
+
+    with open(saved_path, "w", encoding="utf-8", errors="ignore") as f:
+        f.write(full_text)
+
+    return await _process_and_import_txt_content(full_text, saved_path)
+
+async def _process_and_import_txt_content(full_text: str, file_path: str) -> Dict[str, Any]:
+    import os, re
+    from app.models.schema import Novel, Chapter, ChapterVersion
+    from app.services.storage.file_storage import save_chapter_version_file
+    from app.services.preprocessing.crawler.google_translator import translate_text_best_quality
+
+    # Bóc tách thông tin truyện ở đầu file do FanqieDownloader tạo ra
+    raw_title = ""
+    author = "Unknown"
+    m_title = re.search(r'书名[：:]\s*([^\n\r]+)', full_text)
+    if m_title:
+        raw_title = m_title.group(1).strip()
+    else:
+        # Lấy từ tên file
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        raw_title = base_name.split("-")[0].strip()
+
+    m_author = re.search(r'作者[：:]\s*([^\n\r]+)', full_text)
+    if m_author:
+        author = m_author.group(1).strip()
+
+    # Dịch thô tên truyện sang tiếng Việt
+    rough_title = await translate_text_best_quality(raw_title)
+    if not rough_title:
+        rough_title = raw_title
+
+    # Tìm hoặc tạo Novel trong DB
+    async with AsyncSessionLocal() as session:
+        stmt = select(Novel).where(Novel.title_raw == raw_title)
+        res = await session.execute(stmt)
+        novel = res.scalar_one_or_none()
+        if not novel:
+            import hashlib
+            h_suffix = hashlib.md5(raw_title.encode('utf-8')).hexdigest()[:8]
+            novel = Novel(
+                title_raw=raw_title,
+                title_rough=rough_title,
+                author=author,
+                source_url=f"imported_txt://{h_suffix}",
+                genres="xianxia",
+                context_profile="xianxia"
+            )
+            session.add(novel)
+            await session.commit()
+            await session.refresh(novel)
+        novel_id = novel.id
+
+    # Regex nhận diện các chương: 第X章 ...
+    ch_pattern = re.compile(r'(?:^|\n)(第\s*(\d+)\s*章[^\n]*)(.*?)(?=\n第\s*\d+\s*章|\Z)', re.DOTALL)
+    matches = list(ch_pattern.finditer(full_text))
+
+    if not matches:
+        raise HTTPException(status_code=400, detail="Không nhận diện được cấu trúc chương '第X章' trong file TXT này.")
+
+    imported_count = 0
+    async with AsyncSessionLocal() as session:
+        for m in matches:
+            ch_full_header = m.group(1).strip()
+            c_num_str = m.group(2).strip()
+            try:
+                ch_no = int(c_num_str)
+            except ValueError:
+                continue
+
+            content = (ch_full_header + "\n\n" + m.group(3)).strip()
+
+            # Lưu vào đúng thư mục 01_BanGoc/[Tên_Truyện]/00000X.txt
+            file_path_raw = save_chapter_version_file(
+                version_type="RAW",
+                novel_title_raw=raw_title,
+                novel_title_rough=rough_title,
+                chapter_no=ch_no,
+                chapter_title_raw=ch_full_header,
+                chapter_title_rough=ch_full_header,
+                content_text=content
+            )
+
+            # Cập nhật DB
+            stmt_ch = select(Chapter).where(Chapter.novel_id == novel_id, Chapter.chapter_no == ch_no)
+            res_ch = await session.execute(stmt_ch)
+            ch_obj = res_ch.scalar_one_or_none()
+            if not ch_obj:
+                ch_obj = Chapter(
+                    novel_id=novel_id,
+                    chapter_no=ch_no,
+                    title_raw=ch_full_header,
+                    title_rough=ch_full_header,
+                    url=f"local://file/{ch_no}",
+                    status="CRAWLED"
+                )
+                session.add(ch_obj)
+                await session.flush()
+            else:
+                ch_obj.status = "CRAWLED"
+
+            stmt_v = select(ChapterVersion).where(
+                ChapterVersion.chapter_id == ch_obj.id,
+                ChapterVersion.version_type == "RAW"
+            )
+            res_v = await session.execute(stmt_v)
+            v_raw = res_v.scalar_one_or_none()
+            if not v_raw:
+                session.add(ChapterVersion(
+                    chapter_id=ch_obj.id,
+                    version_type="RAW",
+                    engine="fanqie_txt",
+                    file_path=file_path_raw,
+                    status="COMPLETED"
+                ))
+            else:
+                v_raw.file_path = file_path_raw
+                v_raw.status = "COMPLETED"
+
+            imported_count += 1
+
+        await session.commit()
+
+    return {
+        "status": "success",
+        "novel_id": novel_id,
+        "novel_title": rough_title,
+        "imported_chapters": imported_count,
+        "message": f"✅ Đã tách thành công {imported_count} chương vào 'Output/01_BanGoc/{rough_title}/' và nạp vào CSDL!"
+    }
+
+class ImportRawTxtRequest(BaseModel):
+    file_path: str
+
+@router.post("/{novel_id}/import-raw-txt")
+async def import_raw_novel_txt(novel_id: int = Path(...), payload: ImportRawTxtRequest = ...):
+    """
+    Dành riêng cho Fanqie hoặc truyện tải sẵn nguyên file TXT:
+    1. Đọc file TXT tổng đã tải về.
+    2. Tự động bóc tách từng chương theo mẫu '第X章' hoặc 'Chương X'.
+    3. Ghi vào thư mục 'Output/01_BanGoc/[Tên_Truyện]/00000X.txt' đúng chuẩn.
+    4. Cập nhật Chapter và ChapterVersion(RAW) trong DB để khi dịch lô chỉ cần đọc thẳng đĩa, KHÔNG CẦN CÀO MẠNG!
+    """
+    import os, re
+    from app.models.schema import Novel, Chapter, ChapterVersion
+    from app.services.storage.file_storage import save_chapter_version_file
+
+    if not os.path.exists(payload.file_path):
+        raise HTTPException(status_code=400, detail=f"Không tìm thấy file TXT tại: {payload.file_path}")
+
+    async with AsyncSessionLocal() as session:
+        stmt_n = select(Novel).where(Novel.id == novel_id)
+        res_n = await session.execute(stmt_n)
+        novel = res_n.scalar_one_or_none()
+        if not novel:
+            raise HTTPException(status_code=404, detail="Không tìm thấy truyện.")
+
+        novel_title_raw = novel.title_raw
+        novel_title_rough = novel.title_rough or novel_title_raw
+
+    # Đọc toàn bộ nội dung file TXT
+    try:
+        with open(payload.file_path, "r", encoding="utf-8", errors="ignore") as f:
+            full_text = f.read()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi đọc file: {e}")
+
+    # Regex nhận diện đầu chương: 第X章 hoặc Chương X
+    ch_pattern = re.compile(r'(?:^|\n)(?:第\s*(\d+)\s*章|Chương\s*(\d+)\s*:?)(.*?)(?=\n(?:第\s*\d+\s*章|Chương\s*\d+\s*:?|\Z))', re.DOTALL)
+    matches = list(ch_pattern.finditer(full_text))
+
+    if not matches:
+        raise HTTPException(status_code=400, detail="Không nhận diện được cấu trúc chương (第X章 hoặc Chương X) trong file TXT.")
+
+    imported_count = 0
+    async with AsyncSessionLocal() as session:
+        for m in matches:
+            c_num_str = m.group(1) or m.group(2)
+            try:
+                ch_no = int(c_num_str)
+            except ValueError:
+                continue
+
+            content = m.group(0).strip()
+            ch_title = content.split("\n")[0].strip()
+
+            # Lưu vào 01_BanGoc
+            file_path_raw = save_chapter_version_file(
+                version_type="RAW",
+                novel_title_raw=novel_title_raw,
+                novel_title_rough=novel_title_rough,
+                chapter_no=ch_no,
+                chapter_title_raw=ch_title,
+                chapter_title_rough=ch_title,
+                content_text=content
+            )
+
+            # Đồng bộ vào DB
+            stmt_ch = select(Chapter).where(Chapter.novel_id == novel_id, Chapter.chapter_no == ch_no)
+            res_ch = await session.execute(stmt_ch)
+            chapter = res_ch.scalar_one_or_none()
+            if not chapter:
+                chapter = Chapter(
+                    novel_id=novel_id,
+                    chapter_no=ch_no,
+                    title_raw=ch_title,
+                    title_rough=ch_title,
+                    status="CRAWLED"
+                )
+                session.add(chapter)
+                await session.flush()
+            else:
+                chapter.status = "CRAWLED"
+
+            stmt_v = select(ChapterVersion).where(
+                ChapterVersion.chapter_id == chapter.id,
+                ChapterVersion.version_type == "RAW"
+            )
+            res_v = await session.execute(stmt_v)
+            v_raw = res_v.scalar_one_or_none()
+            if not v_raw:
+                session.add(ChapterVersion(
+                    chapter_id=chapter.id,
+                    version_type="RAW",
+                    engine="imported_txt",
+                    file_path=file_path_raw,
+                    status="COMPLETED"
+                ))
+            else:
+                v_raw.file_path = file_path_raw
+                v_raw.status = "COMPLETED"
+
+            imported_count += 1
+
+        await session.commit()
+
+    return {
+        "status": "success",
+        "message": f"Đã nạp thành công {imported_count} chương bản gốc vào Output/01_BanGoc và sẵn sàng dịch không cần cào mạng!",
+        "imported_chapters": imported_count
+    }
+
 class ResetChaptersRequest(BaseModel):
     chapter_nos: Optional[List[int]] = None
     full_restart: Optional[bool] = False
@@ -779,11 +1119,23 @@ async def reset_chapters(novel_id: int = Path(...), payload: ResetChaptersReques
                 await session.delete(link)
 
             # Lấy tất cả các phiên bản (kể cả RAW, GG, LLM, FINAL, CONTEXTT, AUDIO) để xóa tệp đĩa và DB
+            # ⚠️ ĐẶC BIỆT: Với truyện upload bằng file TXT (URL = local://), GIỮ LẠI bản RAW vì không thể cào lại từ web!
+            local_chapter_ids = set()
+            for ch in chapters:
+                if ch.url and ch.url.startswith("local://"):
+                    local_chapter_ids.add(ch.id)
+
             stmt_ver = select(ChapterVersion).where(ChapterVersion.chapter_id.in_(chap_ids))
             res_ver = await session.execute(stmt_ver)
             versions = res_ver.scalars().all()
             
+            preserved_raw_count = 0
             for ver in versions:
+                # Giữ lại bản RAW cho truyện upload TXT (local://) — không thể cào lại!
+                if ver.version_type == "RAW" and ver.chapter_id in local_chapter_ids:
+                    preserved_raw_count += 1
+                    continue  # BỎ QUA — không xóa file RAW và bản ghi DB
+
                 if ver.file_path and os.path.exists(ver.file_path):
                     try:
                         os.remove(ver.file_path)
@@ -791,8 +1143,15 @@ async def reset_chapters(novel_id: int = Path(...), payload: ResetChaptersReques
                         pass
                 await session.delete(ver)
 
+            if preserved_raw_count > 0:
+                print(f"🛡️ [RESET] Đã bảo vệ {preserved_raw_count} file bản gốc (RAW) của truyện upload TXT — không thể cào lại từ web!")
+
             for ch in chapters:
-                ch.status = "WAIT"
+                # Với truyện local://, đặt status CRAWLED thay vì WAIT vì đã có RAW sẵn
+                if ch.id in local_chapter_ids:
+                    ch.status = "CRAWLED"
+                else:
+                    ch.status = "WAIT"
                 ch.error_message = ""
 
         # === FULL RESTART: Xóa thêm entities, TTS chunks, metadata ===
@@ -817,7 +1176,8 @@ async def reset_chapters(novel_id: int = Path(...), payload: ResetChaptersReques
         if novel and not payload.chapter_nos:
             from app.services.storage.file_storage import delete_novel_disk_files
             novel_title_rough = novel.title_rough or novel.title_raw
-            delete_novel_disk_files(novel_title_rough)
+            is_local = bool(local_chapter_ids) or (novel.source_url and novel.source_url.startswith("local://"))
+            delete_novel_disk_files(novel_title_rough, preserve_raw=is_local)
 
             # Full restart: xóa thêm metadata JSON cache
             if payload.full_restart:

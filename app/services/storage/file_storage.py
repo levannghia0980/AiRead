@@ -11,7 +11,6 @@ OUTPUT_ROOT = Path("d:/NENGHIA0980/AIREAD/Output")
 # Các thư mục chuẩn lưu trữ dữ liệu Output
 VERSION_FOLDER_MAP: Dict[str, str] = {
     "RAW": "01_BanGoc",
-    "GG": "02_DichMau_GG",
     "LLM": "03_DichAI_LLM",
     "FINAL": "04_KetQua",
     "TTS_TEXT": "04b_VanBanTTS",
@@ -114,10 +113,12 @@ def read_version_file_content(file_path_str: str) -> str:
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         return f.read()
 
-def delete_novel_disk_files(novel_title_rough: str):
-    """Xóa sạch toàn bộ dữ liệu đĩa của truyện ở tất cả các thư mục trong Output"""
+def delete_novel_disk_files(novel_title_rough: str, preserve_raw: bool = False):
+    """Xóa sạch dữ liệu đĩa của truyện ở các thư mục trong Output (giữ 01_BanGoc nếu preserve_raw=True)"""
     folder_novel = sanitize_filename(novel_title_rough)
     for folder_type in VERSION_FOLDER_MAP.values():
+        if preserve_raw and folder_type == "01_BanGoc":
+            continue
         target_dir = OUTPUT_ROOT / folder_type / folder_novel
         if target_dir.exists():
             shutil.rmtree(target_dir, ignore_errors=True)

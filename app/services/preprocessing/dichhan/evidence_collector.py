@@ -5,7 +5,6 @@ from sqlalchemy import select
 from app.core.database import AsyncSessionLocal
 from app.models.schema import Chapter, ChapterVersion, NovelEntity
 from app.services.preprocessing.dichhan.entity_extractor import extract_ner_branch
-from app.services.preprocessing.dichhan.entity_sanitizer import extract_gg_clean_branch
 from app.services.preprocessing.dichhan.raw_text_cleaner import sanitize_chinese_raw_text
 
 SYSTEM_PROMPT_INSTRUCTION = (
@@ -119,8 +118,8 @@ async def collect_chapter_entities(chapter_id: int) -> Dict[str, Any]:
     # 1. Thu thập Nhánh 1 (NER Branch)
     ner_raw = await extract_ner_branch(novel_id, raw_text) if raw_text else []
 
-    # 2. Thu thập Nhánh 2 (GG Clean Filter Branch)
-    gg_raw = await extract_gg_clean_branch(raw_text, gg_text, db_entities) if (raw_text and gg_text) else []
+    # 2. Nhánh 2 (GG Clean): Bỏ qua vì luồng thuần RAWT dịch trực tiếp từ RAW
+    gg_raw = []
 
     # 3. Gói dữ liệu từ điển đã lưu của Novel để nạp vào prompt cho LLM Extractor
     existing_db_dict = {
