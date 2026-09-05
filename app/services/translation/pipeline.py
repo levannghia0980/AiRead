@@ -162,25 +162,27 @@ async def _extract_and_save_batch_entities(novel_id: int, batch: List[int]):
 
     chap_nos = await _get_chap_numbers(batch)
 
-    # 1. Kiểm tra xem các chương trong lô này đã có thực thể liên kết chưa
+    # 1. Kiểm tra xem các chương trong lô này chương nào chưa có thực thể liên kết
     async with AsyncSessionLocal() as session:
-        stmt_chk = select(ChapterEntityLink).where(ChapterEntityLink.chapter_id.in_(batch))
+        stmt_chk = select(ChapterEntityLink.chapter_id).where(ChapterEntityLink.chapter_id.in_(batch)).distinct()
         res_chk = await session.execute(stmt_chk)
-        existing_links = res_chk.scalars().all()
+        linked_cids = set(res_chk.scalars().all())
         
-    if existing_links:
-        print(f"ℹ️ [THỰC THỂ] Lô Chương {chap_nos} đã có sẵn {len(existing_links)} liên kết thực thể trên máy.")
+    unlinked_batch = [cid for cid in batch if cid not in linked_cids]
+    if not unlinked_batch:
+        print(f"ℹ️ [THỰC THỂ] Lô Chương {chap_nos} đã có sẵn đầy đủ liên kết thực thể trên máy.")
         return
 
-    msg_ent_start = f"🔍 [1/2 THỰC THỂ] Đang bóc tách thực thể & lập bảng tên cho lô Chương {chap_nos}..."
+    unlinked_chap_nos = await _get_chap_numbers(unlinked_batch)
+    msg_ent_start = f"🔍 [1/2 THỰC THỂ] Đang bóc tách thực thể & lập bảng tên cho {len(unlinked_batch)} chương mới: Chương {unlinked_chap_nos}..."
     print(msg_ent_start)
     add_system_log(msg_ent_start, "pre")
 
     try:
-        evidence_payload = await collect_batch_entities(batch)
+        evidence_payload = await collect_batch_entities(unlinked_batch)
         candidates = evidence_payload.get("branch_1_ner_candidates", [])
         if not candidates:
-            print(f"ℹ️ [THỰC THỂ] Không tìm thấy từ nghi vấn trong bản gốc lô Chương {chap_nos}.")
+            print(f"ℹ️ [THỰC THỂ] Không tìm thấy từ nghi vấn trong bản gốc lô Chương {unlinked_chap_nos}.")
             return
 
         llm_res = await process_2branch_evidence_via_llm(evidence_payload)
@@ -303,7 +305,7 @@ async def _translate_batch(batch: List[int], enable_names_dict: bool = True, **k
             print(msg_post)
             add_system_log(msg_post, "post")
             
-            saved_files = await process_and_split_batch(
+            post_result = await process_and_split_batch(
                 novel_id=res["novel_id"],
                 translated_text_masked=res["translated_text_masked"],
                 mapping_table=res.get("mapping_table", {}),
@@ -311,11 +313,25 @@ async def _translate_batch(batch: List[int], enable_names_dict: bool = True, **k
                 version_type=ver_type,
                 enable_erotic=enable_erotic
             )
-            res["saved_files"] = saved_files
+            saved_files = post_result.get("saved_files", []) if isinstance(post_result, dict) else post_result
+            saved_cids = post_result.get("saved_cids", []) if isinstance(post_result, dict) else [cid for cid in batch]
+            failed_cids = post_result.get("failed_cids", []) if isinstance(post_result, dict) else []
             
-            msg_ok = f"✅ [HOÀN THÀNH LÔ] Lô Chương {chap_nos} đã lưu thành công vào CSDL & Ổ đĩa ({len(saved_files)} file)!"
-            print(msg_ok)
-            add_system_log(msg_ok, "success")
+            res["saved_files"] = saved_files
+            res["saved_cids"] = saved_cids
+            res["failed_cids"] = failed_cids
+            
+            if saved_cids:
+                msg_ok = f"✅ [HOÀN THÀNH LÔ] Đã lưu thành công {len(saved_cids)}/{len(batch)} chương ({len(saved_files)} file)!"
+                print(msg_ok)
+                add_system_log(msg_ok, "success")
+            else:
+                res["status"] = "failed"
+                res["error"] = "Không có chương nào trong lô đạt chuẩn trọn vẹn để lưu."
+                msg_none = f"⚠️ [LÔ KHÔNG ĐẠT CHUẨN] Toàn bộ {len(batch)} chương đều thiếu thẻ hoặc bị cắt cụt."
+                print(msg_none)
+                add_system_log(msg_none, "warning")
+                
             return res
         else:
             err_res = f"❌ [DỊCH AI LỖI] Lô Chương {chap_nos} gặp lỗi: {res.get('error') or res.get('message') or res}"
@@ -368,14 +384,28 @@ async def run_translation_batch_pipeline(
         active_current_batch = []
         active_next_batch = []
         try:
-            async with AsyncSessionLocal() as session:
-                # 1. Tự động phát hiện chương chưa dịch thấp nhất nếu không bật force_retranslate
-                force_retranslate = kwargs.get("force_retranslate", False)
-                actual_start_chapter = start_chapter or 0
+            # 1. Tự động phát hiện chương chưa dịch thấp nhất nếu không bật force_retranslate
+            force_retranslate = kwargs.get("force_retranslate", False)
+            actual_start_chapter = start_chapter or 0
 
-                if not force_retranslate:
-                    # Chế độ tự động dịch tiếp (Resume): Nếu không chỉ định start_chapter (<=0), tìm chương chưa dịch đầu tiên
-                    if actual_start_chapter <= 0:
+            if force_retranslate:
+                # Nếu bật force_retranslate, reset các chương trong khoảng về CRAWLED trước
+                async with AsyncSessionLocal() as session:
+                    stmt_reset = select(Chapter).where(Chapter.novel_id == novel_id)
+                    if actual_start_chapter > 0:
+                        stmt_reset = stmt_reset.where(Chapter.chapter_no >= actual_start_chapter)
+                    if end_chapter > 0:
+                        stmt_reset = stmt_reset.where(Chapter.chapter_no <= end_chapter)
+                    res_reset = await session.execute(stmt_reset)
+                    reset_chaps = res_reset.scalars().all()
+                    for ch in reset_chaps:
+                        ch.status = "CRAWLED"
+                    await session.commit()
+                    add_system_log(f"🔄 [FORCE RETRANSLATE] Đã đặt lại trạng thái cho {len(reset_chaps)} chương về CRAWLED để dịch lại.", "info")
+            else:
+                # Chế độ tự động dịch tiếp (Resume): Nếu không chỉ định start_chapter (<=0), tìm chương chưa dịch đầu tiên
+                if actual_start_chapter <= 0:
+                    async with AsyncSessionLocal() as session:
                         stmt_find = select(Chapter.chapter_no).where(
                             Chapter.novel_id == novel_id,
                             ~Chapter.status.in_(["FINAL_DONE", "DONE", "TRANSLATED"])
@@ -392,44 +422,62 @@ async def run_translation_batch_pipeline(
                             add_system_log("✅ Tất cả các chương trong phạm vi chỉ định đã được dịch hoàn tất.", "success")
                             return {"status": "completed", "total_batches": 0, "total_chapters": 0, "results": []}
 
-                # 2. Query danh sách chương cần dịch
-                stmt = select(Chapter.id).where(Chapter.novel_id == novel_id)
-                if not force_retranslate:
-                    stmt = stmt.where(~Chapter.status.in_(["FINAL_DONE", "DONE", "TRANSLATED"]))
-
+            # Đếm tổng số chương cần xử lý trong phạm vi
+            async with AsyncSessionLocal() as session:
+                stmt_total = select(Chapter.id).where(Chapter.novel_id == novel_id)
                 if actual_start_chapter > 0:
-                    stmt = stmt.where(Chapter.chapter_no >= actual_start_chapter)
+                    stmt_total = stmt_total.where(Chapter.chapter_no >= actual_start_chapter)
                 if end_chapter > 0:
-                    stmt = stmt.where(Chapter.chapter_no <= end_chapter)
-                    
-                stmt = stmt.order_by(Chapter.chapter_no.asc())
-                res = await session.execute(stmt)
-                chapter_ids = res.scalars().all()
-                
-            if not chapter_ids:
-                add_system_log("✅ Không có chương nào cần dịch trong khoảng chỉ định.", "success")
-                return {"status": "completed", "total_batches": 0, "total_chapters": 0, "results": []}
+                    stmt_total = stmt_total.where(Chapter.chapter_no <= end_chapter)
+                res_total = await session.execute(stmt_total)
+                total_target_ids = res_total.scalars().all()
+                total_target_count = len(total_target_ids)
 
-            # Phân lô (Batching)
-            batches = [chapter_ids[i:i + batch_size] for i in range(0, len(chapter_ids), batch_size)]
+            # VÒNG LẶP DỊCH ĐỘNG (DYNAMIC BATCHING LOOP)
+            # Không chia cứng batch từ đầu. Mỗi vòng lặp sẽ query các chương chưa hoàn tất nhỏ nhất tiếp theo!
+            # Điều này đảm bảo: Nếu chương cuối của lô bị thiếu thẻ (ví dụ lô 1-5 thiếu chương 5),
+            # thì các chương 1, 2, 3, 4 đã hoàn tất sẽ lưu ngay, còn chương 5 sẽ tự động được đưa vào ngay đầu lô tiếp theo (5, 6, 7, 8, 9)!
+            batch_num = 0
+            consecutive_failures = 0
+            max_consecutive_failures = 3
             results = []
-            # VÒNG LẶP DỊCH TUẦN TỰ (RAWT)
-            for idx, current_batch in enumerate(batches):
-                batch_num = idx + 1
+            total_saved_count = 0
+
+            while True:
+                async with AsyncSessionLocal() as session:
+                    stmt = select(Chapter.id).where(
+                        Chapter.novel_id == novel_id,
+                        ~Chapter.status.in_(["FINAL_DONE", "DONE", "TRANSLATED"])
+                    )
+                    if actual_start_chapter > 0:
+                        stmt = stmt.where(Chapter.chapter_no >= actual_start_chapter)
+                    if end_chapter > 0:
+                        stmt = stmt.where(Chapter.chapter_no <= end_chapter)
+                    stmt = stmt.order_by(Chapter.chapter_no.asc()).limit(batch_size)
+                    res = await session.execute(stmt)
+                    current_batch = res.scalars().all()
+
+                if not current_batch:
+                    # Đã dịch hết tất cả các chương trong phạm vi!
+                    add_system_log("🎉 [HOÀN TẤT DỊCH TOÀN BỘ] Đã hoàn thành 100% tất cả các chương trong phạm vi chỉ định!", "success")
+                    break
+
+                batch_num += 1
                 active_current_batch = current_batch
-                
+                chap_nos = await _get_chap_numbers(current_batch)
+
                 # Đảm bảo lô hiện tại có sẵn file bản gốc RAW
                 await _ensure_chapters_crawled(current_batch, require_gg=False)
 
-                # BƯỚC 1: BÓC TÁCH THỰC THỂ LÔ & LƯU VÀO MÁY (BẮT BUỘC HOÀN TẤT TRƯỚC KHI KHỞI ĐỘNG DỊCH)
+                # BƯỚC 1: BÓC TÁCH THỰC THỂ LÔ & LƯU VÀO MÁY (chỉ bóc tách cho các chương chưa có)
                 if enable_names_dict:
                     await _extract_and_save_batch_entities(novel_id, current_batch)
 
                 # BƯỚC 2: KHỞI ĐỘNG LLM DỊCH LÔ
-                start_batch_msg = f"🚀 [LÔ {batch_num}/{len(batches)}] Tiến hành dịch Lô {batch_num} ({len(current_batch)} chương)..."
+                start_batch_msg = f"🚀 [LÔ {batch_num}] Tiến hành dịch Lô Chương {chap_nos} ({len(current_batch)} chương)..."
                 print(start_batch_msg)
                 add_system_log(start_batch_msg, "purple")
-                
+
                 translate_res = await _translate_batch(
                     current_batch,
                     enable_names_dict=enable_names_dict,
@@ -438,27 +486,44 @@ async def run_translation_batch_pipeline(
                     custom_prompt=kwargs.get("custom_prompt", "")
                 )
                 results.append(translate_res)
-                
-                if "error" in translate_res:
-                    err_batch = f"❌ [LỖI BATCH {batch_num}] Chi tiết: {translate_res['error']}"
-                    print(err_batch)
-                    add_system_log(err_batch, "error")
-                    raise ValueError(translate_res['error'])
-                else:
-                    done_batch = f"🎉 [HOÀN THÀNH BATCH {batch_num}] Lô {batch_num} dịch thành công!"
+
+                saved_cids = translate_res.get("saved_cids", [])
+                failed_cids = translate_res.get("failed_cids", [])
+
+                if saved_cids:
+                    consecutive_failures = 0
+                    total_saved_count += len(saved_cids)
+                    done_batch = f"🎉 [HOÀN THÀNH LÔ {batch_num}] Đã lưu thành công {len(saved_cids)}/{len(current_batch)} chương (Đã dịch tổng cộng: {total_saved_count}/{total_target_count})!"
                     print(done_batch)
                     add_system_log(done_batch, "success")
-                
-                if idx < len(batches) - 1 and delay_sec > 0:
-                    delay_msg = f"⏳ Tạm nghỉ {delay_sec:.1f}s trước khi chuyển sang Lô {batch_num + 1}..."
+
+                    if failed_cids:
+                        failed_chap_nos = await _get_chap_numbers(failed_cids)
+                        fail_msg = f"🔁 [TỰ ĐỘNG NỐI LÔ TIẾP THEO] Chương {failed_chap_nos} chưa đạt chuẩn thẻ/nội dung sẽ được đưa ngay vào đầu Lô {batch_num + 1} để xử lý dứt điểm!"
+                        print(fail_msg)
+                        add_system_log(fail_msg, "warning")
+                else:
+                    consecutive_failures += 1
+                    err_batch = f"⚠️ [CẢNH BÁO LÔ {batch_num}] Không có chương nào đạt chuẩn để lưu (Thất bại liên tiếp: {consecutive_failures}/{max_consecutive_failures})."
+                    print(err_batch)
+                    add_system_log(err_batch, "error")
+
+                    if consecutive_failures >= max_consecutive_failures:
+                        err_stop = f"❌ [DỪNG TIẾN TRÌNH] Đã thất bại liên tiếp {consecutive_failures} lần tại lô Chương {chap_nos}. Tạm dừng tiến trình để kiểm tra API hoặc dữ liệu!"
+                        print(err_stop)
+                        add_system_log(err_stop, "error")
+                        raise ValueError(err_stop)
+
+                if delay_sec > 0:
+                    delay_msg = f"⏳ Tạm nghỉ {delay_sec:.1f}s trước khi chuyển sang Lô tiếp theo..."
                     print(delay_msg)
                     add_system_log(delay_msg, "warning")
                     await asyncio.sleep(delay_sec)
-                    
+
             return {
                 "status": "completed",
-                "total_batches": len(batches),
-                "total_chapters": len(chapter_ids),
+                "total_batches": batch_num,
+                "total_chapters": total_saved_count,
                 "results": results
             }
         except (Exception, asyncio.CancelledError) as e:

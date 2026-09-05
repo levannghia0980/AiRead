@@ -21,20 +21,24 @@ async def translate_chapter_llm(chapter_id: int) -> Dict[str, Any]:
 
 
 async def get_previous_chapter_context(session, novel_id: int, current_first_chapter_no: int) -> str:
-    """Lấy ~500 ký tự cuối của chương liền trước để làm ngữ cảnh nối tiếp mạch truyện"""
-    if current_first_chapter_no <= 1:
+    """
+    Lấy 3-5 câu văn cuối cùng hoàn chỉnh (~300-600 ký tự) của chương liền trước
+    để làm ngữ cảnh nối tiếp mạch truyện tự nhiên giữa các lô (Seamless Context Continuity).
+    """
+    if not current_first_chapter_no or current_first_chapter_no <= 1:
         return ""
     
+    prev_chap_no = current_first_chapter_no - 1
     stmt_prev = select(Chapter).where(
         Chapter.novel_id == novel_id,
-        Chapter.chapter_no == current_first_chapter_no - 1
+        Chapter.chapter_no == prev_chap_no
     )
     res_prev = await session.execute(stmt_prev)
     prev_ch = res_prev.scalar_one_or_none()
     if not prev_ch:
         return ""
         
-    for v_type in ["FINAL", "GG", "RAW"]:
+    for v_type in ["FINAL", "LLM", "EDITED", "GG", "RAW"]:
         stmt_v = select(ChapterVersion).where(
             ChapterVersion.chapter_id == prev_ch.id,
             ChapterVersion.version_type == v_type
@@ -53,18 +57,29 @@ async def get_previous_chapter_context(session, novel_id: int, current_first_cha
                     pass
             if content and content.strip():
                 clean_c = content.strip()
-                tail = clean_c[-120:]
-                first_punct = re.search(r'[.!?\n]', tail)
-                if first_punct and first_punct.start() < len(tail) - 20:
-                    snippet = tail[first_punct.start() + 1:].strip()
-                else:
-                    snippet = tail.strip()
+                # Loại bỏ các thẻ tag XML/HTML nếu có
+                clean_c = re.sub(r'<[^>]*>', '', clean_c)
+                clean_c = re.sub(r'^(?:===\s*)?(?:Chương|Chapter)\s*\d+[^\n]*\n', '', clean_c, flags=re.IGNORECASE)
+                
+                # Lấy đoạn văn đuôi ~800 ký tự
+                tail_block = clean_c[-800:] if len(clean_c) > 800 else clean_c
+                
+                # Tách thành các câu hoàn chỉnh theo dấu kết câu (. ! ? … hoặc xuống dòng)
+                sentences = re.split(r'(?<=[.!?…\n])\s+', tail_block)
+                sentences = [s.strip() for s in sentences if s.strip() and len(s.strip()) > 3]
+                
+                # Lấy từ 3 đến 5 câu cuối cùng trọn vẹn
+                selected_sentences = sentences[-5:] if len(sentences) >= 5 else sentences
+                snippet = " ".join(selected_sentences).strip()
+                if not snippet:
+                    snippet = tail_block[-300:].strip()
+                
                 try:
                     from app.services.unblock.unblock_pipeline import mask_text_with_dictionary
                     masked_snippet, _, _ = await mask_text_with_dictionary(snippet)
-                    return f"Chương {prev_ch.chapter_no}: \"...{masked_snippet}\""
+                    return f"=== BỐI CẢNH ĐOẠN KẾT CHƯƠNG {prev_chap_no} (ĐỂ NỐI MẠCH TỰ NHIÊN VÀO ĐẦU CHƯƠNG {current_first_chapter_no}) ===\n\"{masked_snippet}\"\n-> Yêu cầu: Hãy dịch phần mở đầu Chương {current_first_chapter_no} nối mạch tự nhiên, liền mạch diễn biến câu chuyện với đoạn kết trên.\n"
                 except Exception:
-                    return f"Chương {prev_ch.chapter_no}: \"...{snippet}\""
+                    return f"=== BỐI CẢNH ĐOẠN KẾT CHƯƠNG {prev_chap_no} (ĐỂ NỐI MẠCH TỰ NHIÊN VÀO ĐẦU CHƯƠNG {current_first_chapter_no}) ===\n\"{snippet}\"\n-> Yêu cầu: Hãy dịch phần mở đầu Chương {current_first_chapter_no} nối mạch tự nhiên, liền mạch diễn biến câu chuyện với đoạn kết trên.\n"
     return ""
 
 
@@ -93,9 +108,6 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
             novel.context_profile = (novel.genres or "XIANXIA").lower()
             session.add(novel)
             await session.commit()
-            
-        # Lấy ngữ cảnh đoạn kết của chương liền trước
-        prev_context = await get_previous_chapter_context(session, novel.id, first_ch.chapter_no)
             
         combined_text = ""
         chapter_map = {}
@@ -188,33 +200,8 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
                 )
 
         # 3. Lấy ngữ cảnh 3-5 câu cuối của chương liền trước (Context Awareness)
-        prev_context_block = ""
-        first_chap_no = min(chapter_map.values()) if chapter_map else None
-        if first_chap_no and first_chap_no > 1:
-            prev_chap_no = first_chap_no - 1
-            stmt_prev = select(ChapterVersion).join(Chapter, ChapterVersion.chapter_id == Chapter.id).where(
-                Chapter.novel_id == novel.id,
-                Chapter.chapter_no == prev_chap_no,
-                ChapterVersion.version_type.in_(["FINAL", "LLM_TRANSLATED", "EDITED"])
-            )
-            res_prev = await session.execute(stmt_prev)
-            prev_ver = res_prev.scalars().first()
-            if prev_ver:
-                prev_text = ""
-                if prev_ver.content:
-                    prev_text = prev_ver.content
-                elif prev_ver.file_path and os.path.exists(prev_ver.file_path):
-                    with open(prev_ver.file_path, "r", encoding="utf-8", errors="ignore") as f:
-                        prev_text = f.read()
-                
-                if prev_text:
-                    prev_sentences = [s.strip() for s in prev_text.strip().split("\n") if s.strip()]
-                    tail_sentences = prev_sentences[-4:] if len(prev_sentences) >= 4 else prev_sentences
-                    if tail_sentences:
-                        prev_context_block = f"""
-=== TÓM TẮT BỐI CẢNH ĐOẠN KẾT CHƯƠNG {prev_chap_no} (ĐỂ NẮM BẮT MẠCH TRUYỆN) ===
-{" ".join(tail_sentences)}
-"""
+        first_chap_no = min(chapter_map.values()) if chapter_map else (first_ch.chapter_no if first_ch else 1)
+        prev_context_block = await get_previous_chapter_context(session, novel.id, first_chap_no)
 
     context_profile_prompt = get_context_profile_prompt(novel.context_profile)
     

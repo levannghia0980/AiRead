@@ -803,8 +803,28 @@ async def process_and_split_batch(
                                 print(f"[POST-PROCESS] 💡 Khôi phục thành công Chương {chap_no} từ khoảng trống giữa các chương trong lô.")
                                 extracted_map[cid] = gap_content
 
-            # Bước 3: Kiểm tra NGHIÊM NGẶT — Mỗi chương PHẢI có CẢ thẻ BẮT ĐẦU lẫn KẾT THÚC
-            # Một chương hoàn chỉnh = có thẻ BẮT ĐẦU + nội dung + thẻ KẾT THÚC (KHÔNG DỊCH VÁ LẺ)
+            # Bước 3: Kiểm tra NGHIÊM NGẶT TỪNG CHƯƠNG ĐỘC LẬP
+            # Mỗi chương chỉ được công nhận hợp lệ khi:
+            # - Có đầy đủ thẻ BẮT ĐẦU (<chapter_X>) lẫn KẾT THÚC (</chapter_X>)
+            # - Trích xuất được nội dung không rỗng
+            # - Đảm bảo tỷ lệ ký tự Tiếng Việt / Chữ Hán RAW (tối thiểu 0.75x so với RAW khi RAW > 300 ký tự)
+            # - Không bị trùng lặp nội dung với chương khác trong lô
+            
+            duplicate_cids = set()
+            if len(cids) > 1:
+                seen_snippets = {}
+                for cid in cids:
+                    c_text = extracted_map.get(cid, "").strip()
+                    snippet = re.sub(r"[\s\W_]+", "", c_text[:200].lower())
+                    if len(snippet) >= 30:
+                        if snippet in seen_snippets:
+                            duplicate_cids.add(cid)
+                        else:
+                            seen_snippets[snippet] = cid
+
+            valid_cids = []
+            failed_cids = []
+
             async with AsyncSessionLocal() as session:
                 for idx, cid in enumerate(cids):
                     chap_no = chapter_map[cid]
@@ -838,49 +858,31 @@ async def process_and_split_batch(
 
                     out_len = len(chap_text)
                     
-                    # 3d. Kiểm tra tỷ lệ đầu ra / đầu vào bất thường (< 30% so với RAW)
-                    is_too_short = (raw_len > 800 and out_len < raw_len * 0.3)
-                    
-                    # Log trạng thái kiểm tra từng chương
+                    # Kiểm tra các điều kiện nghiêm ngặt
+                    reasons = []
+                    if not chap_text:
+                        reasons.append("không trích xuất được nội dung")
+                    if not has_begin_tag:
+                        reasons.append("thiếu thẻ bắt đầu <chapter_X>")
+                    if not has_end_tag:
+                        reasons.append("thiếu thẻ kết thúc </chapter_X> (bị cắt cụt do chạm giới hạn token)")
+                    if raw_len > 300 and out_len < raw_len * 0.75:
+                        reasons.append(f"đầu ra bị xén cụt (RAW: {raw_len} → Output: {out_len} ký tự, tỷ lệ: {out_len/raw_len:.2f})")
+                    if cid in duplicate_cids:
+                        reasons.append("bị trùng lặp nội dung với chương khác trong lô")
+
                     tag_status = f"BEGIN={'✅' if has_begin_tag else '❌'} END={'✅' if has_end_tag else '❌'}"
                     len_status = f"RAW={raw_len} → Output={out_len}"
                     print(f"[POST-PROCESS] 🔍 Kiểm tra Chương {chap_no}: {tag_status} | {len_status}")
-                    
-                    # BỀN BỈ: Nếu trích xuất được nội dung và chiều dài hợp lệ, chấp nhận chương mà không hủy cả lô
-                    if not chap_text or is_too_short:
-                        reason = []
-                        if is_too_short:
-                            reason.append(f"đầu ra bị xén ngắn (RAW: {raw_len} ký tự, Output: {out_len} ký tự)")
-                        if not chap_text:
-                            reason.append("không trích xuất được nội dung (thiếu thẻ phân tách)")
-                            
-                        reason_str = ", ".join(reason)
-                        err_msg = (
-                            f"❌ [CHƯƠNG KHÔNG HOÀN CHỈNH] Chương {chap_no} vi phạm: {reason_str}. "
-                            f"HỦY BỎ TOÀN BỘ LÔ (Chương {chap_nos_in_batch}), XÓA SẠCH DỮ LIỆU DỞ DANG VÀ DỊCH LẠI!"
-                        )
-                        print(err_msg)
-                        raise ValueError(err_msg)
-            # 3e. Kiểm tra chống trùng lặp nội dung giữa các chương trong lô (khi LLM bị ảo giác chỉ dịch 1 chương)
-            if len(cids) > 1:
-                seen_snippets = {}
-                for cid in cids:
-                    c_text = extracted_map.get(cid, "").strip()
-                    # Lấy đoạn văn mẫu 100 ký tự (bỏ khoảng trắng và dấu câu)
-                    snippet = re.sub(r"[\s\W_]+", "", c_text[:200].lower())
-                    if len(snippet) >= 30:
-                        if snippet in seen_snippets:
-                            dup_chap = chapter_map[seen_snippets[snippet]]
-                            curr_chap = chapter_map[cid]
-                            err_msg = (
-                                f"❌ [TRÙNG LẶP NỘI DUNG] Chương {curr_chap} bị trùng lặp nội dung với Chương {dup_chap} "
-                                f"(do LLM xếp chồng thẻ và chỉ dịch 1 chương). HỦY BỎ LÔ {chap_nos_in_batch} ĐỂ DỊCH LẠI!"
-                            )
-                            print(err_msg)
-                            raise ValueError(err_msg)
-                        seen_snippets[snippet] = cid
 
-            # Bước 4: Hậu xử lý từng nội dung và Lưu DB
+                    if reasons:
+                        reason_str = ", ".join(reasons)
+                        print(f"[POST-PROCESS] ⚠️ [CHƯƠNG CHƯA ĐẠT CHUẨN] Chương {chap_no} vi phạm: {reason_str}. Bỏ qua, đưa vào lô tiếp theo!")
+                        failed_cids.append(cid)
+                    else:
+                        valid_cids.append(cid)
+
+            # Bước 4: Hậu xử lý và Lưu DB CHỈ CHO CÁC CHƯƠNG ĐẠT CHUẨN (valid_cids)
             # Lấy danh sách tên thực thể Tiếng Việt để bảo vệ không bị tách nhầm
             protected_names = []
             async with AsyncSessionLocal() as name_session:
@@ -891,12 +893,23 @@ async def process_and_split_batch(
                     if ent.rough_translation:
                         protected_names.append(ent.rough_translation)
 
-            for cid in cids:
+            # Xử lý các chương không đạt chuẩn: Đảm bảo trạng thái vẫn là CRAWLED để đón lô sau
+            if failed_cids:
+                async with AsyncSessionLocal() as fail_session:
+                    for f_cid in failed_cids:
+                        stmt_f = select(Chapter).where(Chapter.id == f_cid)
+                        res_f = await fail_session.execute(stmt_f)
+                        f_ch = res_f.scalar_one_or_none()
+                        if f_ch and f_ch.status != "FINAL_DONE":
+                            f_ch.status = "CRAWLED"
+                    await fail_session.commit()
+
+            for cid in valid_cids:
                 chap_no = chapter_map[cid]
                 print(f"[POST-PROCESS] Đang xử lý hoàn thiện chương {chap_no}...")
                 chap_text = extracted_map.get(cid)
                 if not chap_text:
-                    raise ValueError(f"Chương {chap_no} không có nội dung trích xuất được từ phản hồi LLM.")
+                    continue
 
                 # Khử sạch tiền tố rác PREFIX_ trước khi phân tích Hán tự & thực thể
                 chap_text = re.sub(r'§?\s*PREFIX_([A-Za-z0-9_一-鿿\s]+?)§?', r'\1', chap_text)
@@ -1058,7 +1071,11 @@ async def process_and_split_batch(
                 except Exception:
                     pass
 
-            await session.commit()
+            if valid_cids:
+                await session.commit()
+                print(f"[POST-PROCESS] Hoàn tất Hậu xử lý cho {len(saved_files)} chương hợp lệ (Lưu thành công: {[chapter_map[c] for c in valid_cids]}).")
+            else:
+                print(f"[POST-PROCESS] ⚠️ Không có chương nào đạt chuẩn để lưu trong lô này (Toàn bộ {[chapter_map[c] for c in failed_cids]} chương bị thiếu thẻ hoặc cắt cụt).")
     except Exception as e:
         for fp in saved_files:
             if os.path.exists(fp):
@@ -1069,24 +1086,31 @@ async def process_and_split_batch(
                     print(f"[POST-PROCESS CLEANUP] Lỗi xóa file {fp}: {ex}")
         raise e
         
-    print(f"[POST-PROCESS] Hoàn tất Hậu xử lý cho {len(saved_files)} chương.")
+    if valid_cids:
+        # 5b. Thông báo real-time tới Frontend để tự động cập nhật danh sách chương ngay lập tức
+        try:
+            from app.api.translation_router import broadcast_sse
+            broadcast_sse("chapter_updated", {
+                "novelId": novel_id,
+                "completedBatchCount": len(saved_files)
+            })
+        except Exception:
+            pass
+        
+        # 6. Tổng hợp file truyện hoàn chỉnh (Full TXT)
+        try:
+            exp_res = await export_full_novel_txt(novel_id)
+            full_novel_path = exp_res.get("file_path", "") if isinstance(exp_res, dict) else str(exp_res)
+            print(f"[POST-PROCESS] Đã xuất file truyện hoàn chỉnh: {full_novel_path}")
+        except Exception as exp_err:
+            print(f"[POST-PROCESS] Cảnh báo xuất full txt: {exp_err}")
     
-    # 5b. Thông báo real-time tới Frontend để tự động cập nhật danh sách chương ngay lập tức
-    try:
-        from app.api.translation_router import broadcast_sse
-        broadcast_sse("chapter_updated", {
-            "novelId": novel_id,
-            "completedBatchCount": len(saved_files)
-        })
-    except Exception:
-        pass
-    
-    # 6. Tổng hợp file truyện hoàn chỉnh (Full TXT)
-    exp_res = await export_full_novel_txt(novel_id)
-    full_novel_path = exp_res.get("file_path", "") if isinstance(exp_res, dict) else str(exp_res)
-    print(f"[POST-PROCESS] Đã xuất file truyện hoàn chỉnh: {full_novel_path}")
-    
-    return saved_files
+    return {
+        "saved_files": saved_files,
+        "saved_cids": valid_cids,
+        "failed_cids": failed_cids,
+        "total": len(cids)
+    }
 
 
 async def export_full_novel_txt(novel_id: int) -> Dict[str, Any]:
