@@ -55,6 +55,10 @@ export interface ProgressData {
   completedChapters?: number
   failedChapters?: number
   currentChapterNo?: number
+  batchSize?: number
+  initialBatchSize?: number
+  currentBatchChapters?: number[]
+  currentBatchInfo?: string
 }
 
 export interface PackagedResult {

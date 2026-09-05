@@ -5,7 +5,7 @@ from sqlalchemy import select
 from app.core.database import AsyncSessionLocal
 from app.models.schema import Chapter, Novel, NovelEntity, ChapterEntityLink, ChapterVersion
 from app.services.translation.rawt.llm_translator import translate_batch_llm
-from app.api.translation_router import add_system_log
+from app.api.translation_router import add_system_log, broadcast_sse
 
 async def _ensure_chapters_crawled(batch: List[int], require_gg: bool = False):
     """
@@ -439,9 +439,11 @@ async def run_translation_batch_pipeline(
             # thì các chương 1, 2, 3, 4 đã hoàn tất sẽ lưu ngay, còn chương 5 sẽ tự động được đưa vào ngay đầu lô tiếp theo (5, 6, 7, 8, 9)!
             batch_num = 0
             consecutive_failures = 0
-            max_consecutive_failures = 3
+            missing_tag_streak = 0
             results = []
             total_saved_count = 0
+            initial_batch_size = max(1, batch_size)
+            active_batch_size = initial_batch_size
 
             while True:
                 async with AsyncSessionLocal() as session:
@@ -453,7 +455,7 @@ async def run_translation_batch_pipeline(
                         stmt = stmt.where(Chapter.chapter_no >= actual_start_chapter)
                     if end_chapter > 0:
                         stmt = stmt.where(Chapter.chapter_no <= end_chapter)
-                    stmt = stmt.order_by(Chapter.chapter_no.asc()).limit(batch_size)
+                    stmt = stmt.order_by(Chapter.chapter_no.asc()).limit(active_batch_size)
                     res = await session.execute(stmt)
                     current_batch = res.scalars().all()
 
@@ -474,7 +476,23 @@ async def run_translation_batch_pipeline(
                     await _extract_and_save_batch_entities(novel_id, current_batch)
 
                 # BƯỚC 2: KHỞI ĐỘNG LLM DỊCH LÔ
-                start_batch_msg = f"🚀 [LÔ {batch_num}] Tiến hành dịch Lô Chương {chap_nos} ({len(current_batch)} chương)..."
+                batch_info_str = f"Lô {len(current_batch)} chương (Chương {min(chap_nos)}->{max(chap_nos)})"
+                if active_batch_size < initial_batch_size:
+                    batch_info_str += f" [Đã tự giảm từ {initial_batch_size}]"
+
+                broadcast_sse("progress", {
+                    "isRunning": True,
+                    "novelId": novel_id,
+                    "stage": "TRANSLATING",
+                    "batchSize": active_batch_size,
+                    "initialBatchSize": initial_batch_size,
+                    "currentBatchChapters": chap_nos,
+                    "currentBatchInfo": batch_info_str,
+                    "completedChapters": total_saved_count,
+                    "totalChapters": total_target_count
+                })
+
+                start_batch_msg = f"🚀 [LÔ DỊCH {batch_num} | KÍCH THƯỚC: {len(current_batch)} CHƯƠNG] Đang dịch {len(current_batch)} chương (Chương: {chap_nos})..."
                 print(start_batch_msg)
                 add_system_log(start_batch_msg, "purple")
 
@@ -492,10 +510,29 @@ async def run_translation_batch_pipeline(
 
                 if saved_cids:
                     consecutive_failures = 0
+                    missing_tag_streak = 0
                     total_saved_count += len(saved_cids)
-                    done_batch = f"🎉 [HOÀN THÀNH LÔ {batch_num}] Đã lưu thành công {len(saved_cids)}/{len(current_batch)} chương (Đã dịch tổng cộng: {total_saved_count}/{total_target_count})!"
+
+                    # Khôi phục kích thước lô ban đầu nếu trước đó bị giảm
+                    if active_batch_size != initial_batch_size:
+                        restore_msg = f"🔄 [KHÔI PHỤC KÍCH THƯỚC LÔ DỊCH] Lô vừa qua đã dịch & lưu thành công {len(saved_cids)}/{len(current_batch)} chương. Tự động khôi phục kích thước lô từ {active_batch_size} về {initial_batch_size} chương ban đầu!"
+                        print(restore_msg)
+                        add_system_log(restore_msg, "info")
+                        active_batch_size = initial_batch_size
+
+                    done_batch = f"🎉 [HOÀN THÀNH LÔ DỊCH {batch_num}] Đã lưu thành công {len(saved_cids)}/{len(current_batch)} chương (Đã dịch tổng cộng: {total_saved_count}/{total_target_count} | Lô tiếp theo: {active_batch_size} chương)!"
                     print(done_batch)
                     add_system_log(done_batch, "success")
+
+                    broadcast_sse("progress", {
+                        "isRunning": True,
+                        "novelId": novel_id,
+                        "stage": "TRANSLATING",
+                        "batchSize": active_batch_size,
+                        "initialBatchSize": initial_batch_size,
+                        "completedChapters": total_saved_count,
+                        "totalChapters": total_target_count
+                    })
 
                     if failed_cids:
                         failed_chap_nos = await _get_chap_numbers(failed_cids)
@@ -504,12 +541,42 @@ async def run_translation_batch_pipeline(
                         add_system_log(fail_msg, "warning")
                 else:
                     consecutive_failures += 1
-                    err_batch = f"⚠️ [CẢNH BÁO LÔ {batch_num}] Không có chương nào đạt chuẩn để lưu (Thất bại liên tiếp: {consecutive_failures}/{max_consecutive_failures})."
+                    missing_tag_streak += 1
+
+                    err_batch = f"⚠️ [CẢNH BÁO LÔ DỊCH {batch_num}] Lô Chương {chap_nos} ({len(current_batch)} chương) không có chương nào đạt chuẩn để lưu do thiếu thẻ/ngắt quãng (Bị thiếu thẻ liên tiếp: {missing_tag_streak}/2 lần)."
                     print(err_batch)
                     add_system_log(err_batch, "error")
 
-                    if consecutive_failures >= max_consecutive_failures:
-                        err_stop = f"❌ [DỪNG TIẾN TRÌNH] Đã thất bại liên tiếp {consecutive_failures} lần tại lô Chương {chap_nos}. Tạm dừng tiến trình để kiểm tra API hoặc dữ liệu!"
+                    # Giảm 1 chương sau 2 lần liên tục bị thiếu thẻ
+                    if missing_tag_streak >= 2:
+                        if active_batch_size > 1:
+                            old_size = active_batch_size
+                            active_batch_size = max(1, active_batch_size - 1)
+                            missing_tag_streak = 0  # Reset chu kỳ 2 lần để theo dõi cho kích thước mới
+                            shrink_msg = f"⚡ [TỰ ĐỘNG THU HẸP LÔ DỊCH] Đã gặp 2 lần liên tiếp bị thiếu thẻ! Tự động giảm kích thước lô dịch 1 chương (từ {old_size} xuống {active_batch_size} chương | Gốc: {initial_batch_size} chương)!"
+                            print(shrink_msg)
+                            add_system_log(shrink_msg, "warning")
+
+                            broadcast_sse("progress", {
+                                "isRunning": True,
+                                "novelId": novel_id,
+                                "stage": "TRANSLATING",
+                                "batchSize": active_batch_size,
+                                "initialBatchSize": initial_batch_size,
+                                "completedChapters": total_saved_count,
+                                "totalChapters": total_target_count
+                            })
+                        else:
+                            shrink_msg = f"ℹ️ [LÔ DỊCH TỐI THIỂU] Kích thước lô hiện tại đã là 1 chương (tối thiểu). Tiếp tục thử lại với 1 chương..."
+                            print(shrink_msg)
+                            add_system_log(shrink_msg, "warning")
+                    else:
+                        retry_same_msg = f"⏳ [THỬ LẠI LÔ DỊCH] Giữ nguyên kích thước lô {active_batch_size} chương để thử lại lần 2 trước khi tự động giảm..."
+                        print(retry_same_msg)
+                        add_system_log(retry_same_msg, "info")
+
+                    if active_batch_size == 1 and consecutive_failures >= 3:
+                        err_stop = f"❌ [DỪNG TIẾN TRÌNH] Đã thử dịch 1 chương đơn lẻ nhưng vẫn thất bại liên tiếp 3 lần tại Chương {chap_nos}. Tạm dừng tiến trình để kiểm tra API hoặc mạng!"
                         print(err_stop)
                         add_system_log(err_stop, "error")
                         raise ValueError(err_stop)

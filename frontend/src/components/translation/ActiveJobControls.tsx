@@ -79,11 +79,32 @@ export const ActiveJobControls: React.FC<ActiveJobControlsProps> = ({
 
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-              <BookOpen className="w-4 h-4 text-cyber-accent" /> Tiến Trình Dịch
-            </h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                <BookOpen className="w-4 h-4 text-cyber-accent" /> Tiến Trình Dịch
+              </h2>
+              {isRunning && progress?.batchSize && (
+                <span className={`text-[10px] font-mono px-2 py-0.5 rounded-md border flex items-center gap-1 ${
+                  progress.initialBatchSize && progress.batchSize < progress.initialBatchSize
+                    ? 'bg-amber-500/15 border-amber-500/40 text-amber-400 font-bold animate-pulse'
+                    : 'bg-cyber-accent/10 border-cyber-accent/30 text-cyber-accent font-semibold'
+                }`}>
+                  📦 Lô: {progress.batchSize} chương
+                  {progress.initialBatchSize && progress.batchSize < progress.initialBatchSize && (
+                    <span className="text-[9px] text-amber-300 font-normal">
+                      (Tự giảm từ {progress.initialBatchSize})
+                    </span>
+                  )}
+                </span>
+              )}
+            </div>
             <p className="text-[10px] text-cyber-muted mt-0.5">
               {completedCh} / {totalCh} chương đã hoàn thành ({pct}%)
+              {isRunning && progress?.currentBatchInfo && (
+                <span className="ml-2 text-purple-400 font-medium">
+                  • {progress.currentBatchInfo}
+                </span>
+              )}
             </p>
           </div>
 

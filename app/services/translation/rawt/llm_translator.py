@@ -456,17 +456,18 @@ Dòng đầu tiên ngay sau thẻ <chapter_X> BẮT BUỘC là: 'Chương X: [T�
                     raise Exception(err_blocked)
 
             finish_reason = candidate.get("finishReason")
+            chunk_out = candidate["content"]["parts"][0]["text"].strip() if (candidate.get("content") and candidate["content"].get("parts")) else ""
+
             if finish_reason == "MAX_TOKENS":
-                if not is_single_chapter:
-                    err_max_tok = f"❌ [TRÀN TỐI ĐA TOKEN GEMINI] Lô Chương {list(chapter_map.values())} bị ngắt dở do chạm giới hạn token đầu ra tối đa của Gemini (MAX_TOKENS). Vui lòng giảm số chương/lô (Batch Size) xuống 1 chương!"
-                    print(f"[LLM-TRANSLATOR] {err_max_tok}")
-                    raise ValueError(err_max_tok)
-                elif not candidate.get("content"):
-                    err_max_tok = f"❌ [TRÀN TỐI ĐA TOKEN GEMINI] Đoạn văn chương {list(chapter_map.values())} bị ngắt dở do chạm giới hạn token đầu ra."
+                if chunk_out and not is_single_chapter:
+                    warn_max_tok = f"⚠️ [LLM-TRANSLATOR] Lô Chương {list(chapter_map.values())} chạm giới hạn MAX_TOKENS của Gemini ở phần cuối (đã tạo {len(chunk_out)} ký tự). Vẫn chuyển sang Hậu xử lý để cứu và lưu các chương đầu đủ thẻ!"
+                    print(warn_max_tok)
+                    add_system_log(warn_max_tok, "warning")
+                elif not chunk_out:
+                    err_max_tok = f"❌ [TRÀN TỐI ĐA TOKEN GEMINI] Lô Chương {list(chapter_map.values())} bị ngắt do chạm giới hạn token tối đa nhưng không có nội dung trả về."
                     print(f"[LLM-TRANSLATOR] {err_max_tok}")
                     raise ValueError(err_max_tok)
 
-            chunk_out = candidate["content"]["parts"][0]["text"].strip() if (candidate.get("content") and candidate["content"].get("parts")) else ""
             translated_parts.append(chunk_out)
 
     translated_text = "\n\n".join(translated_parts).strip()

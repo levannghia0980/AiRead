@@ -32,7 +32,11 @@ def broadcast_sse(event_type: str, data: Any):
         if len(_LOG_HISTORY) > 500:
             _LOG_HISTORY.pop(0)
     elif event_type == "progress":
-        _CURRENT_PROGRESS = data
+        if isinstance(_CURRENT_PROGRESS, dict) and isinstance(data, dict):
+            _CURRENT_PROGRESS.update(data)
+            data = dict(_CURRENT_PROGRESS)
+        else:
+            _CURRENT_PROGRESS = data
 
     payload = json.dumps({"event": event_type, "data": data}, ensure_ascii=False)
     dead_clients = set()
