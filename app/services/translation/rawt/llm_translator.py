@@ -419,7 +419,9 @@ CẤM gộp 2 chương, CẤM gõ nhầm số thẻ, CẤM bỏ quên bất kỳ
                     {"role": "system", "content": full_system_instruction},
                     {"role": "user", "content": user_task_prompt}
                 ],
-                "max_tokens": 16384
+                "max_tokens": 16384,
+                "temperature": 0.2,
+                "top_p": 0.95
             }
             if custom_temp_str.strip():
                 try:
@@ -449,7 +451,11 @@ CẤM gộp 2 chương, CẤM gõ nhầm số thẻ, CẤM bỏ quên bất kỳ
                 {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"}
             ]
-            gen_config = {"maxOutputTokens": 65536}
+            gen_config = {
+                "maxOutputTokens": 65536,
+                "temperature": 0.2,
+                "topP": 0.95
+            }
             if custom_temp_str.strip():
                 try:
                     gen_config["temperature"] = float(custom_temp_str.strip())
