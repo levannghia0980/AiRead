@@ -82,7 +82,7 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
   setIsSavedToEnv
 }) => {
   const [isConnectingGrok, setIsConnectingGrok] = useState(false)
-  const [grokStatus, setGrokStatus] = useState<{ running?: boolean; message: string } | null>(null)
+  const [grokStatus, setGrokStatus] = useState<{ running?: boolean; hasSession?: boolean; message: string } | null>(null)
 
   const handleConnectGrok = async () => {
     setIsConnectingGrok(true)
@@ -91,13 +91,27 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
       const res = await fetch('/api/settings/grok/connect', { method: 'POST' })
       const data = await res.json()
       setGrokStatus({
-        running: data.status === 'success',
+        running: data.status === 'success' || data.is_running,
+        hasSession: data.has_session,
         message: data.message || 'Kết nối thành công!'
       })
     } catch (e: any) {
       setGrokStatus({ running: false, message: `Lỗi kết nối: ${e.message}` })
     } finally {
       setIsConnectingGrok(false)
+    }
+  }
+
+  const handleOpenEdge = async () => {
+    try {
+      const res = await fetch('/api/settings/grok/open-edge', { method: 'POST' })
+      const data = await res.json()
+      setGrokStatus({
+        running: true,
+        message: data.message || 'Đã mở cửa sổ Edge!'
+      })
+    } catch (e: any) {
+      setGrokStatus({ running: false, message: `Lỗi: ${e.message}` })
     }
   }
 
@@ -108,7 +122,7 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
       const data = await res.json()
       setGrokStatus({
         running: data.status === 'success',
-        message: data.message || 'Đã làm mới phiên đăng nhập!'
+        message: data.message || 'Đã làm mới phiên đăng nhập! Hãy đăng nhập trên Edge.'
       })
     } catch (e: any) {
       setGrokStatus({ running: false, message: `Lỗi: ${e.message}` })
@@ -229,20 +243,34 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
             </button>
           </div>
 
-          <div className="text-[10px] text-slate-300 leading-relaxed bg-slate-950/60 p-2 rounded-xl border border-purple-500/20">
-            🤖 Dịch tự động qua trình duyệt Microsoft Edge trên <strong className="text-purple-300">grok.com</strong> (Miễn phí, không lo giới hạn token). Nhấp nút bên dưới để tự động kết nối / khởi động server:
+          <div className="text-[10px] text-slate-300 leading-relaxed bg-slate-950/60 p-2.5 rounded-xl border border-purple-500/20 flex flex-col gap-1.5">
+            <div>
+              🤖 Dịch qua trình duyệt Microsoft Edge trên <strong className="text-purple-300">grok.com</strong> (Miễn phí, không lo giới hạn token).
+            </div>
+            <div className="text-amber-300/90 text-[9.5px] bg-amber-950/40 p-1.5 rounded-lg border border-amber-500/30">
+              💡 <strong>Lưu ý:</strong> Cửa sổ Edge thật sẽ mở ra trên màn hình. Hãy đăng nhập tài khoản Grok (bằng X hoặc Google) trên cửa sổ Edge đó 1 lần duy nhất để hệ thống tự động lưu session!
+            </div>
           </div>
 
           {/* Action buttons */}
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <button
               type="button"
               onClick={handleConnectGrok}
               disabled={isConnectingGrok}
-              className="flex-1 text-[11px] font-bold py-2 px-3 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-500 hover:to-indigo-500 text-white shadow-md shadow-purple-500/25 flex items-center justify-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer active:scale-98 border border-purple-400/30"
+              className="flex-1 min-w-[140px] text-[11px] font-bold py-2 px-3 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-500 hover:to-indigo-500 text-white shadow-md shadow-purple-500/25 flex items-center justify-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer active:scale-98 border border-purple-400/30"
             >
               <Zap className={`w-3.5 h-3.5 text-yellow-300 ${isConnectingGrok ? 'animate-spin' : ''}`} />
               {isConnectingGrok ? 'Đang kết nối Server...' : '⚡ Kết Nối / Khởi Động Grok'}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleOpenEdge}
+              title="Bật cửa sổ trình duyệt Edge lên màn hình desktop"
+              className="text-[10px] font-bold py-2 px-2.5 rounded-xl bg-purple-900/60 hover:bg-purple-800/80 text-purple-200 border border-purple-500/40 flex items-center gap-1 transition-all cursor-pointer"
+            >
+              🖥️ Mở Cửa Sổ Edge
             </button>
 
             <button
@@ -259,16 +287,23 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
 
           {/* Status feedback */}
           {grokStatus && (
-            <div className={`text-[10px] p-2 rounded-xl flex items-start gap-1.5 leading-relaxed ${grokStatus.running
+            <div className={`text-[10px] p-2.5 rounded-xl flex items-start gap-1.5 leading-relaxed ${grokStatus.running
                 ? 'bg-emerald-950/60 border border-emerald-500/40 text-emerald-300'
                 : 'bg-amber-950/60 border border-amber-500/40 text-amber-300'
               }`}>
               {grokStatus.running ? (
-                <CheckCircle className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0 mt-0.5" />
+                <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
               ) : (
-                <XCircle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0 mt-0.5" />
+                <XCircle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
               )}
-              <span className="font-medium">{grokStatus.message}</span>
+              <div className="flex flex-col gap-0.5">
+                <span className="font-semibold">{grokStatus.message}</span>
+                {grokStatus.hasSession === false && (
+                  <span className="text-amber-200 text-[9px]">
+                    👉 Trình duyệt Edge đang mở trang grok.com. Vui lòng bấm Đăng Nhập trên cửa sổ Edge để bắt đầu dịch tự động!
+                  </span>
+                )}
+              </div>
             </div>
           )}
         </div>

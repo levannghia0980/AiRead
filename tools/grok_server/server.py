@@ -52,6 +52,18 @@ async def startup_event():
     global grok_tool
     print("🚀 [Grok API Server] Đang khởi tạo GrokTool...")
     grok_tool = GrokTool()
+    
+    async def _auto_open():
+        try:
+            print("🌐 [Grok API Server] Đang tự động mở cửa sổ Edge tới grok.com...")
+            await grok_tool.start()
+            await grok_tool.adapter.connect()
+            print("✅ [Grok API Server] Cửa sổ Edge đã mở thành công trên màn hình!")
+        except Exception as e:
+            print(f"⚠️ [Grok API Server] Không thể tự động mở Edge: {e}")
+
+    asyncio.create_task(_auto_open())
+
 
 
 @app.on_event("shutdown")

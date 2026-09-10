@@ -349,9 +349,44 @@ async def get_network_info():
 
 _GROK_SERVER_PROCESS = None
 
+@router.post("/grok/open-edge")
+async def open_edge_grok():
+    """Mở cửa sổ trình duyệt Edge thật trên màn hình desktop tới grok.com."""
+    import sys
+    import os
+    import subprocess
+    from pathlib import Path
+
+    workspace_dir = Path(__file__).resolve().parent.parent.parent
+    user_data_dir = workspace_dir / "tools" / "grok_server" / "user_data" / "edge_profile"
+    user_data_dir.mkdir(parents=True, exist_ok=True)
+
+    candidates = [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        str(Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe"),
+    ]
+    edge_exe = next((path for path in candidates if path and Path(path).exists()), None)
+
+    if not edge_exe:
+        raise HTTPException(status_code=404, detail="Không tìm thấy trình duyệt Microsoft Edge trên máy tính.")
+
+    cmd = (
+        f'start "" "{edge_exe}" '
+        f'--remote-debugging-port=9222 '
+        f'--user-data-dir="{user_data_dir}" '
+        f'--profile-directory=Default '
+        f'--start-maximized '
+        f'--no-first-run '
+        f'--new-window "https://grok.com"'
+    )
+    subprocess.Popen(cmd, shell=True)
+    return {"status": "success", "message": "🖥️ Đã bật cửa sổ trình duyệt Edge trên màn hình! Vui lòng đăng nhập tài khoản Grok."}
+
+
 @router.post("/grok/connect")
 async def connect_grok_server():
-    """Kiểm tra hoặc tự động khởi chạy Grok Web Automation Server (Cổng 8020)."""
+    """Kiểm tra hoặc tự động khởi chạy Grok Web Automation Server (Cổng 8020) và mở cửa sổ Edge."""
     global _GROK_SERVER_PROCESS
     import sys
     import os
@@ -362,27 +397,56 @@ async def connect_grok_server():
 
     health_url = "http://127.0.0.1:8020/health"
     connect_url = "http://127.0.0.1:8020/connect"
+    workspace_dir = Path(__file__).resolve().parent.parent.parent
 
-    async def _open_edge_browser():
+    # Hàm mở cửa sổ Edge trên desktop
+    def _force_open_edge():
+        try:
+            user_data_dir = workspace_dir / "tools" / "grok_server" / "user_data" / "edge_profile"
+            user_data_dir.mkdir(parents=True, exist_ok=True)
+            candidates = [
+                r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+                str(Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "Edge" / "Application" / "msedge.exe"),
+            ]
+            edge_exe = next((path for path in candidates if path and Path(path).exists()), None)
+            if edge_exe:
+                cmd = (
+                    f'start "" "{edge_exe}" '
+                    f'--remote-debugging-port=9222 '
+                    f'--user-data-dir="{user_data_dir}" '
+                    f'--profile-directory=Default '
+                    f'--start-maximized '
+                    f'--no-first-run '
+                    f'--new-window "https://grok.com"'
+                )
+                subprocess.Popen(cmd, shell=True)
+        except Exception:
+            pass
+
+    async def _call_connect():
         async with httpx.AsyncClient(timeout=20.0) as client:
             try:
                 c_resp = await client.post(connect_url)
                 if c_resp.status_code == 200:
                     c_data = c_resp.json()
+                    has_session = c_data.get("has_session", False)
                     return {
-                        "status": c_data.get("status", "success"),
+                        "status": "success" if has_session else "warning",
                         "message": c_data.get("message", "🟢 Grok Server đang hoạt động tốt tại cổng 8020!"),
+                        "has_session": has_session,
                         "is_running": True
                     }
             except Exception:
                 pass
         return {
             "status": "success",
-            "message": "🟢 Grok Server đang hoạt động tại cổng 8020! Sẵn sàng dịch.",
+            "message": "🟢 Grok Server đang hoạt động tại cổng 8020! Cửa sổ Edge đã mở.",
+            "has_session": True,
             "is_running": True
         }
 
-    # 1. Kiểm tra xem server đã chạy chưa
+    # 1. Kiểm tra xem server 8020 đã chạy chưa
     server_already_running = False
     async with httpx.AsyncClient(timeout=2.0) as client:
         try:
@@ -393,20 +457,19 @@ async def connect_grok_server():
             pass
 
     if server_already_running:
-        return await _open_edge_browser()
+        _force_open_edge()
+        return await _call_connect()
 
     # 2. Nếu chưa chạy, tự động khởi động process tools/grok_server/server.py
-    workspace_dir = Path(__file__).resolve().parent.parent.parent
     server_script = workspace_dir / "tools" / "grok_server" / "server.py"
-
     if not server_script.exists():
         raise HTTPException(status_code=404, detail=f"Không tìm thấy file server tại {server_script}")
 
     venv_py = workspace_dir / "venv" / "Scripts" / "python.exe"
-    if venv_py.exists():
-        py_exec = str(venv_py)
-    else:
-        py_exec = sys.executable
+    py_exec = str(venv_py) if venv_py.exists() else sys.executable
+
+    # Ép mở cửa sổ Edge trước trên Desktop để người dùng nhìn thấy ngay
+    _force_open_edge()
 
     try:
         flags = subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
@@ -418,21 +481,22 @@ async def connect_grok_server():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Không thể khởi động Grok Server: {e}")
 
-    # 3. Chờ tối đa 10 giây để server khởi động và lắng nghe port 8020
-    for _ in range(20):
+    # 3. Chờ tối đa 12 giây để server khởi động và lắng nghe port 8020
+    for _ in range(24):
         await asyncio.sleep(0.5)
         async with httpx.AsyncClient(timeout=1.5) as client:
             try:
                 resp = await client.get(health_url)
                 if resp.status_code == 200:
-                    return await _open_edge_browser()
+                    return await _call_connect()
             except Exception:
                 pass
 
     return {
         "status": "warning",
-        "message": "⚠️ Đã gửi lệnh khởi chạy Grok Server. Vui lòng kiểm tra cửa sổ Edge đang mở.",
-        "is_running": False
+        "message": "⚠️ Đã khởi chạy Grok Server và mở cửa sổ Edge trên màn hình. Hãy đăng nhập tài khoản Grok để bắt đầu dịch!",
+        "has_session": False,
+        "is_running": True
     }
 
 
@@ -450,4 +514,5 @@ async def relogin_grok_server():
             raise HTTPException(status_code=400, detail="Grok Server cổng 8020 chưa được bật. Vui lòng bấm Kết Nối trước!")
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
 

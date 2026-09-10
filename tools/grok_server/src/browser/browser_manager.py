@@ -72,18 +72,21 @@ class BrowserManager:
         if edge_exe is None:
             raise RuntimeError("Không tìm thấy Microsoft Edge trên máy. Vui lòng cài đặt hoặc kiểm tra đường dẫn.")
 
-        args = [
-            edge_exe,
-            f"--remote-debugging-port={self.remote_debug_port}",
-            f"--user-data-dir={str(self.user_data_dir)}",
-            "--profile-directory=Default",
-            "--start-maximized",
-            "--no-first-run",
-            "--disable-features=AutomationControlled",
-        ]
+        # Đảm bảo thư mục profile tồn tại
+        self.user_data_dir.mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"[BrowserManager] Khởi động Edge thật với remote debugging port={self.remote_debug_port}...")
-        return subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=False)
+        cmd = (
+            f'start "" "{edge_exe}" '
+            f'--remote-debugging-port={self.remote_debug_port} '
+            f'--user-data-dir="{str(self.user_data_dir)}" '
+            f'--profile-directory=Default '
+            f'--start-maximized '
+            f'--no-first-run '
+            f'--disable-features=AutomationControlled '
+            f'--new-window "https://grok.com"'
+        )
+        logger.info(f"[BrowserManager] Đang mở cửa sổ Edge thật trên màn hình: {cmd}")
+        return subprocess.Popen(cmd, shell=True)
 
     async def start(self) -> Page:
         async with self._lock:
@@ -92,18 +95,23 @@ class BrowserManager:
 
             if not self._is_port_open(self.remote_debug_port):
                 self._edge_process = self._launch_edge_with_cdp()
-                if not self._wait_for_port():
-                    raise RuntimeError("Không thể kết nối đến Edge qua cổng remote debugging.")
+                if not self._wait_for_port(timeout=15):
+                    logger.warning("[BrowserManager] Đang chờ thêm cổng debug của Edge...")
+                    if not self._wait_for_port(timeout=10):
+                        raise RuntimeError("Không thể kết nối tới Edge qua cổng remote debugging 9222. Vui lòng kiểm tra cửa sổ Edge!")
             else:
                 logger.info(f"[BrowserManager] Đã tìm thấy Edge đang chạy trên cổng {self.remote_debug_port}.")
 
-            self._playwright = await async_playwright().start()
+            if self._playwright is None:
+                self._playwright = await async_playwright().start()
+
+            logger.info(f"[BrowserManager] Đang kết nối tới Edge qua CDP port {self.remote_debug_port}...")
             browser = await self._playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{self.remote_debug_port}")
             contexts = browser.contexts
             self._context = contexts[0] if contexts else await browser.new_context()
             self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
 
-            logger.info("[BrowserManager] Kết nối đến Edge thật thành công.")
+            logger.info("[BrowserManager] Kết nối tới cửa sổ Edge thật thành công!")
             return self._page
 
     async def stop(self):
@@ -126,15 +134,6 @@ class BrowserManager:
                     await self._playwright.stop()
                 except Exception as e:
                     logger.warning(f"[BrowserManager] Error stopping playwright: {e}")
-
-            if self._edge_process is not None:
-                try:
-                    self._edge_process.terminate()
-                    self._edge_process.wait(timeout=5)
-                except Exception as e:
-                    logger.warning(f"[BrowserManager] Error stopping Edge process: {e}")
-                finally:
-                    self._edge_process = None
 
             self._page = None
             self._context = None
