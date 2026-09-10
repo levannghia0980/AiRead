@@ -134,7 +134,7 @@ def merge_subchunks_json_to_chapter(
 
     os.makedirs(os.path.dirname(os.path.abspath(output_json_path)), exist_ok=True)
     with open(output_json_path, "w", encoding="utf-8") as f:
-        json.dump(chapter_data, f, ensure_ascii=False, indent=2)
+        json.dump(chapter_data, f, ensure_ascii=False, separators=(',', ':'))
 
     return chapter_data
 
@@ -205,17 +205,25 @@ def merge_chapters_timeline(
     output_json_path: Optional[str] = None,
     novel_title: str = "Toàn Bộ Chuỗi Chương",
     actual_durations: Optional[List[float]] = None,
-    speed: float = 1.0
+    speed: float = 1.0,
+    initial_offset: float = 0.0,
+    intro_segment: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Tự động cộng dồn timeline của toàn bộ danh sách chương thành 1 JSON gộp hoàn chỉnh.
     Tự động scale tỷ lệ câu chữ theo độ dài MP3 thực tế và hệ số tốc độ (speed) để đồng bộ 100% mili-giây.
+    Nếu có intro_segment và initial_offset, chèn timeline lời chào kênh và offset toàn bộ chương sau đó.
     """
-    current_offset = 0.0
+    current_offset = float(initial_offset)
     merged_segments = []
     merged_words = []
     chapters_meta = []
     effective_speed = max(0.25, min(4.0, float(speed))) if speed else 1.0
+
+    if intro_segment:
+        merged_segments.append(intro_segment)
+        if "words" in intro_segment:
+            merged_words.extend(intro_segment["words"])
 
     for i, chap in enumerate(chapters_data_list):
         chap_start = current_offset

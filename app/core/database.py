@@ -3,8 +3,9 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
-# Mặc định sử dụng aiosqlite cho local SQLite database.db
-DEFAULT_DB_PATH = Path("d:/NENGHIA0980/AIREAD/database.db").resolve()
+# Mặc định sử dụng aiosqlite cho local SQLite database.db trong thư mục gốc của project
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+DEFAULT_DB_PATH = (PROJECT_ROOT / "database.db").resolve()
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite+aiosqlite:///{DEFAULT_DB_PATH}")
 
 # Cấu hình Async Engine với Connection Pooling

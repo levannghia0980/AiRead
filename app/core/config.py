@@ -1,5 +1,11 @@
 from pydantic_settings import BaseSettings
 from typing import Optional
+from pathlib import Path
+import os
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+OUTPUT_DIR = PROJECT_ROOT / "Output"
+TOOLS_DIR = PROJECT_ROOT / "tools"
 
 class Settings(BaseSettings):
     # Cấu hình mặc định nạp từ file .env
@@ -11,6 +17,9 @@ class Settings(BaseSettings):
     AIREAD_BATCH_SIZE: int = 1
     AIREAD_TRANSLATION_STYLE: str = "draft_only"
     AIREAD_CUSTOM_PROMPT: Optional[str] = ""
+    AIREAD_TEMPERATURE: Optional[str] = ""
+    AIREAD_TOP_P: Optional[str] = ""
+    AIREAD_TOP_K: Optional[str] = ""
     TTS_MAX_WORKERS: int = 1  # Số lượng worker TTS (1 luồng duy nhất đảm bảo độ ổn định và tránh rate-limit)
     TTS_RATE: str = "-4%"      # Tốc độ đọc Neural (phát âm rõ chữ, nhẹ nhàng, tự nhiên)
     TTS_PITCH: str = "+0Hz"    # Cao độ mặc định từ mô hình Neural Microsoft

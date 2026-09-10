@@ -4,13 +4,15 @@ import gc
 import shutil
 from pathlib import Path
 from typing import Dict, Any, Optional
+from app.core.config import OUTPUT_DIR, PROJECT_ROOT
 
-# Root Output Directory: d:\NENGHIA0980\AIREAD\Output
-OUTPUT_ROOT = Path("d:/NENGHIA0980/AIREAD/Output")
+# Root Output Directory
+OUTPUT_ROOT = OUTPUT_DIR
 
 # Các thư mục chuẩn lưu trữ dữ liệu Output
 VERSION_FOLDER_MAP: Dict[str, str] = {
     "RAW": "01_BanGoc",
+    "BATCH_INPUT": "02_ChuanBi_DauVao",
     "LLM": "03_DichAI_LLM",
     "FINAL": "04_KetQua",
     "TTS_TEXT": "04b_VanBanTTS",

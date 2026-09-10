@@ -6,6 +6,7 @@ from app.core.database import AsyncSessionLocal
 from app.models.schema import Chapter, Novel, NovelEntity, ChapterEntityLink, ChapterVersion
 from app.services.translation.rawt.llm_translator import translate_batch_llm
 from app.api.translation_router import add_system_log, broadcast_sse
+from app.core.config import OUTPUT_DIR
 
 async def _ensure_chapters_crawled(batch: List[int], require_gg: bool = False):
     """
@@ -147,7 +148,7 @@ async def cleanup_failed_chapters(chapter_ids: List[int], novel_id: int, max_ret
             else:
                 print(f"❌ Không thể hoàn tất dọn dẹp sau {max_retries} lần thử: {err}")
 
-async def _extract_and_save_batch_entities(novel_id: int, batch: List[int]):
+async def _extract_and_save_batch_entities(novel_id: int, batch: List[int], force: bool = False):
     """
     BƯỚC BẮT BUỘC TRƯỚC KHI KHỞI ĐỘNG LLM DỊCH:
     - Bóc tách thực thể từ bản gốc RAW của các chương trong lô.
@@ -163,15 +164,18 @@ async def _extract_and_save_batch_entities(novel_id: int, batch: List[int]):
     chap_nos = await _get_chap_numbers(batch)
 
     # 1. Kiểm tra xem các chương trong lô này chương nào chưa có thực thể liên kết
-    async with AsyncSessionLocal() as session:
-        stmt_chk = select(ChapterEntityLink.chapter_id).where(ChapterEntityLink.chapter_id.in_(batch)).distinct()
-        res_chk = await session.execute(stmt_chk)
-        linked_cids = set(res_chk.scalars().all())
-        
-    unlinked_batch = [cid for cid in batch if cid not in linked_cids]
-    if not unlinked_batch:
-        print(f"ℹ️ [THỰC THỂ] Lô Chương {chap_nos} đã có sẵn đầy đủ liên kết thực thể trên máy.")
-        return
+    if force:
+        unlinked_batch = list(batch)
+    else:
+        async with AsyncSessionLocal() as session:
+            stmt_chk = select(ChapterEntityLink.chapter_id).where(ChapterEntityLink.chapter_id.in_(batch)).distinct()
+            res_chk = await session.execute(stmt_chk)
+            linked_cids = set(res_chk.scalars().all())
+            
+        unlinked_batch = [cid for cid in batch if cid not in linked_cids]
+        if not unlinked_batch:
+            print(f"ℹ️ [THỰC THỂ] Lô Chương {chap_nos} đã có sẵn đầy đủ liên kết thực thể trên máy.")
+            return
 
     unlinked_chap_nos = await _get_chap_numbers(unlinked_batch)
     msg_ent_start = f"🔍 [1/2 THỰC THỂ] Đang bóc tách thực thể & lập bảng tên cho {len(unlinked_batch)} chương mới: Chương {unlinked_chap_nos}..."
@@ -181,23 +185,48 @@ async def _extract_and_save_batch_entities(novel_id: int, batch: List[int]):
     try:
         evidence_payload = await collect_batch_entities(unlinked_batch)
         candidates = evidence_payload.get("branch_1_ner_candidates", [])
-        if not candidates:
-            print(f"ℹ️ [THỰC THỂ] Không tìm thấy từ nghi vấn trong bản gốc lô Chương {unlinked_chap_nos}.")
-            return
+        entities = []
+        if candidates:
+            try:
+                llm_res = await process_2branch_evidence_via_llm(evidence_payload)
+                entities = llm_res.get("entities", [])
+            except Exception as llm_err:
+                msg_llm_fail = f"⚠️ [THỰC THỂ LLM LỖI]: {llm_err}. Kích hoạt chế độ Fallback Hán-Việt tự động..."
+                print(msg_llm_fail)
+                add_system_log(msg_llm_fail, "warning")
 
-        llm_res = await process_2branch_evidence_via_llm(evidence_payload)
-        entities = llm_res.get("entities", [])
+        # Chỉ bổ sung các ngoại hiệu giang hồ thật sự (Epithet) nếu LLM bỏ sót, tuyệt đối KHÔNG tự động ép từ ngữ đời thường (như 大..., ...子, ...头) thành tên riêng
+        from app.services.preprocessing.dichhan.common_lists import EPITHET_SUFFIXES
+        existing_names = {e.get("chinese_name", "").strip() for e in entities}
+        for cand in candidates:
+            orig = (cand.get("original_han") or cand.get("han") or "").strip()
+            sugg = (cand.get("suggested_hanviet_example") or cand.get("db_example") or "").strip()
+            if not orig or not sugg or orig in existing_names or orig == sugg:
+                continue
+            
+            # Chỉ bổ sung khi thực sự là ngoại hiệu giang hồ võ hiệp (ví dụ: Ngọc Kỳ Lân, Trí Đa Tinh)
+            is_epithet = 2 <= len(orig) <= 5 and any(orig.endswith(ep) for ep in EPITHET_SUFFIXES)
+            is_moniker = cand.get("ner_type") == "EPITHET" or cand.get("is_epithet")
+            
+            if is_epithet or is_moniker:
+                entities.append({
+                    "chinese_name": orig,
+                    "vietnamese_name": sugg,
+                    "entity_type": "NAME",
+                    "gender": None,
+                    "role": None
+                })
+                existing_names.add(orig)
+
         if not entities:
-            print(f"ℹ️ [THỰC THỂ] LLM không phát hiện thực thể mới cho lô Chương {chap_nos}.")
+            print(f"ℹ️ [THỰC THỂ] Không tìm thấy thực thể mới nào cho lô Chương {chap_nos}.")
             return
 
-        # Lưu entities vào DB
+        # Lưu entities vào DB (Nguồn 1: SQLite DB)
         async with AsyncSessionLocal() as session:
-            # Tra cứu các thực thể đã có sẵn trong DB của truyện
             stmt_ex = select(NovelEntity).where(NovelEntity.novel_id == novel_id)
             res_ex = await session.execute(stmt_ex)
             existing_entity_map = {e.chinese_name: e for e in res_ex.scalars().all()}
-
             saved_count = 0
             for ent in entities:
                 ch_name = ent.get("chinese_name", "").strip()
@@ -229,7 +258,7 @@ async def _extract_and_save_batch_entities(novel_id: int, batch: List[int]):
                     ent_id = new_ent.id
                     saved_count += 1
 
-                # Liên kết với các chương trong batch
+                # Liên kết với các chương trong batch (ChapterEntityLink)
                 for cid in batch:
                     stmt_link = select(ChapterEntityLink).where(
                         ChapterEntityLink.chapter_id == cid,
@@ -241,10 +270,10 @@ async def _extract_and_save_batch_entities(novel_id: int, batch: List[int]):
 
             await session.commit()
 
-        # Đồng bộ ra file Metadata JSON cache trên đĩa
+        # Đồng bộ ra file Metadata JSON cache trên đĩa (Nguồn 2: entities.json & Nguồn 3: chapters/*.json)
         await sync_novel_metadata(novel_id)
 
-        msg_ent_done = f"✅ [THỰC THỂ HOÀN TẤT] Đã bóc tách và lưu {len(entities)} thực thể ({saved_count} mới) vào máy cho lô Chương {chap_nos}!"
+        msg_ent_done = f"✅ [THỰC THỂ HOÀN TẤT] Đã bóc tách và đồng bộ cả 3 file ({len(entities)} thực thể, {saved_count} mới) cho lô Chương {chap_nos}!"
         print(msg_ent_done)
         add_system_log(msg_ent_done, "success")
 
@@ -281,21 +310,26 @@ async def _translate_batch(batch: List[int], enable_names_dict: bool = True, **k
                     novel_title = novel_obj.title_rough if (novel_obj and novel_obj.title_rough) else (novel_obj.title_raw if novel_obj else "Novel")
 
                 novel_folder = sanitize_filename(novel_title)
-                llm_out_dir = os.path.join(r"D:\NENGHIA0980\AIREAD\Output\03_DichAI_LLM", novel_folder)
+                llm_out_dir = os.path.join(str(OUTPUT_DIR / "03_DichAI_LLM"), novel_folder)
                 os.makedirs(llm_out_dir, exist_ok=True)
 
                 res_chap_nos = sorted(list(res["chapter_map"].values()))
-                batch_name = f"batch_ch{'_'.join(map(str, res_chap_nos))}.txt"
+                batch_tag = "_".join(map(str, res_chap_nos))
+                batch_name = f"batch_ch{batch_tag}.txt"
                 raw_llm_path = os.path.join(llm_out_dir, batch_name)
+                raw_llm_output_path = os.path.join(llm_out_dir, f"batch_ch{batch_tag}_output.txt")
 
                 # Unmask giải mã sơ bộ để đọc tiếng Việt
                 unmasked_text = unmask_text_with_dictionary(res["translated_text_masked"], res.get("mapping_table", {}), is_draft_only=False, enable_erotic=enable_erotic, flow="rawt")
 
+                output_content = f"=== KẾT QUẢ LLM TRẢ VỀ CHO CHƯƠNG {res_chap_nos} (TRƯỚC HẬU XỬ LÝ) ===\n\n{unmasked_text}"
+
                 with open(raw_llm_path, "w", encoding="utf-8") as f:
-                    f.write(f"=== KẾT QUẢ LLM TRẢ VỀ CHO CHƯƠNG {res_chap_nos} (TRƯỚC HẬU XỬ LÝ) ===\n\n")
-                    f.write(unmasked_text)
+                    f.write(output_content)
+                with open(raw_llm_output_path, "w", encoding="utf-8") as f:
+                    f.write(output_content)
                 
-                msg_llm_saved = f"💾 [1/2 DỊCH AI] Đã lưu phản hồi LLM gốc TRƯỚC HẬU XỬ LÝ vào: Output/03_DichAI_LLM/{novel_folder}/{batch_name}"
+                msg_llm_saved = f"💾 [1/2 DỊCH AI] Đã lưu ĐẦU RA của lô tại: Output/03_DichAI_LLM/{novel_folder}/batch_ch{batch_tag}_output.txt"
                 print(msg_llm_saved)
                 add_system_log(msg_llm_saved, "purple")
             except Exception as save_llm_err:

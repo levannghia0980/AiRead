@@ -30,7 +30,7 @@ import json
 import httpx
 import edge_tts
 from typing import Optional, List, Callable, Dict, Set, Any
-from app.services.tts.tts_exporter import cues_to_segments_and_words
+from app.services.tts.tts_exporter import cues_to_segments_and_words, calculate_word_timings
 
 
 def safe_print(*args, **kwargs):
@@ -66,6 +66,28 @@ def _calc_timeout(text: str) -> float:
     - Với chunk 650 chars: 650 / 10 + 15 = 80s timeout, đủ thời gian cho câu có ngắt nghỉ sâu.
     """
     return min(max(len(text) / 10.0 + 15.0, 15.0), 90.0)
+
+
+def _get_mp3_duration_seconds(file_path: str) -> float:
+    """Trả về độ dài thực tế (giây) của file MP3."""
+    if not file_path or not os.path.exists(file_path):
+        return 0.0
+    try:
+        try:
+            import imageio_ffmpeg
+            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            ffmpeg_exe = "ffmpeg"
+        import subprocess
+        cmd = [ffmpeg_exe, "-i", file_path]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="ignore", timeout=5)
+        match = re.search(r"Duration:\s*(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)", result.stderr)
+        if match:
+            return float(match.group(1)) * 3600 + float(match.group(2)) * 60 + float(match.group(3))
+    except Exception:
+        pass
+    sz = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+    return max(0.5, sz / 6000.0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -363,10 +385,9 @@ class DedicatedWorker:
                     try:
                         with open(json_path_check, "r", encoding="utf-8") as _f_cj:
                             _chk_data = json.load(_f_cj)
-                        _chk_exp = len(re.findall(r'[\wÀ-ỹ]+', text))
-                        _chk_words = [w["word"] for w in _chk_data.get("words", []) if isinstance(w, dict) and "word" in w]
-                        _chk_act = len(re.findall(r'[\wÀ-ỹ]+', " ".join(_chk_words))) if _chk_words else len(_chk_data.get("words", []))
-                        if _chk_exp >= 10 and _chk_act < _chk_exp * 0.88:
+                        _chk_exp = len(text.split())
+                        _chk_act = len(_chk_data.get("words", []))
+                        if _chk_exp >= 10 and _chk_act < _chk_exp * 0.85:
                             chunk_valid = False
                     except Exception:
                         pass
@@ -423,36 +444,47 @@ class DedicatedWorker:
                 continue
 
             # ── Chọn kênh kết nối ─────────────────────────────────────────
-            # Proxy ưu tiên → Xẻng kim cương chỉ là phương án cuối cùng
             used_direct = False
             direct_acquired = False
 
-            # Bước 1: Dùng proxy hiện tại đang giữ (nếu có)
-            if self.current_proxy is not None:
-                pass  # giữ nguyên proxy cũ
-
-            # Bước 2: Lấy proxy mới từ queue không chặn
-            elif not self.engine.proxy_queue.empty():
-                try:
-                    self.current_proxy = self.engine.proxy_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    self.current_proxy = None
-
-            # Bước 3: Queue trống → kích feeder khẩn cấp + chờ tối đa 5s
-            if self.current_proxy is None:
-                self.current_proxy = await self._wait_for_proxy(timeout=5.0)
-
-            # Bước 4: Vẫn không có proxy → thử xẻng kim cương
-            # (gate-lock: chỉ 1 worker kiểm tra sau cooldown, bọn khác bỏ qua đi lấy proxy)
-            if self.current_proxy is None:
+            # Ưu tiên Direct IP (Fast-Track Rescue) cho các chunk bị kẹt:
+            # Nếu task ở vòng Sweep (prefer_direct) hoặc đã bị proxy làm rớt mạng >= 2 lần -> dùng mạng thật giải quyết dứt điểm
+            prefer_direct = task_data.get("prefer_direct", False) if isinstance(task_data, dict) else False
+            if (prefer_direct or attempts >= 2) and not GLOBAL_DIRECT_IP_MANAGER.is_in_cooldown():
                 direct_acquired = await GLOBAL_DIRECT_IP_MANAGER.try_acquire()
                 used_direct = direct_acquired
 
-            # Bước 5: Hoàn toàn không có kênh → trả task lại queue, chờ ngắn
+            if not used_direct:
+                # Bước 1: Dùng proxy hiện tại đang giữ (nếu có)
+                if self.current_proxy is not None:
+                    pass  # giữ nguyên proxy cũ
+
+                # Bước 2: Lấy proxy mới từ queue không chặn
+                elif not self.engine.proxy_queue.empty():
+                    try:
+                        self.current_proxy = self.engine.proxy_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        self.current_proxy = None
+
+                # Bước 3: Thử Direct IP ngay lập tức nếu không trong cooldown (Zero-Latency Fast Path)
+                if self.current_proxy is None and not GLOBAL_DIRECT_IP_MANAGER.is_in_cooldown():
+                    direct_acquired = await GLOBAL_DIRECT_IP_MANAGER.try_acquire()
+                    used_direct = direct_acquired
+
+                # Bước 4: Nếu Direct IP bận/cooldown và chưa có proxy -> Chờ nhanh proxy từ queue (tối đa 1.5s)
+                if not used_direct and self.current_proxy is None:
+                    self.current_proxy = await self._wait_for_proxy(timeout=1.5)
+
+                # Bước 5: Thử lại Direct IP nếu vừa có slot trống
+                if not used_direct and self.current_proxy is None:
+                    direct_acquired = await GLOBAL_DIRECT_IP_MANAGER.try_acquire()
+                    used_direct = direct_acquired
+
+            # Bước 6: Hoàn toàn không có kênh -> Trả task lại queue, ngủ ngắn 0.1s rồi thử lại
             if not used_direct and self.current_proxy is None:
                 task_queue.put_nowait((priority, attempts, task_id, task_data))
                 task_queue.task_done()
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.1)
                 continue
             # ──────────────────────────────────────────────────────────────
 
@@ -462,10 +494,15 @@ class DedicatedWorker:
 
             # Chuẩn bị văn bản cho TTS (Edge-TTS tự ngắt nghỉ tự nhiên theo đúng dấu câu chuẩn)
             tts_text = text.strip()
-            if tts_text and tts_text[-1] not in '.!?…"':
-                tts_text += '.'
-            # Thêm khoảng đệm cuối chunk để Edge-TTS giải phóng 100% âm tiết cuối
-            tts_text += ' '
+            # Bảo toàn nguyên vẹn dấu ngắt nghỉ chuẩn của chunk (. ! ? … ; ,)
+            # để Edge-TTS giữ đúng nhịp ngắt (phẩy ~100ms, chấm phẩy ~180ms, chấm ~250ms).
+            # TUYỆT ĐỐI KHÔNG ép ' ... ' (3 dấu chấm) vì sẽ biến dấu phẩy/chấm phẩy thành khoảng nghỉ dài bất thường.
+            # Nếu chunk kết thúc bằng từ trần (không có dấu câu), thêm '; ' theo chuẩn mặc định:
+            # vừa giữ cao độ tiếp nối, vừa bảo toàn trọn vẹn 100% âm sắc của âm tiết cuối (như "cường giả" -> không nuốt thanh).
+            if tts_text and tts_text[-1] not in '.!?…;,':
+                tts_text += '; '
+            else:
+                tts_text += ' '
 
             cur_timeout = _calc_timeout(tts_text)
             if self.engine and hasattr(self.engine, "chunk_timeout") and self.engine.chunk_timeout:
@@ -514,7 +551,7 @@ class DedicatedWorker:
 
                 # ── KIỂM TRA ĐỘ TOÀN VẸN 100% CỦA ÂM THANH & TỪ VỰNG ──
                 text_len = len(tts_text.strip())
-                min_expected_bytes = max(1500, int(text_len * 130))
+                min_expected_bytes = max(1500, int(text_len * 95))
                 actual_bytes = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
 
                 if actual_bytes < min_expected_bytes:
@@ -524,6 +561,22 @@ class DedicatedWorker:
 
                 # Chuyển đổi cues sang segments & words để kiểm tra nội dung
                 c_segs, c_words = cues_to_segments_and_words(submaker.cues, tts_text)
+
+                # Fallback thông minh: Khi file MP3 đã tải trọn vẹn (actual_bytes >= min_expected_bytes)
+                # nhưng Microsoft Edge-TTS nuốt mất thẻ SentenceBoundary (do bug tokenization khi chunk chỉ có 1 câu kết thúc bằng dấu đặc biệt như ,. hoặc ;.)
+                # -> Tự động tính toán mốc thời gian từ vựng âm vị học dựa theo độ dài thực tế của file MP3!
+                if (not c_words or not submaker.cues) and actual_bytes >= min_expected_bytes:
+                    audio_dur = _get_mp3_duration_seconds(tmp_path)
+                    clean_seg_text = re.sub(r'[\r\n\t]+', ' ', text).strip()
+                    fallback_words = calculate_word_timings(clean_seg_text, 0.0, audio_dur)
+                    if fallback_words:
+                        c_segs = [{
+                            "start": 0.0,
+                            "end": round(audio_dur, 3),
+                            "text": clean_seg_text,
+                            "words": fallback_words
+                        }]
+                        c_words = fallback_words
 
                 # Kiểm tra độ bao phủ thời gian của cues (tối thiểu 0.04s / ký tự cho tiếng Việt)
                 if submaker.cues and text_len > 100:
@@ -535,7 +588,8 @@ class DedicatedWorker:
                         )
 
                 # KIỂM TRA TỪ VỰNG CHÍNH XÁC (Chống rớt từ, nuốt câu, ngắt stream sớm)
-                input_words = re.findall(r'[\wÀ-ỹ]+', tts_text)
+                # Dùng text gốc (không có trailing padding ' ... ') để so sánh từ vựng chính xác
+                input_words = re.findall(r'[\wÀ-ỹ]+', text.strip())
                 actual_words = [w["word"] for w in c_words] if c_words else []
                 act_words_normalized = re.findall(r'[\wÀ-ỹ]+', " ".join(actual_words)) if actual_words else []
                 actual_count = len(act_words_normalized) if act_words_normalized else len(actual_words)
@@ -796,6 +850,8 @@ class RotatingBatchTTSEngine:
                     high_prio = prio - 100_000_000
                     t_id = t.get("id", f"{t.get('chapter_no', 0)}_{t.get('chunk_idx', 0)}")
                     results[t_id] = None
+                    if isinstance(t, dict):
+                        t["prefer_direct"] = True
                     task_queue.put_nowait((high_prio, 1, t_id, t))
 
                 if self.proxy_queue.qsize() < num_workers:
@@ -833,3 +889,4 @@ class RotatingBatchTTSEngine:
         ]
         res = await self.synthesize_tasks(tasks, on_chunk_done=on_chunk_done)
         return {idx: res.get(idx, True) for idx in range(len(chunks))}
+

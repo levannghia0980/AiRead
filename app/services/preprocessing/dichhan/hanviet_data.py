@@ -21,6 +21,10 @@ STANDARDIZED_OVERRIDES = {
     "秦": "tần", "尤": "vưu", "许": "hứa", "何": "hà", "吕": "lữ", "施": "thi",
     "孔": "khổng", "曹": "tào", "严": "nghiêm", "华": "hoa", "金": "kim", "魏": "ngụy",
     "陶": "đào", "姜": "khương", "岚": "lam", "妙": "diệu", "颖": "dĩnh", "璃": "ly",
+    "追": "truy", "泰": "thái", "拉": "lạp",
+    # Chuẩn hóa âm Hán-Việt cho nhân vật, ngoại hiệu, địa danh, danh xưng kinh điển
+    "伦": "luân", "摸": "mô", "着": "trước", "迁": "thiên", "进": "tiến", "纲": "cương", "刚": "cương",
+    "晁": "triều", "盖": "cái", "宋": "tống", "江": "giang", "泊": "bạc", "掉": "điệu", "朴": "phác",
     # Chuẩn hóa âm Hán-Việt cho Võ học, Chiêu thức, Trận pháp, Binh khí
     "圈": "quyển", "拳": "quyền", "掌": "chưởng", "爪": "trảo", "腿": "cước",
     "指": "chỉ", "阵": "trận", "诀": "quyết", "经": "kinh", "籍": "tịch", "谱": "phổ"

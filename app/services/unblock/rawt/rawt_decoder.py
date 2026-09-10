@@ -135,15 +135,24 @@ class RawtDecoder:
                     return f"{pre}{target_rep_display}{suf}"
                 restored_text = re.sub(re.escape(token), _sub_tok, restored_text)
 
-        # Dọn sạch triệt để mọi biến thể thẻ markup rò rỉ hoặc bị LLM làm mất đuôi/mất dấu §
-        restored_text = re.sub(r'§[A-Z]+(?:_[A-Z0-9]+)?§?', '', restored_text)
-        restored_text = re.sub(r'§[A-Za-z0-9_]*§', '', restored_text)
-        restored_text = re.sub(r'\b(?:STRICT|ZH|ACT|OBJ|BDY|SCN|PREFIX)_[A-Z0-9]+\b', '', restored_text)
-        restored_text = re.sub(r'\b(?:STRICT|ZH|ACT|OBJ|BDY|SCN|PREFIX)\b', '', restored_text)
+        # Dọn sạch triệt để mọi biến thể thẻ markup rò rỉ (thay bằng khoảng trắng để tránh dính chữ)
+        restored_text = re.sub(r'§[A-Z]+(?:_[A-Z0-9]+)?§?', ' ', restored_text)
+        restored_text = re.sub(r'§[A-Za-z0-9_]*§', ' ', restored_text)
+        restored_text = re.sub(r'\b(?:STRICT|ZH|ACT|OBJ|BDY|SCN|PREFIX)_[A-Z0-9]+\b', ' ', restored_text)
+        restored_text = re.sub(r'\b(?:STRICT|ZH|ACT|OBJ|BDY|SCN|PREFIX)\b', ' ', restored_text)
 
         # Áp dụng bộ lọc khử trùng lặp từ lóng, tách dính chữ & sửa các từ bị sai ngữ nghĩa
         restored_text = clean_duplicate_slang_words(restored_text)
         restored_text = re.sub(r'[ \t]+', ' ', restored_text)
         restored_text = re.sub(r' *\n *', '\n', restored_text)
+
+        # Quét sạch triệt để mọi chữ Hán còn sót lại (chuyển sang âm Hán-Việt)
+        if re.search(r"[\u4e00-\u9fff]", restored_text):
+            def _sub_remaining_han(m):
+                raw = m.group(0)
+                hv = build_hanviet_name(raw)
+                return f" {hv} " if hv else raw
+            restored_text = re.sub(r"[\u4e00-\u9fff]+", _sub_remaining_han, restored_text)
+            restored_text = re.sub(r"[^\S\r\n]{2,}", " ", restored_text)
 
         return restored_text.strip()

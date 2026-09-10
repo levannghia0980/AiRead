@@ -20,8 +20,9 @@ NAMES_URLS = [
     "https://raw.githubusercontent.com/truyencuatui/VietPhrase/master/LuatNhan.txt"
 ]
 
-DB_PATH = Path("d:/NENGHIA0980/AIREAD/database.db").resolve()
-OUTPUT_DIR = Path("d:/NENGHIA0980/AIREAD/Output/04_KetQua")
+from app.core.config import PROJECT_ROOT, OUTPUT_DIR
+DB_PATH = (PROJECT_ROOT / "database.db").resolve()
+OUTPUT_DIR = (OUTPUT_DIR / "04_KetQua").resolve()
 
 async def download_file_with_fallback(urls: list, filename: str) -> Path:
     """Tải file từ danh sách URL dự phòng"""

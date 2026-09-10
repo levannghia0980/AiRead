@@ -147,11 +147,14 @@ async def _bg_translation_worker(payload: StartTranslationRequest):
             add_system_log(f"🎉 Hoàn tất dịch bộ truyện ID {payload.novel_id}! Tổng số chương: {res.get('total_chapters')}", "success")
             from app.services.postprocessing.post_processor import export_full_novel_txt
             exp = await export_full_novel_txt(payload.novel_id)
+            if not isinstance(exp, dict):
+                exp = {"file_path": str(exp) if exp else "", "title": ""}
+            file_path = exp.get("file_path") or ""
             broadcast_sse("packaged", {
-                "success": True,
+                "success": bool(file_path),
                 "title": exp.get("title", ""),
-                "txt": exp.get("file_path"),
-                "txt_clean": exp.get("file_path"),
+                "txt": file_path,
+                "txt_clean": file_path,
                 "html": None,
                 "docx": None,
                 "epub": None
@@ -235,11 +238,14 @@ async def manual_export(payload: ExportRequest):
     from app.services.postprocessing.post_processor import export_full_novel_txt
     try:
         exp = await export_full_novel_txt(payload.novel_id)
+        if not isinstance(exp, dict):
+            exp = {"file_path": str(exp) if exp else "", "title": ""}
+        file_path = exp.get("file_path") or ""
         res = {
-            "success": True,
+            "success": bool(file_path),
             "title": exp.get("title", ""),
-            "txt": exp.get("file_path"),
-            "txt_clean": exp.get("file_path"),
+            "txt": file_path,
+            "txt_clean": file_path,
             "html": None,
             "docx": None,
             "epub": None
@@ -273,7 +279,10 @@ class SetContextRequest(BaseModel):
 
 @router.put("/novel/{novel_id}/context")
 async def set_novel_context(novel_id: int, payload: SetContextRequest):
-    valid_profiles = ["urban", "urban_supernatural", "xianxia", "wuxia"]
+    valid_profiles = [
+        "urban", "modern_urban", "urban_supernatural", "xianxia", "wuxia",
+        "romance", "system_reincarnation", "sci_fi_apocalypse"
+    ]
     if payload.context_profile.lower() not in valid_profiles:
         raise HTTPException(status_code=400, detail=f"Ngữ cảnh không hợp lệ: {valid_profiles}")
 

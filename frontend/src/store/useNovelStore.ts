@@ -79,10 +79,13 @@ export interface GenreOption {
 }
 
 export const NOVEL_GENRE_OPTIONS: GenreOption[] = [
-  { code: 'XIANXIA', name: 'Tiên Hiệp / Cổ Trang / Huyền Huyễn', icon: '☯️', desc: 'Ta/Ngươi, Hắn/Nàng, Trúc Cơ, Đan Điền, Tông Môn' },
-  { code: 'WUXIA', name: 'Võ Lâm / Kiếm Hiệp', icon: '⚔️', desc: 'Huynh/Đệ, Tỷ/Muội, Gia Tộc, Chưởng Môn, Binh Khí' },
+  { code: 'XIANXIA', name: 'Tiên Hiệp / Cổ Trang / Huyền Huyễn', icon: '☯️', desc: 'Ta/Ngươi, Hắn/Nàng, Trúc Cơ, Đan Điền, Tông Môn, Cấm anh-em' },
+  { code: 'WUXIA', name: 'Võ Lâm / Kiếm Hiệp', icon: '⚔️', desc: 'Huynh/Đệ, Tỷ/Muội, Gia Tộc, Chưởng Môn, Giang hồ ân oán' },
   { code: 'MODERN_URBAN', name: 'Đô Thị / Hiện Đại / Thương Chiến', icon: '🏙️', desc: 'Tôi/Cậu/Anh/Em, Bố/Mẹ, Sếp/Chủ tịch, Công ty, Xe hơi' },
-  { code: 'URBAN_SUPERNATURAL', name: 'Linh Dị / Đô Thị Dị Năng / Cao Võ / Phong Thủy', icon: '🕯️', desc: 'Tôi/Cậu/Mày/Tao/Anh/Em, Hắn/Gã, Vớt xác, Bắt ma, Trộm mộ, Dị năng, Tu võ hiện đại' }
+  { code: 'URBAN_SUPERNATURAL', name: 'Linh Dị / Dị Năng / Cao Võ / Phong Thủy', icon: '🕯️', desc: 'Tôi/Cậu/Mày/Tao, Vớt xác, Bắt ma, Trộm mộ, Dị năng' },
+  { code: 'ROMANCE', name: 'Ngôn Tình / Điền Văn / Cung Đấu', icon: '💕', desc: 'Chàng/Thiếp, Hoàng thượng/Thần thiếp, Lão thái thái, Điền viên mộc mạc' },
+  { code: 'SYSTEM_REINCARNATION', name: 'Hệ Thống / Trọng Sinh / Xuyên Không', icon: '⚡', desc: 'Ký chủ, Tích điểm, 【Đinh!】, Nhiệm vụ, Thấu thị tương lai, Vô địch lưu' },
+  { code: 'SCI_FI_APOCALYPSE', name: 'Mạt Thế / Khoa Huyễn / Viễn Tưởng', icon: '🚀', desc: 'Zombie, Tang thi, Dị biến, Chỉ huy, Căn cứ sinh tồn, Tinh tế, Cơ giáp' }
 ]
 
 interface NovelStore {

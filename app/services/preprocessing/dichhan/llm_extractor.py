@@ -25,9 +25,11 @@ async def _remove_sensitive_words_for_extraction(text: str) -> str:
     Mục đích: Tránh Gemini/LLM bị chặn do vi phạm SafetyPolicy khi phân tích văn bản có nội dung nhạy cảm.
     """
     try:
-        from app.services.preprocessing.crawler.pronoun_protector import EROTIC_SENSITIVE_ZH
-        for word in EROTIC_SENSITIVE_ZH:
-            text = text.replace(word, "")
+        from app.services.unblock.common.dictionary_loader import load_zh_erotic_map
+        zh_map = load_zh_erotic_map()
+        for word in zh_map:
+            if word in text:
+                text = text.replace(word, "")
     except Exception:
         pass
     return text
@@ -46,15 +48,14 @@ async def extract_entities_via_llm(raw_text: str) -> List[Dict[str, Any]]:
     clean_text = await _remove_sensitive_words_for_extraction(raw_text)
 
     prompt = f"""
-Nhiệm vụ: Trích xuất danh sách các danh từ riêng (tên nhân vật, địa danh, môn phái, võ công/chiêu thức, pháp bảo) từ đoạn văn bản tiểu thuyết tiếng Trung sau.
+Nhiệm vụ: Trích xuất danh sách các danh từ riêng (tên nhân vật, địa danh, môn phái, võ công/chiêu thức, pháp bảo) từ toàn bộ văn bản tiểu thuyết tiếng Trung sau (quét đầy đủ 100% không bỏ sót).
 
 Văn bản tiếng Trung:
 \"\"\"
-{clean_text[:3000]}
+{clean_text}
 \"\"\"
 
-Quy tắc phân loại (entity_type):
-- 'PERSON': Tên nhân vật (ví dụ: "莫雅依", "周佐", "苏浅浅", "刘震", "萧七修").
+- 'PERSON': Tên nhân vật, bao gồm cả tên thân mật, nhũ danh trẻ con (ví dụ: "莫雅依", "周佐", "苏浅浅", "刘震", "潘子" -> Phan Tử, "雷子" -> Lôi Tử, "石头" -> Thạch Đầu, "虎子" -> Hổ Tử). TUYỆT ĐỐI KHÔNG bóc tách phó từ, liên từ, từ ngữ đời thường (như '倒是', '一下子', '大不了', '好日子', '大家', '按人头', '大声', '围裙', '勺子') thành tên người!
 - 'LOCATION': Địa danh, sông, núi, thành trì (ví dụ: "青云宗" nếu là địa điểm, "天玄山", "灵法阁").
 - 'SECT_SKILL': Tông môn, bang phái, võ công, chiêu thức, bí tịch, kiếm pháp, chưởng pháp, quyền pháp, trận pháp, pháp bảo (ví dụ: "金刚伏魔圈", "降龙十八掌", "太极拳", "独孤九剑", "天玄剑诀", "紫光雷翼").
 - 'OTHER': Các thuật ngữ danh từ riêng đặc thù khác.
@@ -188,6 +189,8 @@ Bạn là chuyên gia dịch thuật và chuẩn hóa tên nhân vật, chiêu t
 {instruction}
 
 ⚠️ NGUYÊN TẮC HÀNG ĐẦU KHI XỬ LÝ DỮ LIỆU GỢI Ý:
+- Dữ liệu gửi lên là gợi ý nghi vấn thô: BẮT BUỘC phân tích vi ngữ cảnh 【...】 để chọn lọc thông minh.
+- KHÔNG ĐƯỢC TRẢ VỀ MÁY MÓC TẤT CẢ DANH SÁCH GỬI LÊN: Nếu từ nào trong danh sách thực chất là từ thừa, từ ngữ đời thường nên dịch thuần Việt, tiếng lóng, khẩu ngữ, phó từ (như '倒是', '一下子', '大不了', '好日子', '大家', '按人头', '大声', '围裙', '勺子', '大包', '死尸') thì BỎ QUA. Chỉ giữ lại tên người thật sự như 潘子 (Phan Tử), 雷子 (Lôi Tử), 虎子 (Hổ Tử), 石头 (Thạch Đầu).
 - Tuyệt đối KHÔNG cố dựa vào các ví dụ nhỏ bên cạnh của Hán/Google Dịch nếu thấy ngô nghê/tối nghĩa.
 - BẮT BUỘC dịch thật hay, đặt tên bóng bẩy, chuẩn phong vị tiên hiệp/kiếm hiệp cho chiêu thức võ công, pháp bảo, dược liệu hoặc dịch thuần Việt dễ hiểu.
 

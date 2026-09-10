@@ -1,7 +1,7 @@
 import os
 from fastapi import APIRouter, HTTPException, Path
 from pydantic import BaseModel, field_validator
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 from app.core.config import get_all_active_settings
 from app.core.database import AsyncSessionLocal
 from app.models.schema import Setting
@@ -53,6 +53,9 @@ class SettingsUpdatePayload(BaseModel):
     AIREAD_BATCH_SIZE: Optional[int] = None
     AIREAD_TRANSLATION_STYLE: Optional[str] = None
     AIREAD_CUSTOM_PROMPT: Optional[str] = None
+    AIREAD_TEMPERATURE: Optional[str] = None
+    AIREAD_TOP_P: Optional[str] = None
+    AIREAD_TOP_K: Optional[str] = None
 
     @field_validator("AIREAD_MODEL")
     @classmethod
@@ -75,6 +78,9 @@ async def get_settings():
         res["delay"] = float(active_settings.get("AIREAD_DELAY", 0.0))
         res["translation_style"] = active_settings.get("AIREAD_TRANSLATION_STYLE", "")
         res["custom_prompt"] = active_settings.get("AIREAD_CUSTOM_PROMPT", "")
+        res["temperature"] = active_settings.get("AIREAD_TEMPERATURE", "")
+        res["top_p"] = active_settings.get("AIREAD_TOP_P", "")
+        res["top_k"] = active_settings.get("AIREAD_TOP_K", "")
         return res
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -87,6 +93,9 @@ class SaveSettingsPayload(BaseModel):
     delay: Optional[float] = None
     custom_prompt: Optional[str] = None
     translation_style: Optional[str] = None
+    temperature: Optional[Union[float, str]] = None
+    top_p: Optional[Union[float, str]] = None
+    top_k: Optional[Union[int, str]] = None
 
 @router.post("/save")
 async def save_settings(payload: SaveSettingsPayload):
@@ -99,6 +108,9 @@ async def save_settings(payload: SaveSettingsPayload):
         "delay": "AIREAD_DELAY",
         "custom_prompt": "AIREAD_CUSTOM_PROMPT",
         "translation_style": "AIREAD_TRANSLATION_STYLE",
+        "temperature": "AIREAD_TEMPERATURE",
+        "top_p": "AIREAD_TOP_P",
+        "top_k": "AIREAD_TOP_K",
     }
     async with AsyncSessionLocal() as session:
         for p_key, env_key in mapping.items():

@@ -112,6 +112,27 @@ def print_qr_code(url: str):
     except Exception:
         pass
 
+def free_port(port: int):
+    """Tự động giải phóng cổng mạng nếu có tiến trình cũ đang chiếm giữ."""
+    try:
+        import psutil
+        my_pid = os.getpid()
+        for conn in psutil.net_connections(kind='inet'):
+            if conn.laddr and conn.laddr.port == port and conn.status == psutil.CONN_LISTEN:
+                if conn.pid and conn.pid != my_pid:
+                    try:
+                        p = psutil.Process(conn.pid)
+                        print(f"🧹 Đang giải phóng cổng {port} (tiến trình PID {conn.pid})...")
+                        p.terminate()
+                        p.wait(timeout=2)
+                    except Exception:
+                        try:
+                            p.kill()
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+
 def run_services():
     venv_py = get_venv_python()
     local_ip = get_real_lan_ip()
@@ -134,12 +155,14 @@ def run_services():
 
     # Command khởi chạy Backend FastAPI trên cổng 8001 (Nội bộ / Proxied)
     # --reload-dir app: Chỉ theo dõi mã nguồn trong thư mục app/, hoàn toàn bỏ qua Output/ và audio files
+    free_port(8001)
+    free_port(8000)
     be_cmd = [venv_py, "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload", "--reload-dir", "app"]
     
     # Command khởi chạy Frontend Vite trên CỔNG 8000
     import shutil
     npx_cmd = shutil.which("npx.cmd") or shutil.which("npx") or r"C:\Users\ADMIN\AppData\Local\Programs\nodejs\npx.cmd"
-    fe_cmd = [npx_cmd, "vite", "--host", "0.0.0.0", "--port", "8000"]
+    fe_cmd = [npx_cmd, "vite", "--host", "0.0.0.0", "--port", "8000", "--strictPort"]
 
     be_process = None
     fe_process = None

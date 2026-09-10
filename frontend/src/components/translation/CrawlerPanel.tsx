@@ -68,7 +68,13 @@ export const CrawlerPanel: React.FC<CrawlerPanelProps> = ({
         method: 'POST',
         body: formData
       })
-      const data = await res.json()
+      let data: any = {}
+      try {
+        data = await res.json()
+      } catch {
+        const text = await res.text().catch(() => "")
+        throw new Error(text || `Máy chủ phản hồi mã lỗi ${res.status}`)
+      }
       if (res.ok) {
         alert(data.message || `Đã tách thành công ${data.imported_chapters} chương vào bản gốc!`)
         await fetchNovels()

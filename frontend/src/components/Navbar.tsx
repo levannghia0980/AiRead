@@ -41,7 +41,7 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
             </div>
             <div>
               <h1 className="font-bold text-sm sm:text-base md:text-lg text-slate-100 flex items-center gap-1.5 sm:gap-2">
-                AiRead <span className="text-[9px] sm:text-[10px] md:text-xs px-1.5 sm:px-2 py-0.5 rounded-full bg-cyber-accent/20 text-cyber-accent border border-cyber-accent/30 font-mono">v2.5 Pro</span>
+                AiRead 1 <span className="text-[10px] sm:text-xs px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-400 border border-cyan-500/40 font-mono font-bold shadow-sm shadow-cyan-500/20">BẢN 1 [8000]</span>
               </h1>
               <p className="text-[9px] text-cyber-muted hidden xs:block">Hệ thống dịch thuật & Audio AI</p>
             </div>
