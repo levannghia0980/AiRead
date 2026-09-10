@@ -11,6 +11,9 @@ TARGETS = [
 ITEMS = [
     r"app\api\settings_router.py",
     r"app\services\translation\rawt\llm_translator.py",
+    r"app\services\preprocessing\dichhan\llm_extractor.py",
+    r"app\services\preprocessing\crawler\plugins\alicesw.py",
+    r"app\services\postprocessing\translation_auditor.py",
     r"app\core\llm_client.py",
     r"tools\grok_server",
     r"Run_Grok_Server.bat",
@@ -30,9 +33,17 @@ def sync():
             if not src.exists():
                 continue
             if src.is_dir():
-                if dst.exists():
-                    shutil.rmtree(dst)
-                shutil.copytree(src, dst)
+                if rel_path == r"tools\grok_server":
+                    # Copy code, ignore user_data edge profile lock files
+                    shutil.copytree(
+                        src, dst,
+                        ignore=shutil.ignore_patterns("user_data", "*.db", "*.log", "__pycache__"),
+                        dirs_exist_ok=True
+                    )
+                else:
+                    if dst.exists():
+                        shutil.rmtree(dst)
+                    shutil.copytree(src, dst)
             else:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)

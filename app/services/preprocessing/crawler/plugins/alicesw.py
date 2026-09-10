@@ -14,6 +14,8 @@ async def _solve_captcha_with_gemini(image_bytes: bytes) -> str:
     try:
         from app.core.config import get_active_setting
         model = (await get_active_setting("AIREAD_MODEL") or "gemini-3.5-flash-lite").strip()
+        if "grok" in model.lower():
+            model = "gemini-3.5-flash-lite"
         raw_api_key = await get_active_setting("AIREAD_API_KEYS")
         api_key = raw_api_key.split(',')[0].strip() if raw_api_key else ""
         if not api_key:

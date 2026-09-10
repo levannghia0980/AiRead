@@ -29,6 +29,8 @@ async def call_gemini_api(prompt: str, model: str = None, is_json: bool = True) 
 
     selected_model = model or (await get_active_setting("AIREAD_MODEL")) or "gemini-3.5-flash-lite"
     selected_model = selected_model.strip()
+    if "grok" in selected_model.lower():
+        selected_model = "gemini-3.5-flash-lite"
     
     provider_val = os.environ.get("AIREAD_PROVIDER") or await get_active_setting("AIREAD_PROVIDER") or "gemini"
     provider = str(provider_val).lower().strip()

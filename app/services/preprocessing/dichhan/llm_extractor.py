@@ -8,14 +8,28 @@ from app.core.llm_client import post_gemini_with_retry, post_openrouter_with_ret
 
 
 async def _get_llm_config():
-    """Đọc cấu hình LLM provider/model/api_key và xác định là Gemini hay OpenRouter."""
+    """Đọc cấu hình LLM provider/model/api_key và xác định là Gemini, OpenRouter hay Grok."""
     provider_val = os.environ.get("AIREAD_PROVIDER") or await get_active_setting("AIREAD_PROVIDER") or "gemini"
     provider = str(provider_val).lower().strip()
     model = (os.environ.get("AIREAD_MODEL") or await get_active_setting("AIREAD_MODEL") or "gemini-3.5-flash-lite").strip()
     raw_api_key = os.environ.get("AIREAD_API_KEYS") or await get_active_setting("AIREAD_API_KEYS") or ""
     api_key = raw_api_key.split(',')[0].strip() if raw_api_key else ""
-    is_openrouter = (provider == "openrouter") or ("/" in model) or ("qwen" in model.lower()) or ("openrouter" in model.lower())
-    return model, api_key, is_openrouter
+
+    is_grok_local = (provider in ["grok_local", "grok", "grok_web"]) or ("grok" in model.lower())
+    is_openrouter = not is_grok_local and ((provider == "openrouter") or ("/" in model) or ("qwen" in model.lower()) or ("openrouter" in model.lower()))
+
+    # Nếu đang chọn Grok và có API key (Gemini):
+    # Dùng gemini-3.5-flash-lite cho khâu bóc tách thực thể để trả về JSON siêu tốc 1-2s, tránh lỗi 404
+    if is_grok_local:
+        if api_key:
+            model = "gemini-3.5-flash-lite"
+            is_grok_local = False
+        else:
+            # Nếu không có key, model giữ nguyên nhưng cờ is_grok_local=True để gọi Grok Server
+            pass
+
+    return model, api_key, is_openrouter, is_grok_local
+
 
 
 async def _remove_sensitive_words_for_extraction(text: str) -> str:
@@ -37,13 +51,13 @@ async def _remove_sensitive_words_for_extraction(text: str) -> str:
 
 async def extract_entities_via_llm(raw_text: str) -> List[Dict[str, Any]]:
     """
-    Sử dụng Gemini/OpenRouter LLM để bóc tách thực thể (tên nhân vật, địa danh, chiêu thức, môn phái)
+    Sử dụng Gemini/OpenRouter/Grok LLM để bóc tách thực thể (tên nhân vật, địa danh, chiêu thức, môn phái)
     từ bản gốc tiếng Trung và trả về cấu trúc JSON mẫu.
     """
-    model, api_key, is_openrouter = await _get_llm_config()
+    model, api_key, is_openrouter, is_grok_local = await _get_llm_config()
 
-    if not api_key:
-        raise Exception("Không tìm thấy API Key. Vui lòng thiết lập cấu hình trong Settings.")
+    if not api_key and not is_grok_local:
+        raise Exception("Không tìm thấy API Key hoặc Grok Server. Vui lòng thiết lập cấu hình trong Settings.")
 
     clean_text = await _remove_sensitive_words_for_extraction(raw_text)
 
@@ -96,6 +110,12 @@ CHỈ trả về JSON Array, không kèm giải thích.
             raise Exception(f"OpenRouter API Error (HTTP {resp.status_code}): {resp.text}")
         res_json = resp.json()
         text_response = res_json["choices"][0]["message"]["content"].strip()
+    elif is_grok_local:
+        grok_url = os.environ.get("AIREAD_GROK_URL") or "http://127.0.0.1:8020/translate-text"
+        from app.core.llm_client import post_grok_local_with_retry
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            res_data = await post_grok_local_with_retry(client, grok_url, {"text": prompt, "timeout": 120.0})
+            text_response = res_data.get("translated_text", "").strip()
     else:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
         headers = {"Content-Type": "application/json"}
@@ -145,10 +165,10 @@ async def process_2branch_evidence_via_llm(evidence_data: Dict[str, Any]) -> Dic
     Gửi gói bằng chứng 2 Nhánh hợp nhất (NER + Làm sạch GG) lên LLM.
     Luôn tự động chạy mã hóa chặn từ nhạy cảm 100% để LLM KHÔNG BAO GIỜ bị dính vi phạm Policy.
     """
-    model, api_key, is_openrouter = await _get_llm_config()
+    model, api_key, is_openrouter, is_grok_local = await _get_llm_config()
 
-    if not api_key:
-        raise Exception("Không tìm thấy API Key. Vui lòng thiết lập cấu hình trong Settings.")
+    if not api_key and not is_grok_local:
+        raise Exception("Không tìm thấy API Key hoặc Grok Server. Vui lòng thiết lập cấu hình trong Settings.")
 
     instruction = evidence_data.get("system_prompt_instruction", "")
     existing_entities = evidence_data.get("existing_db_entities", {})
@@ -236,6 +256,12 @@ CHỈ trả về JSON, không kèm giải thích.
             raise Exception(f"OpenRouter API Error (HTTP {resp.status_code}): {resp.text}")
         res_json = resp.json()
         text_response = res_json["choices"][0]["message"]["content"].strip()
+    elif is_grok_local:
+        grok_url = os.environ.get("AIREAD_GROK_URL") or "http://127.0.0.1:8020/translate-text"
+        from app.core.llm_client import post_grok_local_with_retry
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            res_data = await post_grok_local_with_retry(client, grok_url, {"text": prompt, "timeout": 120.0})
+            text_response = res_data.get("translated_text", "").strip()
     else:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
         headers = {"Content-Type": "application/json"}
