@@ -258,7 +258,7 @@ async def manual_export(payload: ExportRequest):
 class TestKeyRequest(BaseModel):
     provider: str
     model: str
-    api_key: str
+    api_key: Optional[str] = ""
 
 @router.post("/test-key")
 async def test_key(payload: TestKeyRequest):

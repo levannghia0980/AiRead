@@ -1,5 +1,5 @@
-import React from 'react'
-import { Settings, Key, CheckCircle, XCircle, Save, Plus, Minus } from 'lucide-react'
+import React, { useState } from 'react'
+import { Settings, Key, CheckCircle, XCircle, Save, Plus, Minus, Zap, RefreshCw } from 'lucide-react'
 
 interface ModelSettingsPanelProps {
   provider: string
@@ -81,6 +81,42 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
   isSavedToEnv,
   setIsSavedToEnv
 }) => {
+  const [isConnectingGrok, setIsConnectingGrok] = useState(false)
+  const [grokStatus, setGrokStatus] = useState<{ running?: boolean; message: string } | null>(null)
+
+  const handleConnectGrok = async () => {
+    setIsConnectingGrok(true)
+    setGrokStatus(null)
+    try {
+      const res = await fetch('/api/settings/grok/connect', { method: 'POST' })
+      const data = await res.json()
+      setGrokStatus({
+        running: data.status === 'success',
+        message: data.message || 'Kết nối thành công!'
+      })
+    } catch (e: any) {
+      setGrokStatus({ running: false, message: `Lỗi kết nối: ${e.message}` })
+    } finally {
+      setIsConnectingGrok(false)
+    }
+  }
+
+  const handleReloginGrok = async () => {
+    setIsConnectingGrok(true)
+    try {
+      const res = await fetch('/api/settings/grok/relogin', { method: 'POST' })
+      const data = await res.json()
+      setGrokStatus({
+        running: data.status === 'success',
+        message: data.message || 'Đã làm mới phiên đăng nhập!'
+      })
+    } catch (e: any) {
+      setGrokStatus({ running: false, message: `Lỗi: ${e.message}` })
+    } finally {
+      setIsConnectingGrok(false)
+    }
+  }
+
   const getModelsForProvider = (prov: string) => {
     switch (prov) {
       case 'gemini':
@@ -94,6 +130,12 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
         return [
           'google/gemma-4-26b-a4b-it:free',
           'nvidia/nemotron-3-ultra-550b-a55b:free'
+        ]
+      case 'grok_local':
+        return [
+          'grok-web-auto',
+          'grok-2',
+          'grok-beta'
         ]
       case 'openai':
         return ['gpt-4o-mini', 'gpt-4o']
@@ -128,6 +170,7 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
           >
             <option value="openrouter">🌐 OpenRouter (Free / Multi-Model)</option>
             <option value="gemini">⚡ Google Gemini (Direct API)</option>
+            <option value="grok_local">🚀 Grok Web Automation (Port 8020 / Edge)</option>
             <option value="openai">🤖 OpenAI</option>
           </select>
         </div>
@@ -164,21 +207,16 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
         </div>
       </div>
 
-      {/* API Keys Input */}
-      <div>
-        <div className="flex items-center justify-between mb-1">
-          <label className="text-[10px] text-cyber-muted flex items-center gap-1">
-            <Key className="w-3 h-3 text-cyber-accent" /> Danh Sách API Key (Xuống dòng cho nhiều key)
-          </label>
-          <div className="flex gap-1.5 flex-wrap justify-end">
-            <button
-              onClick={handleTestKey}
-              disabled={isTestingKey || !apiKeys.trim()}
-              className="text-[9px] font-bold px-2 py-0.5 rounded bg-cyber-accent/10 border border-cyber-accent/30 text-cyber-accent hover:bg-cyber-accent/20 transition-all disabled:opacity-40"
-            >
-              {isTestingKey ? 'Đang test...' : 'Test Key'}
-            </button>
-
+      {/* API Keys hoặc Bảng Kết Nối Grok Web Automation */}
+      {provider === 'grok_local' ? (
+        <div className="bg-gradient-to-br from-purple-950/40 via-indigo-950/30 to-slate-900/90 border border-purple-500/40 rounded-2xl p-3 flex flex-col gap-2.5 shadow-lg shadow-purple-950/20">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5">
+              <Zap className="w-4 h-4 text-purple-400 animate-pulse" />
+              <span className="text-[11px] font-bold text-purple-300 uppercase tracking-wide">
+                Grok Web Automation (Port 8020)
+              </span>
+            </div>
             <button
               onClick={async () => {
                 await saveSettingsToEnv()
@@ -190,25 +228,96 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
               <Save className="w-2.5 h-2.5" /> {isSavedToEnv ? 'Đã Lưu!' : 'Lưu .env'}
             </button>
           </div>
-        </div>
-        <textarea
-          rows={2}
-          value={apiKeys}
-          onChange={(e) => setSettings({ apiKeys: e.target.value })}
-          placeholder="Nhập API Key..."
-          className="w-full glass-input rounded-xl p-2 text-[10px] font-mono"
-        />
 
-        {keyTestResult && (
-          <div className={`mt-1 text-[10px] p-1.5 rounded-lg flex items-center gap-1.5 ${keyTestResult.success
-            ? 'bg-emerald-950/40 border border-emerald-500/30 text-emerald-400'
-            : 'bg-rose-950/40 border border-rose-500/30 text-rose-400'
-            }`}>
-            {keyTestResult.success ? <CheckCircle className="w-3 h-3 flex-shrink-0" /> : <XCircle className="w-3 h-3 flex-shrink-0" />}
-            <span className="truncate">{keyTestResult.message}</span>
+          <div className="text-[10px] text-slate-300 leading-relaxed bg-slate-950/60 p-2 rounded-xl border border-purple-500/20">
+            🤖 Dịch tự động qua trình duyệt Microsoft Edge trên <strong className="text-purple-300">grok.com</strong> (Miễn phí, không lo giới hạn token). Nhấp nút bên dưới để tự động kết nối / khởi động server:
           </div>
-        )}
-      </div>
+
+          {/* Action buttons */}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={handleConnectGrok}
+              disabled={isConnectingGrok}
+              className="flex-1 text-[11px] font-bold py-2 px-3 rounded-xl bg-gradient-to-r from-purple-600 via-indigo-600 to-purple-700 hover:from-purple-500 hover:to-indigo-500 text-white shadow-md shadow-purple-500/25 flex items-center justify-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer active:scale-98 border border-purple-400/30"
+            >
+              <Zap className={`w-3.5 h-3.5 text-yellow-300 ${isConnectingGrok ? 'animate-spin' : ''}`} />
+              {isConnectingGrok ? 'Đang kết nối Server...' : '⚡ Kết Nối / Khởi Động Grok'}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleReloginGrok}
+              disabled={isConnectingGrok}
+              title="Xóa cookies cũ để đăng nhập lại tài khoản Grok"
+              className="text-[10px] font-semibold py-2 px-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-300 border border-slate-700 flex items-center gap-1 transition-all disabled:opacity-50 cursor-pointer"
+            >
+              <RefreshCw className="w-3 h-3" />
+              Đăng nhập lại
+            </button>
+          </div>
+
+          {/* Status feedback */}
+          {grokStatus && (
+            <div className={`text-[10px] p-2 rounded-xl flex items-start gap-1.5 leading-relaxed ${grokStatus.running
+                ? 'bg-emerald-950/60 border border-emerald-500/40 text-emerald-300'
+                : 'bg-amber-950/60 border border-amber-500/40 text-amber-300'
+              }`}>
+              {grokStatus.running ? (
+                <CheckCircle className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0 mt-0.5" />
+              ) : (
+                <XCircle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0 mt-0.5" />
+              )}
+              <span className="font-medium">{grokStatus.message}</span>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-[10px] text-cyber-muted flex items-center gap-1">
+              <Key className="w-3 h-3 text-cyber-accent" /> Danh Sách API Key (Xuống dòng cho nhiều key)
+            </label>
+            <div className="flex gap-1.5 flex-wrap justify-end">
+              <button
+                onClick={handleTestKey}
+                disabled={isTestingKey || !apiKeys.trim()}
+                className="text-[9px] font-bold px-2 py-0.5 rounded bg-cyber-accent/10 border border-cyber-accent/30 text-cyber-accent hover:bg-cyber-accent/20 transition-all disabled:opacity-40"
+              >
+                {isTestingKey ? 'Đang test...' : 'Test Key'}
+              </button>
+
+              <button
+                onClick={async () => {
+                  await saveSettingsToEnv()
+                  setIsSavedToEnv(true)
+                  setTimeout(() => setIsSavedToEnv(false), 3000)
+                }}
+                className="text-[9px] font-bold px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20 transition-all flex items-center gap-1"
+              >
+                <Save className="w-2.5 h-2.5" /> {isSavedToEnv ? 'Đã Lưu!' : 'Lưu .env'}
+              </button>
+            </div>
+          </div>
+          <textarea
+            rows={2}
+            value={apiKeys}
+            onChange={(e) => setSettings({ apiKeys: e.target.value })}
+            placeholder="Nhập API Key..."
+            className="w-full glass-input rounded-xl p-2 text-[10px] font-mono"
+          />
+
+          {keyTestResult && (
+            <div className={`mt-1 text-[10px] p-1.5 rounded-lg flex items-center gap-1.5 ${keyTestResult.success
+              ? 'bg-emerald-950/40 border border-emerald-500/30 text-emerald-400'
+              : 'bg-rose-950/40 border border-rose-500/30 text-rose-400'
+              }`}>
+              {keyTestResult.success ? <CheckCircle className="w-3 h-3 flex-shrink-0" /> : <XCircle className="w-3 h-3 flex-shrink-0" />}
+              <span className="truncate">{keyTestResult.message}</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Batch & Delay Config */}
       <div className="grid grid-cols-2 gap-2">

@@ -304,7 +304,7 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
 
   testApiKey: async () => {
     const { provider, model, apiKeys } = get()
-    if (!apiKeys.trim()) {
+    if (!apiKeys.trim() && provider !== 'grok_local') {
       return { success: false, message: 'Vui lòng nhập API Key trước.' }
     }
     try {

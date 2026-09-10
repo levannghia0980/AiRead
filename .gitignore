@@ -43,3 +43,6 @@ app/models/piper_voices/*.onnx
 Thumbs.db
 *.log
 logs/
+tools/grok_server/user_data/
+tools/grok_server/data/
+tools/grok_server/logs/

@@ -9,7 +9,7 @@ from app.core.config import get_active_setting
 from app.models.schema import Novel, Chapter, ChapterVersion, NovelEntity
 from app.services.storage.file_storage import sanitize_filename
 from app.services.translation.rawt.profiles import get_context_profile_prompt
-from app.core.llm_client import post_gemini_with_retry, post_openrouter_with_retry
+from app.core.llm_client import post_gemini_with_retry, post_openrouter_with_retry, post_grok_local_with_retry
 from app.services.preprocessing.dichhan.raw_text_cleaner import sanitize_chinese_raw_text
 
 async def translate_chapter_llm(chapter_id: int) -> Dict[str, Any]:
@@ -295,8 +295,9 @@ CẤM gộp 2 chương, CẤM gõ nhầm số thẻ, CẤM bỏ quên bất kỳ
     unblock_final_reminder = " BẮT BUỘC GIỮ NGUYÊN TẤT CẢ CÁC MÃ PLACEHOLDER CÓ SẴN (như §BDY_..., §ACT_...) XUẤT HIỆN TRONG VĂN BẢN! TUYỆT ĐỐI CẤM TỰ BỊA THÊM MÃ MỚI NHƯ §PREFIX_...§ HOẶC BỌC TÊN RIÊNG VÀO THẺ!" if (enable_unblock and mapping_table) else ""
 
     full_system_instruction = system_prompt + enforcer_prompt
-    is_openrouter = (provider == "openrouter") or ("/" in model) or ("qwen" in model.lower()) or ("openrouter" in model.lower())
-    print(f"[LLM-TRANSLATOR DEBUG] is_openrouter={is_openrouter}")
+    is_grok_local = (provider in ["grok_local", "grok", "grok_web"]) or ("grok-web" in model.lower()) or (model == "grok-web-auto")
+    is_openrouter = not is_grok_local and ((provider == "openrouter") or ("/" in model) or ("qwen" in model.lower()) or ("openrouter" in model.lower()))
+    print(f"[LLM-TRANSLATOR DEBUG] is_grok_local={is_grok_local} | is_openrouter={is_openrouter}")
 
     # === LƯU ĐẦU VÀO CHUẨN BỊ VÀO Output/02_ChuanBi_DauVao ===
     try:
@@ -382,7 +383,29 @@ CẤM gộp 2 chương, CẤM gõ nhầm số thẻ, CẤM bỏ quên bất kỳ
 
         )
 
-        if is_openrouter:
+        if is_grok_local:
+            grok_url = os.environ.get("AIREAD_GROK_URL") or "http://127.0.0.1:8020/translate-text"
+            grok_msg = f"🚀 [GROK WEB AUTOMATION] Đang gửi yêu cầu dịch sang Grok Server cổng 8020 (Model: {model})..."
+            print(grok_msg)
+            try:
+                from app.api.translation_router import add_system_log
+                add_system_log(grok_msg, "pre")
+            except Exception:
+                pass
+
+            payload = {
+                "text": user_task_prompt,
+                "system_instruction": full_system_instruction,
+                "timeout": 300.0
+            }
+            async with httpx.AsyncClient(timeout=360.0) as client:
+                res_data = await post_grok_local_with_retry(client, grok_url, payload, timeout=300.0)
+            
+            trans_text = res_data.get("translated_text", "").strip()
+            if not trans_text:
+                raise Exception("Grok Local Server không trả về nội dung dịch (kết quả rỗng).")
+            translated_parts.append(trans_text)
+        elif is_openrouter:
             url = "https://openrouter.ai/api/v1/chat/completions"
             headers = {
                 "Authorization": f"Bearer {api_key}",

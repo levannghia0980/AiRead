@@ -183,6 +183,63 @@ async def post_openrouter_with_retry(
     return resp
 
 
+async def post_grok_local_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    payload: Dict[str, Any],
+    max_retries: int = 3,
+    timeout: float = 300.0
+) -> Dict[str, Any]:
+    """
+    Gửi request tới Grok Web Automation Server (cổng 8020) với auto-retry và xử lý thân thiện.
+    Trả về dict kết quả hoặc ném ngoại lệ rõ ràng nếu server chưa bật.
+    """
+    def _safe_add_log(msg: str, level: str = "info"):
+        try:
+            from app.api.translation_router import add_system_log
+            add_system_log(msg, level)
+        except Exception:
+            pass
+
+    last_err = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = await client.post(url, json=payload, timeout=timeout)
+        except httpx.ConnectError as e:
+            err_msg = f"❌ [Grok Local 8020] Không thể kết nối tới Grok Web Server tại {url}. Vui lòng mở file 'Run_Grok_Server.bat' hoặc chạy 'python tools/grok_server/server.py' để khởi động server Grok trước!"
+            print(err_msg)
+            _safe_add_log(err_msg, "error")
+            raise Exception(err_msg) from e
+        except Exception as e:
+            last_err = e
+            wait_s = min(3.0 * attempt, 10.0)
+            log_net = f"⚠️ [Grok Local MẠNG] Gặp lỗi kết nối ({e}). Đang chờ {wait_s:.0f}s thử lại ({attempt}/{max_retries})..."
+            print(log_net)
+            _safe_add_log(log_net, "warning")
+            if attempt < max_retries:
+                await asyncio.sleep(wait_s)
+                continue
+            raise Exception(f"Lỗi kết nối tới Grok Local sau {max_retries} lần thử: {e}") from e
+
+        if resp.status_code == 200:
+            try:
+                data = resp.json()
+                return data
+            except Exception as e:
+                raise Exception(f"Grok Local Server trả về định dạng JSON không hợp lệ: {resp.text}") from e
+        else:
+            err_text = resp.text[:250]
+            log_err = f"⚠️ [Grok Local HTTP {resp.status_code}] {err_text} (Lần {attempt}/{max_retries})"
+            print(log_err)
+            _safe_add_log(log_err, "warning")
+            if attempt < max_retries:
+                await asyncio.sleep(4.0)
+                continue
+            raise Exception(f"Grok Local Server trả về lỗi HTTP {resp.status_code}: {err_text}")
+
+    raise Exception(f"Grok Local request thất bại: {last_err}")
+
+
 def safe_json_loads(text: str) -> Any:
     """
     Phân tích JSON an toàn và thông minh từ phản hồi của LLM (Gemini, ChatGPT...):

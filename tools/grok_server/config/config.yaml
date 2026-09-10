@@ -1,0 +1,22 @@
+engine:
+  provider: "grok"
+  base_url: "https://grok.com"
+  timeout: 120
+  recovery_max_retries: 4
+
+browser:
+  user_data_dir: "user_data/edge_profile"
+  headless: false
+  slow_mo: 150
+  viewport:
+    width: 1280
+    height: 900
+
+database:
+  db_path: "data/grok_engine.db"
+  cache_ttl: 86400
+
+logger:
+  log_dir: "logs"
+  rotation: "10 MB"
+  retention: "7 days"

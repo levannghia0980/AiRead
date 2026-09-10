@@ -1,0 +1,50 @@
+grok:
+  textbox:
+    - "textarea[placeholder*='What do you want to know']"
+    - "textarea[placeholder*='Ask']"
+    - "textarea[placeholder*='Message']"
+    - "textarea[placeholder*='Grok']"
+    - "div[contenteditable='true']"
+    - "[role='textbox']"
+    - "textarea"
+    - "//textarea"
+  send_button:
+    - "button[aria-label*='Submit']"
+    - "button[aria-label*='Send']"
+    - "button[type='submit']"
+    - "button[aria-label*='Grok']"
+  stop_button:
+    - "button[aria-label*='Stop']"
+    - "button:has-text('Stop')"
+    - "button[aria-label*='Cancel']"
+  response_container:
+    - "div.markdown"
+    - "div.prose"
+    - "div[data-message-author-role='assistant']"
+    - "div.message-bubble"
+  new_chat_button:
+    - "a[aria-label*='New chat']"
+    - "button[aria-label*='New chat']"
+    - "button:has-text('New Chat')"
+    - "a[href='/']"
+  login_indicator:
+    - "a[href*='login']"
+    - "button:has-text('Log in')"
+    - "button:has-text('Sign in')"
+
+chatgpt:
+  textbox:
+    - "#prompt-textarea"
+    - "textarea[aria-label*='Send a message']"
+    - "textarea"
+  send_button:
+    - "button[data-testid='send-button']"
+  stop_button:
+    - "button[aria-label='Stop streaming']"
+  response_container:
+    - "div[data-message-author-role='assistant']"
+    - "div.agent-turn"
+  new_chat_button:
+    - "a[href='/']"
+  login_indicator:
+    - "button[data-testid='login-button']"

@@ -182,7 +182,7 @@ async def delete_setting(key: str = Path(...)):
 class TestConnectionPayload(BaseModel):
     provider: str
     model: str
-    api_key: str
+    api_key: Optional[str] = ""
 
     @field_validator("model")
     @classmethod
@@ -194,13 +194,33 @@ class TestConnectionPayload(BaseModel):
 @router.post("/test-connection")
 async def test_api_connection(payload: TestConnectionPayload):
     """
-    Thử nghiệm kết nối đến nhà cung cấp LLM (Gemini hoặc OpenRouter)
-    để kiểm tra xem API Key và Model lựa chọn có hoạt động tốt hay không.
+    Thử nghiệm kết nối đến nhà cung cấp LLM (Gemini, OpenRouter hoặc Grok Web Local)
+    để kiểm tra xem kết nối và cấu hình có hoạt động tốt hay không.
     """
     import httpx
-    provider = payload.provider.lower()
+    provider = payload.provider.lower().strip()
     model = payload.model
-    api_key = payload.api_key.strip()
+    api_key = (payload.api_key or "").strip()
+
+    if provider in ["grok_local", "grok", "grok_web"]:
+        health_url = "http://127.0.0.1:8020/health"
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            try:
+                resp = await client.get(health_url)
+                if resp.status_code == 200:
+                    return {
+                        "status": "success",
+                        "message": "✅ Kết nối Grok Web Automation Server (Cổng 8020) thành công! Sẵn sàng dịch qua Edge."
+                    }
+                return {
+                    "status": "failed",
+                    "message": f"Grok Server phản hồi HTTP {resp.status_code}: {resp.text}"
+                }
+            except Exception:
+                return {
+                    "status": "failed",
+                    "message": "❌ Chưa kết nối được Grok Server cổng 8020! Hãy nhấp mở file 'Run_Grok_Server.bat' hoặc chạy 'python tools/grok_server/server.py' trước!"
+                }
     
     if not api_key:
         return {"status": "failed", "message": "API Key không được để trống."}
@@ -325,3 +345,89 @@ async def get_network_info():
         "direct_host_url": f"http://{hostname.lower()}:8000",
         "domain_url": "http://nghianeaudio0980.net:8000"
     }
+
+
+_GROK_SERVER_PROCESS = None
+
+@router.post("/grok/connect")
+async def connect_grok_server():
+    """Kiểm tra hoặc tự động khởi chạy Grok Web Automation Server (Cổng 8020)."""
+    global _GROK_SERVER_PROCESS
+    import sys
+    import os
+    import subprocess
+    import asyncio
+    import httpx
+    from pathlib import Path
+
+    health_url = "http://127.0.0.1:8020/health"
+
+    # 1. Kiểm tra xem server đã chạy chưa
+    async with httpx.AsyncClient(timeout=2.0) as client:
+        try:
+            resp = await client.get(health_url)
+            if resp.status_code == 200:
+                return {
+                    "status": "success",
+                    "message": "🟢 Grok Server đang hoạt động tốt tại cổng 8020! Sẵn sàng dịch.",
+                    "is_running": True
+                }
+        except Exception:
+            pass
+
+    # 2. Nếu chưa chạy, tự động khởi động process tools/grok_server/server.py
+    workspace_dir = Path(__file__).resolve().parent.parent.parent
+    server_script = workspace_dir / "tools" / "grok_server" / "server.py"
+
+    if not server_script.exists():
+        raise HTTPException(status_code=404, detail=f"Không tìm thấy file server tại {server_script}")
+
+    py_exec = sys.executable
+
+    try:
+        flags = subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
+        _GROK_SERVER_PROCESS = subprocess.Popen(
+            [py_exec, str(server_script)],
+            cwd=str(workspace_dir),
+            creationflags=flags
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Không thể khởi động Grok Server: {e}")
+
+    # 3. Chờ tối đa 8 giây để server khởi động và lắng nghe port 8020
+    for _ in range(16):
+        await asyncio.sleep(0.5)
+        async with httpx.AsyncClient(timeout=1.5) as client:
+            try:
+                resp = await client.get(health_url)
+                if resp.status_code == 200:
+                    return {
+                        "status": "success",
+                        "message": "🟢 Đã kết nối Grok Server thành công! Cửa sổ Edge đã mở để phục vụ dịch.",
+                        "is_running": True
+                    }
+            except Exception:
+                pass
+
+    return {
+        "status": "warning",
+        "message": "⚠️ Đã gửi lệnh khởi chạy Grok Server. Vui lòng kiểm tra cửa sổ Edge đang mở.",
+        "is_running": False
+    }
+
+
+@router.post("/grok/relogin")
+async def relogin_grok_server():
+    """Xóa cookies cũ để đăng nhập lại tài khoản Grok mới trên Edge."""
+    import httpx
+    relogin_url = "http://127.0.0.1:8020/relogin"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.post(relogin_url)
+            data = resp.json()
+            return data
+        except httpx.ConnectError:
+            raise HTTPException(status_code=400, detail="Grok Server cổng 8020 chưa được bật. Vui lòng bấm Kết Nối trước!")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
