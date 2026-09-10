@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+import os
 from pathlib import Path
 from typing import Optional
 from loguru import logger
@@ -212,16 +213,18 @@ class GrokTool:
             logger.warning("[GrokTool] Không thể mở trang Grok để đăng nhập.")
             return False
 
-        print("\n⚠️ Phiên Grok chưa đăng nhập hoặc cookie đã hết hạn.")
-        print("👉 Vui lòng đăng nhập Grok trong trình duyệt Edge đang mở.")
-        print("👉 Sau khi đăng nhập xong, quay lại terminal và nhấn ENTER.")
-        input("Nhấn ENTER để tiếp tục: ")
+        logger.info("[GrokTool] Đang mở trình duyệt Edge tới grok.com để bạn đăng nhập...")
+        # Polling tối đa 90 giây để người dùng đăng nhập trên Edge mà không treo backend
+        for _ in range(45):
+            await asyncio.sleep(2)
+            valid = await self._has_valid_session()
+            if valid and self.page_controller:
+                await self._save_cookies(self.page_controller.page.context)
+                logger.info("[GrokTool] ✅ Đăng nhập Grok thành công! Đã tự động lưu cookies.")
+                return True
 
-        await self.page_controller.open_chat()
-        valid = await self._has_valid_session()
-        if valid and self.page_controller:
-            await self._save_cookies(self.page_controller.page.context)
-        return valid
+        logger.warning("[GrokTool] Chưa phát hiện đăng nhập Grok trên Edge sau 90 giây.")
+        return False
 
     async def _ensure_authenticated(self) -> bool:
         if self.page_controller is None or self.adapter is None:

@@ -68,6 +68,34 @@ async def health_check():
     return {"status": "ok", "service": "Grok API Server", "port": 8020}
 
 
+@app.post("/connect")
+@app.get("/connect")
+async def connect_browser():
+    global grok_tool
+    if grok_tool is None:
+        grok_tool = GrokTool()
+    try:
+        if grok_tool.page_controller is None or grok_tool.adapter is None:
+            await grok_tool.start()
+        await grok_tool.adapter.connect()
+        has_session = await grok_tool._has_valid_session()
+        if has_session:
+            return {
+                "status": "success",
+                "message": "🟢 Đã kết nối Grok Web thành công! Trình duyệt Edge đã sẵn sàng dịch.",
+                "has_session": True
+            }
+        else:
+            return {
+                "status": "warning",
+                "message": "⚠️ Trình duyệt Edge đã mở trang grok.com! Vui lòng đăng nhập trên cửa sổ Edge để bắt đầu dịch.",
+                "has_session": False
+            }
+    except Exception as e:
+        return {"status": "error", "message": f"Lỗi khởi động Edge: {e}", "has_session": False}
+
+
+
 @app.post("/relogin")
 async def relogin():
     global grok_tool

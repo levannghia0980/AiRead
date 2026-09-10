@@ -361,19 +361,39 @@ async def connect_grok_server():
     from pathlib import Path
 
     health_url = "http://127.0.0.1:8020/health"
+    connect_url = "http://127.0.0.1:8020/connect"
+
+    async def _open_edge_browser():
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            try:
+                c_resp = await client.post(connect_url)
+                if c_resp.status_code == 200:
+                    c_data = c_resp.json()
+                    return {
+                        "status": c_data.get("status", "success"),
+                        "message": c_data.get("message", "🟢 Grok Server đang hoạt động tốt tại cổng 8020!"),
+                        "is_running": True
+                    }
+            except Exception:
+                pass
+        return {
+            "status": "success",
+            "message": "🟢 Grok Server đang hoạt động tại cổng 8020! Sẵn sàng dịch.",
+            "is_running": True
+        }
 
     # 1. Kiểm tra xem server đã chạy chưa
+    server_already_running = False
     async with httpx.AsyncClient(timeout=2.0) as client:
         try:
             resp = await client.get(health_url)
             if resp.status_code == 200:
-                return {
-                    "status": "success",
-                    "message": "🟢 Grok Server đang hoạt động tốt tại cổng 8020! Sẵn sàng dịch.",
-                    "is_running": True
-                }
+                server_already_running = True
         except Exception:
             pass
+
+    if server_already_running:
+        return await _open_edge_browser()
 
     # 2. Nếu chưa chạy, tự động khởi động process tools/grok_server/server.py
     workspace_dir = Path(__file__).resolve().parent.parent.parent
@@ -382,7 +402,11 @@ async def connect_grok_server():
     if not server_script.exists():
         raise HTTPException(status_code=404, detail=f"Không tìm thấy file server tại {server_script}")
 
-    py_exec = sys.executable
+    venv_py = workspace_dir / "venv" / "Scripts" / "python.exe"
+    if venv_py.exists():
+        py_exec = str(venv_py)
+    else:
+        py_exec = sys.executable
 
     try:
         flags = subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
@@ -394,18 +418,14 @@ async def connect_grok_server():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Không thể khởi động Grok Server: {e}")
 
-    # 3. Chờ tối đa 8 giây để server khởi động và lắng nghe port 8020
-    for _ in range(16):
+    # 3. Chờ tối đa 10 giây để server khởi động và lắng nghe port 8020
+    for _ in range(20):
         await asyncio.sleep(0.5)
         async with httpx.AsyncClient(timeout=1.5) as client:
             try:
                 resp = await client.get(health_url)
                 if resp.status_code == 200:
-                    return {
-                        "status": "success",
-                        "message": "🟢 Đã kết nối Grok Server thành công! Cửa sổ Edge đã mở để phục vụ dịch.",
-                        "is_running": True
-                    }
+                    return await _open_edge_browser()
             except Exception:
                 pass
 
