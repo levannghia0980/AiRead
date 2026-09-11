@@ -10,10 +10,17 @@ TARGETS = [
 
 ITEMS = [
     r"app\api\settings_router.py",
+    r"app\api\novel_router.py",
     r"app\services\translation\rawt\llm_translator.py",
+    r"app\services\translation\rawt\profiles.py",
+    r"app\services\translation\pipeline.py",
+    r"app\services\storage\metadata_cache.py",
+    r"app\services\preprocessing\dichhan\raw_text_cleaner.py",
+    r"app\services\preprocessing\dichhan\evidence_collector.py",
     r"app\services\preprocessing\dichhan\llm_extractor.py",
     r"app\services\preprocessing\crawler\plugins\alicesw.py",
     r"app\services\postprocessing\translation_auditor.py",
+    r"app\services\postprocessing\post_processor.py",
     r"app\core\llm_client.py",
     r"tools\grok_server",
     r"Run_Grok_Server.bat",

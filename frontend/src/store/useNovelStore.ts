@@ -112,6 +112,7 @@ interface NovelStore {
   enableLlmExtract: boolean
   enableNamesDict: boolean
   enableGgCorrections: boolean
+  enableAdvancedTranslation: boolean
   forceRetranslate: boolean
 
   setSettings: (settings: {
@@ -129,6 +130,7 @@ interface NovelStore {
     enableLlmExtract?: boolean;
     enableNamesDict?: boolean;
     enableGgCorrections?: boolean;
+    enableAdvancedTranslation?: boolean;
     forceRetranslate?: boolean;
   }) => void
   saveSettingsToEnv: (settings?: { provider?: string; model?: string; apiKeys?: string; customPrompt?: string; delay?: number; batchSize?: number; translationStyle?: string }) => Promise<void>
@@ -167,15 +169,12 @@ interface NovelStore {
   setProgress: (progress: ProgressData) => void
   setPackagedResult: (res: PackagedResult | null) => void
 }
-// Pre-configure optimized defaults for OpenRouter DeepSeek V3 and API key
-if (!localStorage.getItem('airead_provider') || localStorage.getItem('airead_provider')?.trim() === '' || localStorage.getItem('airead_provider') === 'gemini') {
-  localStorage.setItem('airead_provider', 'openrouter');
+// Pre-configure optimized defaults (Gemini as default)
+if (!localStorage.getItem('airead_provider') || localStorage.getItem('airead_provider')?.trim() === '' || localStorage.getItem('airead_provider') === 'openrouter') {
+  localStorage.setItem('airead_provider', 'gemini');
 }
-if (!localStorage.getItem('airead_api_keys') || localStorage.getItem('airead_api_keys')?.trim() === '' || localStorage.getItem('airead_api_keys')?.startsWith('AQ.')) {
-  localStorage.setItem('airead_api_keys', import.meta.env.VITE_OPENROUTER_API_KEY || '');
-}
-if (!localStorage.getItem('airead_model') || localStorage.getItem('airead_model')?.trim() === '' || localStorage.getItem('airead_model') === 'gemini-2.5-flash' || localStorage.getItem('airead_model') === 'deepseek/deepseek-chat' || localStorage.getItem('airead_model') === 'deepseek/deepseek-chat:free') {
-  localStorage.setItem('airead_model', 'openrouter/free');
+if (!localStorage.getItem('airead_model') || localStorage.getItem('airead_model')?.trim() === '' || localStorage.getItem('airead_model')?.includes('openrouter') || localStorage.getItem('airead_model')?.includes('deepseek')) {
+  localStorage.setItem('airead_model', 'gemini-3.5-flash-lite');
 }
 if (!localStorage.getItem('airead_batch_size')) {
   localStorage.setItem('airead_batch_size', '3');
@@ -194,9 +193,9 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
   packagedResult: null,
 
   // Load settings from localStorage or defaults
-  provider: localStorage.getItem('airead_provider') || 'openrouter',
-  model: localStorage.getItem('airead_model') || 'openrouter/free',
-  apiKeys: localStorage.getItem('airead_api_keys') || import.meta.env.VITE_OPENROUTER_API_KEY || '',
+  provider: localStorage.getItem('airead_provider') || 'gemini',
+  model: localStorage.getItem('airead_model') || 'gemini-3.5-flash-lite',
+  apiKeys: localStorage.getItem('airead_api_keys') || '',
   customPrompt: localStorage.getItem('airead_custom_prompt') || '',
   delay: Math.max(0, parseFloat(localStorage.getItem('airead_delay') || '0.5')),
   batchSize: Math.max(parseInt(localStorage.getItem('airead_batch_size') || '3'), 1),
@@ -207,7 +206,8 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
   enableErotic: localStorage.getItem('airead_enable_erotic') === 'true',
   enableLlmExtract: false,
   enableNamesDict: true,
-  enableGgCorrections: false,
+  enableGgCorrections: localStorage.getItem('airead_enable_gg_corrections') === 'true',
+  enableAdvancedTranslation: localStorage.getItem('airead_enable_advanced_translation') === 'true',
   forceRetranslate: false,
 
   setSettings: (settings) => {
@@ -592,7 +592,8 @@ export const useNovelStore = create<NovelStore>((set, get) => ({
         enable_erotic: Boolean(get().enableErotic),
         enable_llm_extract: Boolean(get().enableLlmExtract),
         enable_names_dict: get().enableNamesDict !== false,
-        enable_gg_corrections: Boolean(get().enableGgCorrections),
+        enable_gg_corrections: Boolean(get().enableGgCorrections || get().enableAdvancedTranslation),
+        enable_advanced_translation: Boolean(get().enableAdvancedTranslation || get().enableGgCorrections),
         force_retranslate: get().forceRetranslate || false
       })
     })

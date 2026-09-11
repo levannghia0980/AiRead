@@ -46,6 +46,38 @@ REALM_NAMES: Dict[str, str] = {
     "仙帝": "Tiên Đế",
     "仙尊": "Tiên Tôn",
     "仙君": "Tiên Quân",
+    "辟谷": "Tích Cốc",
+    "胎息": "Thai Tức",
+    "旋照": "Tuyền Chiếu",
+    "结晶": "Kết Tinh",
+    "具灵": "Cụ Linh",
+    "元神": "Nguyên Thần",
+    "假丹": "Giả Đan",
+    "假婴": "Giả Anh",
+    "凝神": "Ngưng Thần",
+    "归一": "Quy Nhất",
+    "法相": "Pháp Tướng",
+    "天人": "Thiên Nhân",
+    "生死": "Sinh Tử",
+    "涅槃": "Niết Bàn",
+    "轮回": "Luân Hồi",
+    "斩道": "Trảm Đạo",
+    "准帝": "Chuẩn Đế",
+    "大帝": "Đại Đế",
+    "古神": "Cổ Thần",
+    "界主": "Giới Chủ",
+    "不朽": "Bất Hủ",
+    "永恒": "Vĩnh Hằng",
+    "造化": "Tạo Hóa",
+    "洞天": "Động Thiên",
+    "纯阳": "Thuần Dương",
+    "阴阳": "Âm Dương",
+    "三花聚顶": "Tam Hoa Tụ Đỉnh",
+    "五气朝元": "Ngũ Khí Triều Nguyên",
+    "脱胎": "Thoát Thai",
+    "换骨": "Hoán Cốt",
+    "洗髓": "Tẩy Tủy",
+    "易筋": "Dịch Cân",
 
     # --- Hệ thống linh sư / linh khí ---
     "炼灵": "Luyện Linh",
@@ -196,7 +228,7 @@ NUM_HANVIET: Dict[str, str] = {
 }
 
 # ============================================================
-# 3. BẢNG HẬU TỐ CẢNH GIỚI & PHÂN KỲ
+# 3. BẢNG HẬU TỐ CẢNH GIỚI & PHÂN KỲ / THỜI KỲ
 # ============================================================
 
 # Hậu tố đơn (1 chữ)
@@ -215,7 +247,7 @@ REALM_SUFFIXES: Dict[str, str] = {
     "天": "thiên",
 }
 
-# Hậu tố phân kỳ (2+ chữ)
+# Hậu tố phân kỳ, thời kỳ & trạng thái tu vi (2+ chữ)
 REALM_PHASES: Dict[str, str] = {
     "初期": "sơ kỳ",
     "中期": "trung kỳ",
@@ -225,7 +257,10 @@ REALM_PHASES: Dict[str, str] = {
     "前期": "tiền kỳ",
     "巅峰": "đỉnh phong",
     "顶峰": "đỉnh phong",
+    "巅峰期": "đỉnh phong kỳ",
+    "顶峰期": "đỉnh phong kỳ",
     "圆满": "viên mãn",
+    "圆满期": "viên mãn kỳ",
     "大圆满": "đại viên mãn",
     "大成": "đại thành",
     "小成": "tiểu thành",
@@ -233,6 +268,71 @@ REALM_PHASES: Dict[str, str] = {
     "初": "sơ",
     "中": "trung",
     "末": "mạt",
+    # Các thời kỳ, giai đoạn, trạng thái sinh vật & tu vi
+    "时期": "thời kỳ",
+    "時期": "thời kỳ",   # phồn thể
+    "期间": "thời kỳ",
+    "阶段": "giai đoạn",
+    "瓶颈期": "bình cảnh kỳ",
+    "瓶颈": "bình cảnh",
+    "幼年期": "ấu niên kỳ",
+    "成长期": "trưởng thành kỳ",
+    "成熟期": "thành thục kỳ",
+    "全盛期": "toàn thịnh kỳ",
+    "衰弱期": "suy nhược kỳ",
+    "衰退期": "suy thoái kỳ",
+    "虚弱期": "hư nhược kỳ",
+    "爆发期": "bộc phát kỳ",
+    "过度期": "quá độ kỳ",
+    "过渡期": "quá độ kỳ",
+    "蜕变期": "thoái biến kỳ",
+    "潜伏期": "tiềm phục kỳ",
+    "休眠期": "hưu miên kỳ",
+    "发情期": "phát tình kỳ",
+    "觉醒期": "thức tỉnh kỳ",
+    "变异期": "biến dị kỳ",
+    "假死期": "giả tử kỳ",
+    "上升期": "thời kỳ đi lên",
+    "化形期": "hóa hình kỳ",
+    "飞升期": "phi thăng kỳ",
+    "渡劫期": "độ kiếp kỳ",
+    "初阶": "sơ giai",
+    "中阶": "trung giai",
+    "高阶": "cao giai",
+    "顶阶": "đỉnh giai",
+    "初级": "sơ cấp",
+    "中级": "trung cấp",
+    "高级": "cao cấp",
+    "顶级": "đỉnh cấp",
+    "极境": "cực cảnh",
+    "极限": "cực hạn",
+}
+
+# Bảng ánh xạ thời kỳ lịch sử / bối cảnh thế giới quan
+ERA_PERIOD_MAP: Dict[str, str] = {
+    "上古": "Thượng Cổ",
+    "太古": "Thái Cổ",
+    "远古": "Viễn Cổ",
+    "近古": "Cận Cổ",
+    "乱古": "Loạn Cổ",
+    "荒古": "Hoang Cổ",
+    "洪荒": "Hồng Hoang",
+    "末法": "Mạt Pháp",
+    "神魔": "Thần Ma",
+    "修仙": "Tu Tiên",
+    "修真": "Tu Chân",
+    "灵气复苏": "Linh Khí Khôi Phục",
+    "大灾变": "Đại Tai Biến",
+    "末世": "Mạt Thế",
+    "黄金": "Hoàng Kim",
+    "变异": "Biến Dị",
+    "觉醒": "Thức Tỉnh",
+    "幼年": "Ấu Niên",
+    "鼎盛": "Đỉnh Thịnh",
+    "全盛": "Toàn Thịnh",
+    "衰落": "Suy Lạc",
+    "战乱": "Chiến Loạn",
+    "和平": "Hòa Bình",
 }
 
 
@@ -241,7 +341,7 @@ REALM_PHASES: Dict[str, str] = {
 # ============================================================
 
 def _build_realm_patterns():
-    """Xây dựng các regex pattern để quét cảnh giới."""
+    """Xây dựng các regex pattern để quét cảnh giới & thời kỳ."""
     # Sắp xếp realm names theo độ dài giảm dần (ưu tiên match dài nhất)
     sorted_names = sorted(REALM_NAMES.keys(), key=len, reverse=True)
     realm_group = "|".join(re.escape(n) for n in sorted_names)
@@ -258,31 +358,53 @@ def _build_realm_patterns():
     sorted_phases = sorted(REALM_PHASES.keys(), key=len, reverse=True)
     phase_group = "|".join(re.escape(p) for p in sorted_phases)
 
+    # Phân kỳ / thời kỳ độc lập (lọc các từ >= 2 ký tự, không lấy từ đơn như 初, 中, 末)
+    standalone_phases_list = [p for p in sorted_phases if len(p) >= 2 and p not in ("初", "中", "末")]
+    standalone_phase_group = "|".join(re.escape(p) for p in standalone_phases_list)
+
+    # Thời kỳ lịch sử / bối cảnh thế giới quan
+    era_group = "|".join(re.escape(e) for e in sorted(ERA_PERIOD_MAP.keys(), key=len, reverse=True))
+
     patterns = []
 
-    # Pattern 1: TÊN + SỐ + HẬU_TỐ — Ví dụ: 炼灵三境, 炼气九重, 金丹三层
+    # Pattern 0: TÊN + SỐ + HẬU_TỐ — Ví dụ: 炼灵三境, 炼气九重, 金丹三层
     patterns.append(re.compile(
         rf"(?P<name>{realm_group})(?P<num>{num_group})(?P<suffix>{suffix_group})"
     ))
 
-    # Pattern 2: TÊN + PHÂN_KỲ — Ví dụ: 筑基初期, 金丹巅峰, 元婴大圆满
+    # Pattern 1: TÊN + PHÂN_KỲ — Ví dụ: 筑基初期, 金丹巅峰, 元婴大圆满, 筑基时期
     patterns.append(re.compile(
         rf"(?P<name>{realm_group})(?P<phase>{phase_group})"
     ))
 
-    # Pattern 3: SỐ + HẬU_TỐ + TÊN (đảo) — Ví dụ: 十境炼灵, 九重炼气
+    # Pattern 2: SỐ + HẬU_TỐ + TÊN (đảo) — Ví dụ: 十境炼灵, 九重炼气
     patterns.append(re.compile(
         rf"(?P<num>{num_group})(?P<suffix>{suffix_group})(?P<name>{realm_group})"
     ))
 
-    # Pattern 4: TÊN + HẬU_TỐ (không số) — Ví dụ: 炼气期, 筑基期, 结丹期
+    # Pattern 3: TÊN + HẬU_TỐ (không số) — Ví dụ: 炼气期, 筑基期, 结丹期
     patterns.append(re.compile(
         rf"(?P<name>{realm_group})(?P<suffix>{suffix_group})"
     ))
 
-    # Pattern 5: SỐ + HẬU_TỐ (đứng độc lập) — Ví dụ: 三境 -> tam cảnh, 四境 -> tứ cảnh, 五境 -> ngũ cảnh, 一重 -> nhất trọng
+    # Pattern 4: SỐ + HẬU_TỐ (đứng độc lập) — Ví dụ: 三境 -> tam cảnh, 四境 -> tứ cảnh, 五境 -> ngũ cảnh, 一重 -> nhất trọng
     patterns.append(re.compile(
         rf"(?P<num>{num_group})(?P<suffix>境|重|层|阶|品|段|转)"
+    ))
+
+    # Pattern 5: BÁN BỘ / CHUẨN + TÊN — Ví dụ: 半步筑基, 半步金丹, 半步元婴, 准圣, 准帝
+    patterns.append(re.compile(
+        rf"(?P<half>半步|准)(?P<name>{realm_group})"
+    ))
+
+    # Pattern 6: THỜI KỲ / THỜI ĐẠI LỊCH SỬ THẾ GIỚI QUAN — Ví dụ: 上古时期, 洪荒时期, 末法时期, 黄金时期
+    patterns.append(re.compile(
+        rf"(?P<era>{era_group})(?P<period>时期|時代|时代|岁月|纪元)"
+    ))
+
+    # Pattern 7: CÁC THỜI KỲ / PHÂN KỲ ĐỨNG ĐỘC LẬP — Ví dụ: 初期, 中期, 后期, 巅峰期, 瓶颈期, 幼年期, 成熟期, 衰弱期, 化形期...
+    patterns.append(re.compile(
+        rf"(?P<standalone_phase>{standalone_phase_group})"
     ))
 
     return patterns
@@ -292,12 +414,12 @@ _REALM_PATTERNS = _build_realm_patterns()
 
 
 # ============================================================
-# 5. HÀM PHÁT HIỆN & DỊCH CẢNH GIỚI
+# 5. HÀM PHÁT HIỆN & DỊCH CẢNH GIỚI & THỜI KỲ
 # ============================================================
 
 def _translate_realm_match(match: re.Match, pattern_idx: int) -> Tuple[str, str]:
     """
-    Dịch một match cảnh giới sang Hán-Việt chuẩn.
+    Dịch một match cảnh giới / thời kỳ sang Hán-Việt chuẩn.
     Returns: (han_original, viet_translation)
     """
     han = match.group(0)
@@ -314,20 +436,36 @@ def _translate_realm_match(match: re.Match, pattern_idx: int) -> Tuple[str, str]
     phase_viet = REALM_PHASES.get(phase_han, phase_han) if phase_han else ""
 
     if pattern_idx == 0:
-        # Pattern 1: TÊN + SỐ + HẬU_TỐ → "Luyện Linh tam cảnh"
+        # Pattern 0: TÊN + SỐ + HẬU_TỐ → "Luyện Linh tam cảnh"
         viet = f"{name_viet} {num_viet} {suffix_viet}"
     elif pattern_idx == 1:
-        # Pattern 2: TÊN + PHÂN_KỲ → "Trúc Cơ sơ kỳ"
+        # Pattern 1: TÊN + PHÂN_KỲ → "Trúc Cơ sơ kỳ", "Trúc Cơ thời kỳ"
         viet = f"{name_viet} {phase_viet}"
     elif pattern_idx == 2:
-        # Pattern 3: SỐ + HẬU_TỐ + TÊN (đảo) → "thập cảnh Luyện Linh"
+        # Pattern 2: SỐ + HẬU_TỐ + TÊN (đảo) → "thập cảnh Luyện Linh"
         viet = f"{num_viet} {suffix_viet} {name_viet}"
     elif pattern_idx == 3:
-        # Pattern 4: TÊN + HẬU_TỐ → "Luyện Khí kỳ"
+        # Pattern 3: TÊN + HẬU_TỐ → "Luyện Khí kỳ"
         viet = f"{name_viet} {suffix_viet}"
     elif pattern_idx == 4:
-        # Pattern 5: SỐ + HẬU_TỐ (độc lập) → "tam cảnh", "tứ cảnh", "nhất trọng"
+        # Pattern 4: SỐ + HẬU_TỐ (độc lập) → "tam cảnh", "tứ cảnh", "nhất trọng"
         viet = f"{num_viet} {suffix_viet}"
+    elif pattern_idx == 5:
+        # Pattern 5: BÁN BỘ / CHUẨN + TÊN → "Bán bộ Trúc Cơ", "Chuẩn Thánh"
+        half_han = groups.get("half", "")
+        half_viet = "Bán bộ" if half_han == "半步" else "Chuẩn"
+        viet = f"{half_viet} {name_viet}"
+    elif pattern_idx == 6:
+        # Pattern 6: THỜI KỲ THẾ GIỚI QUAN → "thời kỳ Thượng Cổ", "kỷ nguyên Hồng Hoang"
+        era_han = groups.get("era", "")
+        period_han = groups.get("period", "")
+        era_viet = ERA_PERIOD_MAP.get(era_han, era_han)
+        period_viet = "kỷ nguyên" if period_han == "纪元" else "thời kỳ"
+        viet = f"{period_viet} {era_viet}"
+    elif pattern_idx == 7:
+        # Pattern 7: THỜI KỲ / PHÂN KỲ ĐỘC LẬP → "sơ kỳ", "hậu kỳ", "đỉnh phong kỳ", "bình cảnh kỳ"
+        phase_standalone = groups.get("standalone_phase", "")
+        viet = REALM_PHASES.get(phase_standalone, phase_standalone)
     else:
         viet = name_viet
 
@@ -336,15 +474,15 @@ def _translate_realm_match(match: re.Match, pattern_idx: int) -> Tuple[str, str]
 
 def detect_realms(raw_text: str) -> List[dict]:
     """
-    Quét bản RAW tiếng Trung, phát hiện tất cả cụm cảnh giới tu luyện và dịch Hán-Việt.
+    Quét bản RAW tiếng Trung, phát hiện tất cả cụm cảnh giới tu luyện & các thời kỳ và dịch Hán-Việt.
 
     Args:
         raw_text: Văn bản gốc tiếng Trung (1 hoặc nhiều chương).
 
     Returns:
         List[dict] — mỗi dict chứa:
-            - "han": cụm Hán gốc (ví dụ: "炼灵三境")
-            - "viet": bản dịch Hán-Việt (ví dụ: "Luyện Linh tam cảnh")
+            - "han": cụm Hán gốc (ví dụ: "炼灵三境", "筑基初期", "上古时期", "后期")
+            - "viet": bản dịch Hán-Việt (ví dụ: "Luyện Linh tam cảnh", "Trúc Cơ sơ kỳ", "thời kỳ Thượng Cổ", "hậu kỳ")
             - "entity_type": "REALM"
             - "count": số lần xuất hiện trong raw_text
     """
@@ -367,14 +505,14 @@ def detect_realms(raw_text: str) -> List[dict]:
                     "count": 1,
                 }
 
-    # Giữ lại các cảnh giới hợp lệ:
-    # - Độ dài >= 3 ký tự (炼气期, 炼灵三境, 筑基初期...)
-    # - Độ dài 2 ký tự có hậu tố cảnh giới chuẩn (三境, 四境, 一重, 九重, 二阶, 九品...)
+    # Giữ lại các cảnh giới & thời kỳ hợp lệ:
+    # - Độ dài >= 3 ký tự (炼气期, 炼灵三境, 筑基初期, 半步筑基, 上古时期...)
+    # - Độ dài 2 ký tự có hậu tố cảnh giới/thời kỳ chuẩn (初期, 中期, 后期, 末期, 前期, 时期, 三境, 四境, 一重...)
     # - Hoặc xuất hiện >= 2 lần
     results = []
     for item in found.values():
         h = item["han"]
-        if len(h) >= 3 or item["count"] >= 1 and (len(h) == 2 and h[1] in ("境", "重", "阶", "品", "段", "转", "层")):
+        if len(h) >= 3 or (len(h) == 2 and (h[1] in ("境", "重", "阶", "品", "段", "转", "层", "期", "步", "段") or h in REALM_PHASES or h in REALM_NAMES)):
             results.append(item)
         elif item["count"] >= 2:
             results.append(item)
@@ -392,3 +530,4 @@ def detect_realms_as_entities(raw_text: str) -> Dict[str, str]:
     """
     realms = detect_realms(raw_text)
     return {r["han"]: r["viet"] for r in realms}
+

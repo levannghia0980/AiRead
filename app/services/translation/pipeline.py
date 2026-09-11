@@ -8,9 +8,9 @@ from app.services.translation.rawt.llm_translator import translate_batch_llm
 from app.api.translation_router import add_system_log, broadcast_sse
 from app.core.config import OUTPUT_DIR
 
-async def _ensure_chapters_crawled(batch: List[int], require_gg: bool = False):
+async def _ensure_chapters_crawled(batch: List[int]):
     """
-    Đảm bảo 100% các chương trong lô đã có đầy đủ bản gốc RAW (và GG nếu require_gg=True).
+    Đảm bảo 100% các chương trong lô đã có đầy đủ bản gốc RAW tiếng Trung.
     Nếu thiếu chương nào, tự động cào bổ sung trước khi bước vào dịch.
     """
     import os
@@ -43,22 +43,17 @@ async def _ensure_chapters_crawled(batch: List[int], require_gg: bool = False):
                     )
                 )
 
-                if require_gg:
-                    stmt_gg = select(ChapterVersion).where(
-                        ChapterVersion.chapter_id == cid,
-                        ChapterVersion.version_type == "GG"
-                    )
-                    res_gg = await session.execute(stmt_gg)
-                    v_gg = res_gg.scalar_one_or_none()
-                    gg_ok = bool(v_gg and v_gg.file_path and os.path.exists(v_gg.file_path) and os.path.getsize(v_gg.file_path) > 50)
-                    if not (raw_ok and gg_ok):
-                        missing_items.append((cid, ch.chapter_no))
-                else:
-                    if not raw_ok:
-                        missing_items.append((cid, ch.chapter_no))
+                if not raw_ok:
+                    missing_items.append((cid, ch.chapter_no))
 
-        # Nếu đã có đủ 100% chương trong lô -> Hoàn tất Giai đoạn 0!
+        # Nếu đã có đủ 100% chương trong lô -> Hoàn tất!
         if not missing_items:
+            break
+
+        if sweep_round >= 3:
+            msg_warn = f"⚠️ [CÀO LÔ TIẾN TRÌNH] Đã thử {sweep_round-1} vòng, tiếp tục tiến trình dịch với các bản ghi sẵn có."
+            print(msg_warn)
+            add_system_log(msg_warn, "warning")
             break
 
         missing_chap_nos = [m[1] for m in missing_items]
@@ -76,7 +71,7 @@ async def _ensure_chapters_crawled(batch: List[int], require_gg: bool = False):
                 msg_c = f"🌐 [CÀO VĂN BẢN] Đang cào Chương {c_no}..."
                 print(msg_c)
                 add_system_log(msg_c, "pre")
-                await process_single_chapter_crawl(cid, skip_gg=not require_gg)
+                await process_single_chapter_crawl(cid)
             except Exception as e_crawl:
                 err_msg = f"⚠️ [CÀO TẠM LỖI] Chương {c_no}: {e_crawl}. Sẽ tự động cào lại ở vòng quét tiếp theo..."
                 print(err_msg)
@@ -195,8 +190,9 @@ async def _extract_and_save_batch_entities(novel_id: int, batch: List[int], forc
                 print(msg_llm_fail)
                 add_system_log(msg_llm_fail, "warning")
 
-        # Chỉ bổ sung các ngoại hiệu giang hồ thật sự (Epithet) nếu LLM bỏ sót, tuyệt đối KHÔNG tự động ép từ ngữ đời thường (như 大..., ...子, ...头) thành tên riêng
-        from app.services.preprocessing.dichhan.common_lists import EPITHET_SUFFIXES
+        # Chỉ bổ sung các ngoại hiệu, thần thoại, tác phẩm văn học nếu LLM bỏ sót, tuyệt đối KHÔNG tự động ép từ ngữ đời thường thành tên riêng
+        from app.services.preprocessing.dichhan.common_lists import EPITHET_SUFFIXES, CHINESE_SURNAMES
+        from app.services.preprocessing.dichhan.hanviet_data import SPECIAL_ENTITIES_MAP
         existing_names = {e.get("chinese_name", "").strip() for e in entities}
         for cand in candidates:
             orig = (cand.get("original_han") or cand.get("han") or "").strip()
@@ -204,19 +200,54 @@ async def _extract_and_save_batch_entities(novel_id: int, batch: List[int], forc
             if not orig or not sugg or orig in existing_names or orig == sugg:
                 continue
             
-            # Chỉ bổ sung khi thực sự là ngoại hiệu giang hồ võ hiệp (ví dụ: Ngọc Kỳ Lân, Trí Đa Tinh)
+            is_special = orig in SPECIAL_ENTITIES_MAP
             is_epithet = 2 <= len(orig) <= 5 and any(orig.endswith(ep) for ep in EPITHET_SUFFIXES)
             is_moniker = cand.get("ner_type") == "EPITHET" or cand.get("is_epithet")
+            is_myth_deity = 2 <= len(orig) <= 5 and any(orig.endswith(sf) for sf in ["神", "仙", "圣", "佛", "祖", "君", "尊"]) and not any(orig.endswith(b) for b in ["精神", "眼神", "留神", "心神", "走神"])
+            is_book_canon = orig in ["金瓶梅", "水浒传", "西游记", "三国演义", "红楼梦", "道德经"] or cand.get("entity_type") in ["BOOK", "BOOK_CANON"]
             
-            if is_epithet or is_moniker:
+            if is_special or is_epithet or is_moniker or is_myth_deity:
                 entities.append({
                     "chinese_name": orig,
                     "vietnamese_name": sugg,
-                    "entity_type": "NAME",
+                    "entity_type": "ITEM" if is_book_canon else "NAME",
                     "gender": None,
-                    "role": None
+                    "role": "[TÊN CỐ ĐỊNH] " + ("tác phẩm văn học" if is_book_canon else "ngoại hiệu / thần thoại")
                 })
                 existing_names.add(orig)
+            elif is_book_canon:
+                entities.append({
+                    "chinese_name": orig,
+                    "vietnamese_name": sugg,
+                    "entity_type": "ITEM",
+                    "gender": None,
+                    "role": "[TÊN CỐ ĐỊNH] tác phẩm văn học / kinh thư"
+                })
+                existing_names.add(orig)
+
+        # 🔴 SUB-STRING SUPPRESSION AN TOÀN: Lọc sạch từ con bị nuốt trong từ mẹ dài hơn
+        # (Ví dụ: nếu đã có 白衣秀士 thì loại bỏ ngay 衣秀士; có 云里金刚 thì loại bỏ ngay 里金刚; có 沧州小旋风 thì loại bỏ ngay 州小旋风)
+        entities_sorted = sorted(entities, key=lambda x: len(x.get("chinese_name", "").strip()), reverse=True)
+        filtered_entities = []
+        suppressed_names = set()
+        for i, e_long in enumerate(entities_sorted):
+            c_long = e_long.get("chinese_name", "").strip()
+            if c_long in suppressed_names:
+                continue
+            for e_short in entities_sorted[i + 1:]:
+                c_short = e_short.get("chinese_name", "").strip()
+                if c_short in suppressed_names:
+                    continue
+                if c_short and c_long and (c_short in c_long) and len(c_short) < len(c_long):
+                    is_standalone = (
+                        c_short in SPECIAL_ENTITIES_MAP or
+                        any(c_short.startswith(s) for s in CHINESE_SURNAMES) or
+                        any(c_short.endswith(ep) for ep in EPITHET_SUFFIXES)
+                    )
+                    if not is_standalone:
+                        suppressed_names.add(c_short)
+            filtered_entities.append(e_long)
+        entities = filtered_entities
 
         if not entities:
             print(f"ℹ️ [THỰC THỂ] Không tìm thấy thực thể mới nào cho lô Chương {chap_nos}.")
@@ -233,7 +264,14 @@ async def _extract_and_save_batch_entities(novel_id: int, batch: List[int], forc
                 vi_trans = ent.get("vietnamese_name", ent.get("rough_translation", "")).strip()
                 e_type = ent.get("entity_type", "NAME")
                 gender = ent.get("gender")
-                role = ent.get("role")
+                raw_role = (ent.get("role") or "").strip()
+                eval_val = (ent.get("evaluation") or "").strip()
+                if eval_val and raw_role:
+                    role = f"[{eval_val}] {raw_role}"
+                elif eval_val:
+                    role = f"[{eval_val}]"
+                else:
+                    role = raw_role or None
 
                 if not ch_name or not vi_trans:
                     continue
@@ -241,6 +279,8 @@ async def _extract_and_save_batch_entities(novel_id: int, batch: List[int], forc
                 if ch_name in existing_entity_map:
                     ent_obj = existing_entity_map[ch_name]
                     ent_obj.frequency_count += 1
+                    if role and not ent_obj.role:
+                        ent_obj.role = role
                     ent_id = ent_obj.id
                 else:
                     new_ent = NovelEntity(
@@ -293,7 +333,12 @@ async def _translate_batch(batch: List[int], enable_names_dict: bool = True, **k
         from app.services.postprocessing.post_processor import process_and_split_batch
         enable_unblock = kwargs.get("enable_unblock", True)
         enable_erotic = kwargs.get("enable_erotic", False)
-        res = await translate_batch_llm(batch, enable_names_dict=enable_names_dict, enable_unblock=enable_unblock, enable_erotic=enable_erotic)
+        res = await translate_batch_llm(
+            batch, 
+            enable_names_dict=enable_names_dict, 
+            enable_unblock=enable_unblock, 
+            enable_erotic=enable_erotic
+        )
         ver_type = "LLM"
             
         if "status" in res and res["status"] == "success":
@@ -502,8 +547,8 @@ async def run_translation_batch_pipeline(
                 active_current_batch = current_batch
                 chap_nos = await _get_chap_numbers(current_batch)
 
-                # Đảm bảo lô hiện tại có sẵn file bản gốc RAW
-                await _ensure_chapters_crawled(current_batch, require_gg=False)
+                # Đảm bảo lô hiện tại có sẵn file bản gốc RAW tiếng Trung
+                await _ensure_chapters_crawled(current_batch)
 
                 # BƯỚC 1: BÓC TÁCH THỰC THỂ LÔ & LƯU VÀO MÁY (chỉ bóc tách cho các chương chưa có)
                 if enable_names_dict:

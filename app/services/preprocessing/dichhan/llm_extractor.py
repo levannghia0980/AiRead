@@ -62,30 +62,52 @@ async def extract_entities_via_llm(raw_text: str) -> List[Dict[str, Any]]:
     clean_text = await _remove_sensitive_words_for_extraction(raw_text)
 
     prompt = f"""
-Nhiệm vụ: Trích xuất danh sách các danh từ riêng (tên nhân vật, địa danh, môn phái, võ công/chiêu thức, pháp bảo) từ toàn bộ văn bản tiểu thuyết tiếng Trung sau (quét đầy đủ 100% không bỏ sót).
+Nhiệm vụ: Trích xuất danh sách các danh từ riêng và từ vựng mang bản sắc thể loại (tên nhân vật, địa danh, môn phái, võ công/chiêu thức, pháp bảo, thuật ngữ nghề nghiệp / thế giới quan) từ toàn bộ văn bản tiểu thuyết tiếng Trung sau (quét đầy đủ 100% không bỏ sót).
 
 Văn bản tiếng Trung:
 \"\"\"
 {clean_text}
 \"\"\"
 
-- 'PERSON': Tên nhân vật, bao gồm cả tên thân mật, nhũ danh trẻ con (ví dụ: "莫雅依", "周佐", "苏浅浅", "刘震", "潘子" -> Phan Tử, "雷子" -> Lôi Tử, "石头" -> Thạch Đầu, "虎子" -> Hổ Tử). TUYỆT ĐỐI KHÔNG bóc tách phó từ, liên từ, từ ngữ đời thường (như '倒是', '一下子', '大不了', '好日子', '大家', '按人头', '大声', '围裙', '勺子') thành tên người!
-- 'LOCATION': Địa danh, sông, núi, thành trì (ví dụ: "青云宗" nếu là địa điểm, "天玄山", "灵法阁").
-- 'SECT_SKILL': Tông môn, bang phái, võ công, chiêu thức, bí tịch, kiếm pháp, chưởng pháp, quyền pháp, trận pháp, pháp bảo (ví dụ: "金刚伏魔圈", "降龙十八掌", "太极拳", "独孤九剑", "天玄剑诀", "紫光雷翼").
+CÁC NHÓM THỰC THỂ CẦN BÓC TÁCH:
+- 'PERSON': Tên nhân vật, bao gồm cả tên thân mật, nhũ danh trẻ con. TUYỆT ĐỐI KHÔNG bóc tách phó từ, liên từ, từ ngữ sinh hoạt thông thường thành tên người!
+- 'LOCATION': Địa danh, sông, núi, thành trì.
+- 'SECT_SKILL': Tông môn, bang phái, võ công, chiêu thức, bí tịch, kiếm pháp, chưởng pháp, quyền pháp, trận pháp, pháp bảo.
+- 'LORE_TERM': Thuật ngữ thế giới quan, biệt ngữ nghề nghiệp, cảnh giới tu luyện, các thời kỳ / phân kỳ tu luyện & trạng thái (sơ kỳ, trung kỳ, hậu kỳ, đỉnh phong, viên mãn, bình cảnh, bán bộ, hóa hình kỳ...), các thời kỳ lịch sử thế giới quan (thượng cổ, viễn cổ, mạt pháp...), từ vựng mang bản sắc đặc thù theo thể loại tác phẩm.
 - 'OTHER': Các thuật ngữ danh từ riêng đặc thù khác.
 
+TRƯỜNG 'evaluation' (ĐÁNH GIÁ CÁCH DÙNG BẮT BUỘC):
+Đánh giá cụ thể giá trị từ vựng để điều hướng mô hình dịch thuật:
+- "TÊN CỐ ĐỊNH": Dành cho tên nhân vật, địa danh, môn phái (khóa 1-1, không đổi tên giữa các chương).
+- "NÊN DÙNG BẢN SẮC": Dành cho thuật ngữ thế giới quan, biệt ngữ nghề nghiệp mang phong vị tác phẩm (đây là từ đắt giá, NÊN DÙNG trong bản dịch, cấm thuần Việt hóa làm mất chất truyện).
+- "NÊN DỊCH THUẦN VIỆT": Dành cho các từ ngữ nên linh hoạt diễn đạt thuần Việt tự nhiên, dễ hiểu theo ngữ cảnh.
+
+TRƯỜNG 'role' (VAI TRÒ / NGỮ CẢNH):
+- Ghi chú ngắn gọn vai trò hoặc ngữ cảnh sử dụng.
+
 QUY TẮC ĐỐI CHIẾU ÂM HÁN-VIỆT CHUẨN XÁC TỪNG CHỮ (BẮT BUỘC):
-- Dịch chuẩn âm Hán-Việt từng chữ vào cột 'rough_translation'.
-- Phân biệt chính xác: 佐 = 'Tá' (Chu Tá), 修 = 'Tu' (Thất Tu), 事 = 'Sự' (Linh Sự Các), 浅 = 'Thiển' (Tô Thiển Thiển), 阁 = 'Các' (Linh Pháp Các), 震 = 'Chấn' (Lưu Chấn).
-- Võ công & Trận pháp: 圈/阵 = 'Trận/Quyển' (金刚伏魔圈 = 'Kim Cương Phục Ma Trận / Kim Cương Phục Ma Quyển', CẤM: 'Khuyên'), 拳 = 'Quyền' (CẤM: 'đấm'), 掌 = 'Chưởng', 指 = 'Chỉ', 爪 = 'Trảo', 腿 = 'Cước'.
-- TUYỆT ĐỐI NGHIÊM CẤM trả về tên dính chữ Hán lai tạp (CẤM 'Tô T浅浅', CẤM 'Linh Pháp C阁', CẤM 'L岚'). Cột rough_translation phải là 100% chữ tiếng Việt có dấu.
+- Dịch chuẩn âm Hán-Việt hoặc từ dịch nghĩa văn học đắt giá vào cột 'rough_translation'.
+- Võ công & Trận pháp: 圈/阵 = 'Trận/Quyển' (CẤM: 'Khuyên'), 拳 = 'Quyền' (CẤM: 'đấm'), 掌 = 'Chưởng', 指 = 'Chỉ', 爪 = 'Trảo', 腿 = 'Cước'.
+- TUYỆT ĐỐI NGHIÊM CẤM trả về tên dính chữ Hán lai tạp. Cột rough_translation phải là 100% chữ tiếng Việt có dấu.
+
+🔴 MỆNH LỆNH TỐI CAO ĐỐI VỚI ĐIỂN CỐ, VÕ HỌC, NGOẠI HIỆU & DANH XƯNG KINH ĐIỂN:
+- CÁC GỢI Ý CỦA TỪ ĐIỂN MÁY / HanLP / DỊCH THÔ CHỈ LÀ PHIÊN ÂM MẶT CHỮ CƠ HỌC (~3000 TỪ), THƯỜNG RẤT NGU VÀ BẺ NGHĨA ĐEN (ví dụ: bẻ '摸着天' thành 'Mô Trước Thiên', '八百里' thành 'Bát Bách Lịch', '好汉' thành 'người tốt').
+- BẠN LÀ MÔ HÌNH NGÔN NGỮ ĐÃ CÓ TOÀN BỘ KHO TRI THỨC VĂN HỌC DỊCH THUẬT TRUNG - VIỆT ĐỒ SỘ:
+  * Khi gặp các nhân vật, ngoại hiệu giang hồ, tước xưng, bang phái, chiêu thức võ học, thần thông, pháp bảo, địa danh, điển tích kinh điển (trong toàn bộ kho tàng Thủy Hử, Tam Quốc Diễn Nghĩa, Tây Du Ký, Phong Thần Diễn Nghĩa, Kim Dung, Cổ Long, Ôn Thụy An, Huỳnh Dị, Tiên hiệp đại chúng...):
+  * BẮT BUỘC tự động truy xuất và sử dụng ĐÚNG 100% tên dịch thuật văn học đã đi vào đại chúng Việt Nam, TUYỆT ĐỐI CẤM bẻ chữ cơ học mặt chữ!
+  * VÍ DỤ MINH HỌA (YÊU CẦU + LỖI CẤM TRÁNH BẺ CHỮ):
+    + Ngoại hiệu / Nhân vật: 摸着天 (Đỗ Thiên) -> BẮT BUỘC: 'Mạc Già Thiên' (CẤM bẻ thô: 'Mô Trước Thiên', 'Mốt Trưởng Thiên').
+    + Địa danh / Điển cố: 八百里水泊梁山 -> BẮT BUỘC: 'Bát Bách Lý / Tám trăm dặm Thủy Bạc Lương Sơn' (CẤM: 'Bát Bách Lịch').
+    + Thần thoại / Thực thể: 巨灵神 -> BẮT BUỘC: 'Cự Linh Thần' (CẤM gõ sai: 'Cựu Linh Thần').
+    + Võ học / Chiêu thức: 降龙十八掌 -> 'Hàng Long Thập Bát Chưởng', 乾坤大挪移 -> 'Càn Khôn Đại Na Di' (CẤM bẻ nghĩa đen cơ học).
 
 Yêu cầu trả về kết quả định dạng JSON Array chứa các object có cấu trúc như ví dụ sau:
 [
-  {{"chinese_name": "莫雅依", "rough_translation": "Mạc Nhã Y", "entity_type": "PERSON"}},
-  {{"chinese_name": "周佐", "rough_translation": "Chu Tá", "entity_type": "PERSON"}},
-  {{"chinese_name": "金刚伏魔圈", "rough_translation": "Kim Cương Phục Ma Trận", "entity_type": "SECT_SKILL"}},
-  {{"chinese_name": "青云宗", "rough_translation": "Thanh Vân Tông", "entity_type": "SECT_SKILL"}}
+  {{"chinese_name": "莫雅依", "rough_translation": "Mạc Nhã Y", "entity_type": "PERSON", "evaluation": "TÊN CỐ ĐỊNH", "role": "Nhân vật nữ"}},
+  {{"chinese_name": "青云宗", "rough_translation": "Thanh Vân Tông", "entity_type": "SECT_SKILL", "evaluation": "TÊN CỐ ĐỊNH", "role": "Môn phái"}},
+  {{"chinese_name": "金刚伏魔圈", "rough_translation": "Kim Cương Phục Ma Trận", "entity_type": "SECT_SKILL", "evaluation": "NÊN DÙNG BẢN SẮC", "role": "Võ kỹ / Trận pháp đặc thù"}},
+  {{"chinese_name": "...", "rough_translation": "...", "entity_type": "LORE_TERM", "evaluation": "NÊN DÙNG BẢN SẮC", "role": "Biệt ngữ mang phong vị tác phẩm"}},
+  {{"chinese_name": "...", "rough_translation": "...", "entity_type": "LORE_TERM", "evaluation": "NÊN DỊCH THUẦN VIỆT", "role": "Linh hoạt diễn đạt thuần Việt"}}
 ]
 CHỈ trả về JSON Array, không kèm giải thích.
 """
@@ -162,7 +184,7 @@ CHỈ trả về JSON Array, không kèm giải thích.
 
 async def process_2branch_evidence_via_llm(evidence_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Gửi gói bằng chứng 2 Nhánh hợp nhất (NER + Làm sạch GG) lên LLM.
+    Gửi danh sách ứng viên thực thể lên LLM để trích xuất, chuẩn hóa tên và phân loại thực thể chi tiết.
     Luôn tự động chạy mã hóa chặn từ nhạy cảm 100% để LLM KHÔNG BAO GIỜ bị dính vi phạm Policy.
     """
     model, api_key, is_openrouter, is_grok_local = await _get_llm_config()
@@ -173,7 +195,6 @@ async def process_2branch_evidence_via_llm(evidence_data: Dict[str, Any]) -> Dic
     instruction = evidence_data.get("system_prompt_instruction", "")
     existing_entities = evidence_data.get("existing_db_entities", {})
     ner_candidates = evidence_data.get("branch_1_ner_candidates", [])
-    gg_errors = evidence_data.get("branch_2_gg_errors_to_clean", [])
 
     # Luôn BẬT CHẶN NHẠY CẢM 100% cho bóc tách thực thể bằng từ điển Unblock Pipeline
     from app.services.unblock.unblock_pipeline import mask_text_with_dictionary, unmask_text_with_dictionary
@@ -182,55 +203,56 @@ async def process_2branch_evidence_via_llm(evidence_data: Dict[str, Any]) -> Dic
     mapping_table = {}
     for item in ner_candidates:
         c_item = dict(item)
-        if "context" in c_item and c_item["context"]:
-            ctx = await _remove_sensitive_words_for_extraction(c_item["context"])
+        if "context_han" in c_item and c_item["context_han"]:
+            ctx = await _remove_sensitive_words_for_extraction(c_item["context_han"])
             m_ctx, m_map, _ = await mask_text_with_dictionary(ctx, aggressive=True)
             mapping_table.update(m_map)
-            c_item["context"] = m_ctx
+            c_item["context_han"] = m_ctx
         cleaned_ner.append(c_item)
 
-    cleaned_gg = []
-    for item in gg_errors:
-        c_item = dict(item)
-        if "chinese_context" in c_item and c_item["chinese_context"]:
-            ctx = await _remove_sensitive_words_for_extraction(c_item["chinese_context"])
-            m_ctx, m_map, _ = await mask_text_with_dictionary(ctx, aggressive=True)
-            mapping_table.update(m_map)
-            c_item["chinese_context"] = m_ctx
-        if "vietnamese_context" in c_item and c_item["vietnamese_context"]:
-            m_ctx, m_map, _ = await mask_text_with_dictionary(c_item["vietnamese_context"], aggressive=True)
-            mapping_table.update(m_map)
-            c_item["vietnamese_context"] = m_ctx
-        cleaned_gg.append(c_item)
-
     prompt = f"""
-Bạn là chuyên gia dịch thuật và chuẩn hóa tên nhân vật, chiêu thức, tên kiếm, bảo vật, địa danh trong tiểu thuyết Trung - Việt.
+Bạn là chuyên gia dịch thuật và chuẩn hóa tên nhân vật, chiêu thức, bảo vật, địa danh trong tiểu thuyết Trung - Việt.
 
 {instruction}
 
 ⚠️ NGUYÊN TẮC HÀNG ĐẦU KHI XỬ LÝ DỮ LIỆU GỢI Ý:
-- Dữ liệu gửi lên là gợi ý nghi vấn thô: BẮT BUỘC phân tích vi ngữ cảnh 【...】 để chọn lọc thông minh.
-- KHÔNG ĐƯỢC TRẢ VỀ MÁY MÓC TẤT CẢ DANH SÁCH GỬI LÊN: Nếu từ nào trong danh sách thực chất là từ thừa, từ ngữ đời thường nên dịch thuần Việt, tiếng lóng, khẩu ngữ, phó từ (như '倒是', '一下子', '大不了', '好日子', '大家', '按人头', '大声', '围裙', '勺子', '大包', '死尸') thì BỎ QUA. Chỉ giữ lại tên người thật sự như 潘子 (Phan Tử), 雷子 (Lôi Tử), 虎子 (Hổ Tử), 石头 (Thạch Đầu).
-- Tuyệt đối KHÔNG cố dựa vào các ví dụ nhỏ bên cạnh của Hán/Google Dịch nếu thấy ngô nghê/tối nghĩa.
-- BẮT BUỘC dịch thật hay, đặt tên bóng bẩy, chuẩn phong vị tiên hiệp/kiếm hiệp cho chiêu thức võ công, pháp bảo, dược liệu hoặc dịch thuần Việt dễ hiểu.
+- Dữ liệu gửi lên là danh sách ứng viên nghi vấn thô: BẮT BUỘC phân tích vi ngữ cảnh 【...】 để chọn lọc thông minh.
+- BẮT BUỘC phân loại rõ ràng thực thể vào 2 trường 'entity_type' và 'evaluation':
+  * 'entity_type': 'NAME' (nhân vật, ngoại hiệu), 'PLACE' (địa danh, căn cứ), 'SECT' (tông môn, bang hội), 'SKILL' (chiêu thức, võ công), 'ITEM' (bảo vật, binh khí), 'LORE_TERM' (thuật ngữ thế giới quan, cảnh giới), 'OTHER'.
+  * 'evaluation': 'TÊN CỐ ĐỊNH' (khóa 1-1 cho NAME, PLACE, SECT), 'NÊN DÙNG BẢN SẮC' (ưu tiên dùng trong bản dịch cho SKILL, ITEM, LORE_TERM), 'NÊN DỊCH THUẦN VIỆT' (diễn đạt thuần Việt linh hoạt).
+- Loại bỏ triệt để các phó từ, liên từ, hư từ ngữ pháp vô nghĩa (như '倒是', '一下子', '大不了', '好日子', '大家', '按人头', '大声', '出乱子', '租子', '媳妇', '围裙', '勺子', '大包', '死尸').
+- Tuyệt đối KHÔNG cố dựa vào các ví dụ gợi ý bên cạnh nếu thấy ngô nghê/tối nghĩa hoặc bẻ từ cơ học (kho HanLP máy cục bộ chỉ có ~3000 từ thô).
+- 🔴 MỆNH LỆNH TỐI CAO ĐỐI VỚI ĐIỂN CỐ, VÕ HỌC, NGOẠI HIỆU & DANH XƯNG KINH ĐIỂN:
+  * Khi gặp nhân vật, ngoại hiệu, bang phái, võ công, chiêu thức, pháp bảo, địa danh kinh điển (trong Thủy Hử, Tam Quốc, Tây Du, Phong Thần, Kim Dung, Cổ Long, Ôn Thụy An, Tiên hiệp đại chúng...):
+  * BẮT BUỘC tự động truy xuất và sử dụng ĐÚNG 100% tên dịch thuật văn học đã đi vào đại chúng Việt Nam, TUYỆT ĐỐI CẤM bẻ chữ cơ học mặt chữ!
+  * Ví dụ: 摸着天 -> 'Mạc Già Thiên' (CẤM bẻ thô 'Mô Trước Thiên'), 白衣秀士 -> 'Bạch Y Tú Sĩ', 云里金刚 -> 'Vân Lý Kim Cương', 八百里水泊梁山 -> 'Bát Bách Lý Thủy Bạc Lương Sơn' (CẤM 'Bát Bách Lịch').
+- 🔴 BẢO TOÀN TRỌN VẸN CẢ CỤM TỪ — TUYỆT ĐỐI CẤM CẮT CỤT NGOẠI HIỆU / TÊN RIÊNG:
+  * Khi nhận diện ngoại hiệu giang hồ, danh hiệu, tên riêng: BẮT BUỘC giữ nguyên vẹn cả cụm danh xưng hoàn chỉnh.
+  * TUYỆT ĐỐI CẤM cắt cụt đầu đuôi làm rụng từ (như cắt thành '里金刚', '衣秀士', '州小旋风', '飞将')!
+  * TUYỆT ĐỐI CẤM dính từ nối/giới từ vào tên (như '和短命二郎', '江鸿飞将').
+  * CẤM băm nhỏ một tên riêng/ngoại hiệu thành nhiều thực thể con!
+- 🔴 NGUYÊN TẮC PHÂN TÍCH MỞ RỘNG VÙNG NEO NGỮ CẢNH 【...】:
+  * Ký hiệu 【...】 trong 'context_han' chỉ là mốc neo đánh dấu vùng nghi vấn giúp bạn định vị trọng tâm trong câu văn.
+  * TUYỆT ĐỐI KHÔNG BỊ TRÓI BUỘC CỨNG NHẮC CHỈ TRÍCH XUẤT MỖI CHỮ TRONG 【...】!
+  * Hãy nhìn rộng ra toàn bộ câu văn ngữ cảnh xung quanh để:
+    1. Xác định ĐẦY ĐỦ CẢ CỤM TỰ NHIÊN: Nếu vùng neo đi liền với số lượng từ / địa danh / ngoại hiệu / danh xưng (ví dụ: thấy '八百里【水泊梁山】' -> bóc tách trọn vẹn cả cụm là '八百里水泊梁山' -> 'Bát Bách Lý Thủy Bạc Lương Sơn' hoặc 'Tám trăm dặm Thủy Bạc Lương Sơn', TUYỆT ĐỐI CẤM làm rơi rụng chữ 'Lý'; thấy '喜欢火拼的【晁盖】' -> nhận diện rõ nhân vật là '晁盖' -> 'Triều Cái').
+    2. Hiểu đúng chức vụ, bối phận, tính cách nhân vật trong câu để chọn cách dịch chuẩn xác nhất, tránh dịch ngáo, rơi chữ, cụt từ (không biến '晁盖' thành 'Tiêu Cung chủ', không biến '八百里水泊梁山' thành 'Bát Bách Thủy Bạc').
 
 === TỪ ĐIỂN THỰC THỂ ĐÃ TỒN TẠI TỪ CÁC CHƯƠNG TRƯỚC ===
 Giữ nguyên bản dịch vietnamese_name và entity_type nếu từ Hán đã có trong từ điển:
 {json.dumps(existing_entities, ensure_ascii=False, indent=2)}
 
-=== DỮ LIỆU BẰNG CHỨNG NHÁNH 1 (NER - Nghi vấn từ bản gốc) ===
+=== DANH SÁCH ỨNG VIÊN THỰC THỂ NGHI VẤN KÈM NGỮ CẢNH ===
 {json.dumps(cleaned_ner, ensure_ascii=False, indent=2)}
 
-=== DỮ LIỆU BẰNG CHỨNG NHÁNH 2 (Lỗi Google Translate cần sửa) ===
-{json.dumps(cleaned_gg, ensure_ascii=False, indent=2)}
-
-Yêu cầu trả về kết quả dưới dạng JSON object chứa 2 danh sách 'entities' và 'corrections':
+Yêu cầu trả về kết quả dưới dạng JSON object chứa danh sách 'entities':
 {{
   "entities": [
-    {{"chinese_name": "莫雅仪", "vietnamese_name": "Mạc Nhã Nghi", "entity_type": "NAME", "gender": "female", "role": "Mẹ của Nam chính"}}
-  ],
-  "corrections": [
-    {{"gg_error": "Mo Yayi", "correct_vietnamese": "Mạc Nhã Nghi"}}
+    {{"chinese_name": "王威", "vietnamese_name": "Vương Uy", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "nhân vật chính"}},
+    {{"chinese_name": "白衣秀士", "vietnamese_name": "Bạch Y Tú Sĩ", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "ngoại hiệu Vương Luân"}},
+    {{"chinese_name": "水泊梁山", "vietnamese_name": "Thủy Bạc Lương Sơn", "entity_type": "PLACE", "evaluation": "TÊN CỐ ĐỊNH", "gender": null, "role": "căn cứ Lương Sơn"}},
+    {{"chinese_name": "夺命十三枪", "vietnamese_name": "Đoạt Mệnh Thập Tam Thương", "entity_type": "SKILL", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "thương pháp võ học"}},
+    {{"chinese_name": "妖姬", "vietnamese_name": "Yêu Cơ", "entity_type": "ITEM", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "thần binh bảo thương"}}
   ]
 }}
 CHỈ trả về JSON, không kèm giải thích.
@@ -287,17 +309,13 @@ CHỈ trả về JSON, không kèm giải thích.
     try:
         parsed = safe_json_loads(text_response)
         entities = parsed.get("entities", []) if isinstance(parsed, dict) else []
-        corrections = parsed.get("corrections", []) if isinstance(parsed, dict) else []
         
         if mapping_table:
             for e in entities:
                 if "vietnamese_name" in e and e["vietnamese_name"]:
                     e["vietnamese_name"] = unmask_text_with_dictionary(e["vietnamese_name"], mapping_table)
-            for c in corrections:
-                if "correct_vietnamese" in c and c["correct_vietnamese"]:
-                    c["correct_vietnamese"] = unmask_text_with_dictionary(c["correct_vietnamese"], mapping_table)
 
-        # === KHỬ SẠCH 100% HÁN TỰ SÓT VÀ KÝ TỰ RÁC TRONG TÊN THỰC THỂ (VD: 'Phương Hân L岚' -> 'Phương Hân Lam') ===
+        # === KHỬ SẠCH 100% HÁN TỰ SÓT VÀ KÝ TỰ RÁC TRONG TÊN THỰC THỂ ===
         from app.services.preprocessing.dichhan.hanviet_data import sanitize_entity_vietnamese
         for e in entities:
             if not isinstance(e, dict):
@@ -309,15 +327,8 @@ CHỈ trả về JSON, không kèm giải thích.
                 print(f"[PREPROCESS LLM] ✅ Đã chuẩn hóa tên thực thể '{vn_name}' -> '{cleaned_vn}' cho '{ch_name}'")
             e["vietnamese_name"] = cleaned_vn
 
-        for c in corrections:
-            if not isinstance(c, dict):
-                continue
-            corr_vi = c.get("correct_vietnamese", "").strip()
-            if corr_vi:
-                c["correct_vietnamese"] = sanitize_entity_vietnamese(corr_vi)
-
-        return {"entities": entities, "corrections": []}
+        return {"entities": entities}
     except Exception as e:
         print(f"⚠️ [PREPROCESS LLM] Thất bại khi phân tích JSON trả về từ LLM: {e}")
 
-    return {"entities": [], "corrections": []}
+    return {"entities": []}

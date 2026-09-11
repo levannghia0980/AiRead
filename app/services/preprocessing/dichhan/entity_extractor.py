@@ -33,12 +33,12 @@ def is_valid_chinese_term(term: str) -> bool:
     return bool(re.match(r'^[\u4e00-\u9fff]+$', clean_term))
 
 def get_context_han(raw_lines: List[str], line_idx: int, char_start: int, char_end: int) -> str:
-    """Lấy từ Hán nghi vấn kèm vi ngữ cảnh 6-8 ký tự trước sau có đánh dấu mốc neo 【term】"""
+    """Lấy từ Hán nghi vấn kèm ngữ cảnh rộng 35-40 ký tự có đánh dấu mốc neo 【term】 để LLM thấy trọn vẹn cả câu"""
     if line_idx < 0 or line_idx >= len(raw_lines):
         return ""
     line = raw_lines[line_idx]
-    start = max(0, char_start - 8)
-    end = min(len(line), char_end + 8)
+    start = max(0, char_start - 35)
+    end = min(len(line), char_end + 35)
     prefix = line[start:char_start]
     target = line[char_start:char_end]
     suffix = line[char_end:end]
@@ -72,6 +72,10 @@ async def extract_ner_branch(novel_id: int, raw_text: str) -> List[dict]:
             vi_trans = row[1].replace('\x00', '').strip() if row[1] else ""
             if is_valid_chinese_term(ch_name) and vi_trans and (ch_name not in db_examples_map):
                 db_examples_map[ch_name] = (vi_trans, "PERSON")
+
+        from app.services.preprocessing.dichhan.hanviet_data import SPECIAL_ENTITIES_MAP
+        for sp_term, sp_trans in SPECIAL_ENTITIES_MAP.items():
+            db_examples_map[sp_term] = (sp_trans, "ITEM" if sp_term in ["金瓶梅", "水浒传", "西游记", "红楼梦", "三国演义", "道德经"] else "PERSON")
 
     found_terms: Dict[str, List[dict]] = {}
     raw_lines = raw_text.split('\n')
@@ -138,13 +142,7 @@ async def extract_ner_branch(novel_id: int, raw_text: str) -> List[dict]:
                                         "char_start": idx_start - len(clean_pref),
                                         "char_end": idx_start
                                     }]
-                                combined_full = clean_pref + cand
-                                if combined_full not in found_terms and combined_full not in db_examples_map:
-                                    found_terms[combined_full] = [{
-                                        "line_index": line_idx,
-                                        "char_start": idx_start - len(clean_pref),
-                                        "char_end": match.start() + len(cand)
-                                    }]
+                                clean_pref = clean_pref.strip()
 
         # c. Quét Heuristics theo Tiền tố thân mật / biệt danh (小, 老, 阿, 大)
         for prefix in TITLE_PREFIXES:
@@ -207,7 +205,8 @@ async def extract_ner_branch(novel_id: int, raw_text: str) -> List[dict]:
         # d4. Quét Ngoại hiệu giang hồ, Đạo hiệu, Hảo hán (摸着天, 白衣秀士, 云里金刚, 托塔天王, 豹子头...)
         STRIP_PREFIX_PATTERNS = (
             "一身", "一个", "这位", "那位", "这个", "那个", "作为", "自号", "诨名", "外号", "人称", 
-            "正是", "便是", "号", "要", "叫", "看", "见", "听", "打", "拉", "提", "背", "跟", "和", "与", "同", "及"
+            "正是", "便是", "号", "要", "叫", "看", "见", "听", "打", "拉", "提", "背", "跟", "和", "与", "同", "及",
+            "可是", "但是", "如果", "让", "但", "便", "就", "又", "也", "且", "而", "在"
         )
         for ep_suffix in EPITHET_SUFFIXES:
             for match in re.finditer(rf"[\u4e00-\u9fff]{{2,4}}{re.escape(ep_suffix)}", line):
@@ -399,8 +398,15 @@ async def extract_ner_branch(novel_id: int, raw_text: str) -> List[dict]:
         }
         ent_type = type_mapping.get(raw_type, raw_type)
         
+        from app.services.preprocessing.dichhan.hanviet_data import SPECIAL_ENTITIES_MAP
         if not db_info:
-            if term in FOLK_OCCUPATION_ENTITIES:
+            if term in SPECIAL_ENTITIES_MAP:
+                db_example = SPECIAL_ENTITIES_MAP[term]
+                if term in ["金瓶梅", "水浒传", "西游记", "红楼梦", "三国演义", "道德经"]:
+                    ent_type = "ITEM"
+                else:
+                    ent_type = "NAME"
+            elif term in FOLK_OCCUPATION_ENTITIES:
                 ent_type = "NAME"
             elif any(term.endswith(s) for s in FOLK_NAME_SUFFIXES) or any(s in term for s in TITLE_SUFFIXES) or any(s in term for s in ["哥", "姐", "弟", "妹", "伯", "叔", "爷", "奶"]):
                 ent_type = "NAME"

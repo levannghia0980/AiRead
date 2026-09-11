@@ -23,11 +23,103 @@ STANDARDIZED_OVERRIDES = {
     "陶": "đào", "姜": "khương", "岚": "lam", "妙": "diệu", "颖": "dĩnh", "璃": "ly",
     "追": "truy", "泰": "thái", "拉": "lạp",
     # Chuẩn hóa âm Hán-Việt cho nhân vật, ngoại hiệu, địa danh, danh xưng kinh điển
-    "伦": "luân", "摸": "mô", "着": "trước", "迁": "thiên", "进": "tiến", "纲": "cương", "刚": "cương",
+    "伦": "luân", "摸": "mạc", "着": "trước", "迁": "thiên", "进": "tiến", "纲": "cương", "刚": "cương",
     "晁": "triều", "盖": "cái", "宋": "tống", "江": "giang", "泊": "bạc", "掉": "điệu", "朴": "phác",
-    # Chuẩn hóa âm Hán-Việt cho Võ học, Chiêu thức, Trận pháp, Binh khí
+    "儿": "nhi", "旋": "toàn", "蓼": "liêu", "洼": "oa", "梅": "mai", "拼": "bính", "忽": "hốt", "律": "luật",
+    # Chuẩn hóa âm Hán-Việt cho Võ học, Chiêu thức, Trận pháp, Binh khí, Cảnh giới & Thời kỳ
     "圈": "quyển", "拳": "quyền", "掌": "chưởng", "爪": "trảo", "腿": "cước",
-    "指": "chỉ", "阵": "trận", "诀": "quyết", "经": "kinh", "籍": "tịch", "谱": "phổ"
+    "指": "chỉ", "阵": "trận", "诀": "quyết", "经": "kinh", "籍": "tịch", "谱": "phổ",
+    "期": "kỳ", "阶": "giai", "境": "cảnh", "段": "đoạn", "劫": "kiếp", "步": "bộ", "瓶": "bình", "颈": "cảnh"
+}
+
+# Bảng ánh xạ cụm từ / ngoại hiệu / tác phẩm kinh điển / thời kỳ bắt buộc (O(1) lookup)
+SPECIAL_ENTITIES_MAP = {
+    "摸着天": "Mạc Già Thiên",
+    "金瓶梅": "Kim Bình Mai",
+    "巨灵神": "Cự Linh Thần",
+    "白衣秀士": "Bạch Y Tú Sĩ",
+    "云里金刚": "Vân Lý Kim Cương",
+    "水泊梁山": "Thủy Bạc Lương Sơn",
+    "法天象地": "Pháp Thiên Tượng Địa",
+    "潘金莲": "Phan Kim Liên",
+    "小金莲": "Tiểu Kim Liên",
+    "晁盖": "Triều Cái",
+    "杜迁": "Đỗ Thiên",
+    "宋万": "Tống Vạn",
+    "王伦": "Vương Luân",
+    "柴进": "Sài Tiến",
+    "林冲": "Lâm Xung",
+    "宋江": "Tống Giang",
+    "武松": "Võ Tòng",
+    "李逵": "Lý Quỳ",
+    "鲁智深": "Lỗ Trí Thâm",
+    "智多星": "Trí Đa Tinh",
+    "玉麒麟": "Ngọc Kỳ Lân",
+    "豹子头": "Báo Tử Đầu",
+    "小旋风": "Tiểu Toàn Phong",
+    "花和尚": "Hoa Hòa Thượng",
+    "行者": "Hành Giả",
+    "黑旋风": "Hắc Toàn Phong",
+    "八百里水泊梁山": "Bát Bách Lý Thủy Bạc Lương Sơn",
+    "赵构": "Triệu Cấu",
+    "花石纲": "Hoa Thạch Cương",
+    "超倍化之术": "Thuật Siêu Bội Hóa",
+    "矮脚虎": "Ải Cước Hổ",
+    "雷横": "Lôi Hoành",
+    "王英": "Vương Anh",
+    "顾大嫂": "Cố Đại Tẩu",
+    "母大虫": "Mẫu Đại Trùng",
+    "杨志": "Dương Chí",
+    "青面兽": "Thanh Diện Thú",
+    "插翅虎": "Sáp Sí Hổ",
+    "装逼": "làm màu",
+    "抱大腿": "tìm chỗ dựa",
+    # Các thời kỳ lịch sử & bối cảnh thế giới quan
+    "上古时期": "thời kỳ Thượng Cổ",
+    "太古时期": "thời kỳ Thái Cổ",
+    "远古时期": "thời kỳ Viễn Cổ",
+    "近古时期": "thời kỳ Cận Cổ",
+    "乱古时期": "thời kỳ Loạn Cổ",
+    "洪荒时期": "thời kỳ Hồng Hoang",
+    "末法时期": "thời kỳ Mạt Pháp",
+    "神魔时期": "thời kỳ Thần Ma",
+    "修仙时期": "thời kỳ Tu Tiên",
+    "黄金时期": "thời kỳ Hoàng Kim",
+    "灵气复苏时期": "thời kỳ Linh Khí Khôi Phục",
+    "大灾变时期": "thời kỳ Đại Tai Biến",
+    "末世时期": "thời kỳ Mạt Thế",
+    # Các phân kỳ tu luyện & trạng thái
+    "初期": "sơ kỳ",
+    "中期": "trung kỳ",
+    "后期": "hậu kỳ",
+    "末期": "mạt kỳ",
+    "前期": "tiền kỳ",
+    "巅峰期": "đỉnh phong kỳ",
+    "圆满期": "viên mãn kỳ",
+    "瓶颈期": "bình cảnh kỳ",
+    "幼年期": "ấu niên kỳ",
+    "成长期": "trưởng thành kỳ",
+    "成熟期": "thành thục kỳ",
+    "全盛期": "toàn thịnh kỳ",
+    "衰弱期": "suy nhược kỳ",
+    "虚弱期": "hư nhược kỳ",
+    "潜伏期": "tiềm phục kỳ",
+    "休眠期": "hưu miên kỳ",
+    "发情期": "phát tình kỳ",
+    "觉醒期": "thức tỉnh kỳ",
+    "变异期": "biến dị kỳ",
+    "化形期": "hóa hình kỳ",
+    "飞升期": "phi thăng kỳ",
+    "渡劫期": "độ kiếp kỳ",
+    "蜕变期": "thoái biến kỳ",
+    "半步筑基": "Bán Bộ Trúc Cơ",
+    "半步金丹": "Bán Bộ Kim Đan",
+    "半步元婴": "Bán Bộ Nguyên Anh",
+    "半步化神": "Bán Bộ Hóa Thần",
+    "半步大乘": "Bán Bộ Đại Thừa",
+    "半步渡劫": "Bán Bộ Độ Kiếp",
+    "半步宗师": "Bán Bộ Tông Sư",
+    "半步至尊": "Bán Bộ Chí Tôn"
 }
 
 if os.path.exists(DICT_FILE):
@@ -111,6 +203,11 @@ def build_hanviet_name(text: str, context: Optional[HanVietContext] = None) -> s
     if not text:
         return ""
 
+    # Ưu tiên số 1: Bảng thực thể/ngoại hiệu/tác phẩm đặc biệt
+    clean_strip = text.strip()
+    if clean_strip in SPECIAL_ENTITIES_MAP:
+        return SPECIAL_ENTITIES_MAP[clean_strip]
+
     result = []
     conn = context.get_conn() if context else None
     missing_set = context.missing if context else _MISSING_CHARS_SET
@@ -153,6 +250,11 @@ def sanitize_entity_vietnamese(vn_name: str, ch_name: str = "") -> str:
     - Nếu chuỗi đã là tiếng Việt thuần sạch của LLM: Giữ nguyên 100% bản dịch tinh hoa của LLM.
     - Chỉ can thiệp khi tên còn dính Hán tự chưa dịch (như 'Tô T浅浅', 'Linh Pháp C阁', 'L岚').
     """
+    if ch_name:
+        clean_ch = ch_name.strip()
+        if clean_ch in SPECIAL_ENTITIES_MAP:
+            return SPECIAL_ENTITIES_MAP[clean_ch]
+
     if not vn_name and ch_name:
         return build_hanviet_name(ch_name)
     if not vn_name:

@@ -146,21 +146,9 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
         if enable_names_dict:
             novel_title = novel.title_rough or novel.title_raw
 
-            from app.services.storage.metadata_cache import (
-                load_chapter_entities_fast,
-                load_novel_entities_fast
-            )
+            from app.services.storage.metadata_cache import load_chapter_entities_fast
 
-            # 0. Đọc từ file entities.json chung của truyện trong Output/06_Metadata (nếu có)
-            global_cached_entities = load_novel_entities_fast(novel_title)
-            if global_cached_entities:
-                for item in global_cached_entities:
-                    c_name = item.get("chinese_name")
-                    v_name = item.get("rough_translation") or item.get("vietnamese_name")
-                    if c_name and v_name:
-                        batch_entities_dict[c_name] = v_name
-
-            # 1. Đọc trực tiếp TOÀN BỘ thực thể của các chương trong lô này (từ Metadata Cache)
+            # 1. Đọc CHÍNH XÁC thực thể theo từng chương của lô này (từ Output/06_Metadata/<Truyện>/chapters/XXXXXX.json)
             for cid in chapter_ids:
                 stmt_ch_no = select(Chapter).where(Chapter.id == cid)
                 res_ch_no = await session.execute(stmt_ch_no)
@@ -169,12 +157,19 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
                     cached_entities = load_chapter_entities_fast(novel_title, ch_obj.chapter_no)
                     if cached_entities:
                         for item in cached_entities:
-                            c_name = item.get("chinese_name")
-                            v_name = item.get("rough_translation") or item.get("vietnamese_name")
-                            if c_name and v_name:
-                                batch_entities_dict[c_name] = v_name
+                            c_name = (item.get("chinese_name") or "").strip()
+                            v_name = (item.get("rough_translation") or item.get("vietnamese_name") or "").strip()
+                            e_type = (item.get("entity_type") or "NAME").upper()
+                            role = (item.get("role") or "").strip()
+                            if c_name and v_name and c_name in combined_text:
+                                batch_entities_dict[c_name] = {
+                                    "vn": v_name,
+                                    "type": e_type,
+                                    "role": role
+                                }
 
-            # 2. Bổ sung các thực thể toàn cục từ bảng NovelEntity của truyện (từ điển nhân vật/thuật ngữ)
+            # 2. Bổ sung các thực thể trong DB có xuất hiện thực tế trong văn bản lô dịch này
+            # (Chỉ nạp những từ có trong combined_text để tránh gây nhiễu prompt)
             stmt_novel_ents = select(NovelEntity).where(
                 NovelEntity.novel_id == novel.id,
                 NovelEntity.entity_type != "CORRECTION"
@@ -182,34 +177,146 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
             res_novel_ents = await session.execute(stmt_novel_ents)
             for ent in res_novel_ents.scalars():
                 if ent.chinese_name and ent.rough_translation:
-                    batch_entities_dict[ent.chinese_name] = ent.rough_translation
+                    c_clean = ent.chinese_name.strip()
+                    if c_clean in combined_text and c_clean not in batch_entities_dict:
+                        batch_entities_dict[c_clean] = {
+                            "vn": ent.rough_translation.strip(),
+                            "type": (ent.entity_type or "NAME").upper(),
+                            "role": (ent.role or "").strip()
+                        }
 
-        # Tạo prompt thực thể sạch sẽ, loại bỏ triệt để các từ rác/phó từ/từ sinh hoạt bị bóc nhầm
+        # Tạo prompt thực thể phân loại: Tên riêng cố định vs Thuật ngữ bản sắc truyện
+        entity_prompt_block = ""
+        # Tạo prompt thực thể phân loại chi tiết theo từng nhóm & áp dụng Sub-string Suppression
         entity_prompt_block = ""
         if batch_entities_dict:
             FORBIDDEN_JUNK_WORDS = {
                 "倒是", "大家", "大不了", "大声", "好日子", "按人头", "媳妇", "一下子", "出乱子",
-                "租子", "日子", "围裙", "勺子", "大包", "死尸", "尸体", "磕头", "大梦", "大悟",
-                "大礼", "前些日子", "些日子", "不仅日子", "过日子", "自治", "大时间"
+                "租子", "日子", "围裙", "勺子", "大包", "磕头", "大梦", "大悟",
+                "大礼", "前些日子", "些日子", "不仅日子", "过日子", "自治", "大时间",
+                "今天", "明天", "昨天", "几天", "后天", "前天", "那天", "有一天", "精神", "眼神",
+                "留神", "回神", "回过神", "门客", "不客", "画蛇", "悲天", "吊炸天", "吃上几天", "一听今天", "日上中天"
             }
-            clean_entities_list = []
-            for c_name, v_name in batch_entities_dict.items():
-                c_clean = c_name.strip()
-                v_clean = v_name.strip()
+
+            from app.services.preprocessing.dichhan.common_lists import CHINESE_SURNAMES, EPITHET_SUFFIXES, LEADING_STRIP_PARTICLES
+            from app.services.preprocessing.dichhan.hanviet_data import SPECIAL_ENTITIES_MAP
+
+            # 1. SUB-STRING SUPPRESSION AN TOÀN: Loại bỏ các chuỗi rác dính liên từ hoặc mẩu rác cắt xén
+            # 1. SUB-STRING SUPPRESSION AN TOÀN: Loại bỏ các chuỗi rác dính liên từ hoặc mẩu rác cắt xén
+            # (Ví dụ: nếu đã có 白衣秀士 thì loại ngay 衣秀士; có 云里金刚 thì loại ngay 里金刚; có 沧州小旋风 thì loại ngay 州小旋风)
+            # TUYỆT ĐỐI KHÔNG để chuỗi rác (như 让晁盖一伙, 但晁盖) nuốt mất thực thể chuẩn (như 晁盖, 杜迁, 王伦)!
+            all_raw_keys = sorted(list(batch_entities_dict.keys()), key=len, reverse=True)
+            suppressed_subkeys = set()
+            for i, long_k in enumerate(all_raw_keys):
+                if long_k in suppressed_subkeys:
+                    continue
+                # Nếu long_k dính liên từ phía trước hoặc hậu tố rác (như '一伙', '教唆'):
+                if any(long_k.startswith(p) for p in LEADING_STRIP_PARTICLES) or any(long_k.startswith(p) for p in ["可是", "但是", "如果", "让", "但", "便", "就", "又", "也"]) or long_k.endswith("一伙"):
+                    suppressed_subkeys.add(long_k)
+                    continue
+
+                for short_k in all_raw_keys[i + 1:]:
+                    if short_k in suppressed_subkeys:
+                        continue
+                    if short_k in long_k and len(short_k) < len(long_k):
+                        # Nếu short_k là phần đuôi/đầu bị cắt vụn (ví dụ: 云里金刚 -> 里金刚, 白衣秀士 -> 衣秀士, 沧州小旋风 -> 州小旋风)
+                        # và short_k không có trong SPECIAL_ENTITIES_MAP độc lập thì lập tức loại bỏ
+                        if (long_k.endswith(short_k) or long_k.startswith(short_k)) and (short_k not in SPECIAL_ENTITIES_MAP):
+                            suppressed_subkeys.add(short_k)
+                            continue
+
+                        is_standalone = (
+                            short_k in SPECIAL_ENTITIES_MAP or
+                            (any(short_k.startswith(s) for s in CHINESE_SURNAMES) and len(short_k) in [2, 3])
+                        )
+                        if not is_standalone:
+                            suppressed_subkeys.add(short_k)
+
+            for sk in suppressed_subkeys:
+                if sk in batch_entities_dict:
+                    del batch_entities_dict[sk]
+
+            # 2. PHÂN LOẠI THỰC THỂ THEO ĐÚNG DANH MỤC (CATEGORIZED ENTITIES)
+            names_list = []      # Nhân vật, Ngoại hiệu, Danh xưng
+            places_list = []     # Địa danh, Sơn trại, Thành trì, Sông núi
+            sects_list = []      # Tông môn, Bang phái, Thế lực
+            skills_list = []     # Tuyệt kỹ võ công, Chiêu thức, Thần thông
+            items_list = []      # Pháp bảo, Binh khí, Đan dược, Đạo cụ
+            lore_list = []       # Thuật ngữ thế giới quan, Bối cảnh, Phân kỳ
+
+            for c_clean, info in batch_entities_dict.items():
+                if isinstance(info, dict):
+                    v_clean = info.get("vn", "").strip()
+                    e_type = (info.get("type") or "NAME").upper()
+                else:
+                    v_clean = str(info).strip()
+                    e_type = "NAME"
+
                 if not c_clean or not v_clean or c_clean == v_clean:
                     continue
-                # Bỏ qua nếu là từ rác hoặc chứa từ ngữ sinh hoạt thông thường
+                # BẮT BUỘC: Chỉ lấy thực thể THỰC SỰ XUẤT HIỆN trong văn bản của lô này!
+                if c_clean not in combined_text:
+                    continue
+                # Bỏ qua nếu là từ rác hoặc chứa từ ngữ ngữ pháp vô nghĩa
                 if c_clean in FORBIDDEN_JUNK_WORDS or any(bw in c_clean for bw in ("日子", "租子", "乱子", "大声", "大不了", "倒是", "按人头")):
                     continue
-                clean_entities_list.append(f"- {c_clean} -> {v_clean}")
 
-            if clean_entities_list:
-                entity_prompt_block = (
-                    "=== BẢNG TRA CỨU TÊN RIÊNG & NHÂN VẬT (CHỈ ÁP DỤNG KHI TỪ ĐÓ LÀ TÊN NGƯỜI / ĐỊA DANH / CHIÊU THỨC TRONG CÂU) ===\n"
-                    + "\n".join(clean_entities_list[:150])
-                    + "\n"
-                    + "⚠️ QUY TẮC BẢNG TÊN RIÊNG: Khi gặp các thực thể trên trong văn bản, BẮT BUỘC dịch trọn vẹn 100% sang tên tiếng Việt đã cung cấp, tuyệt đối không dịch dở dang và không để sót bất kỳ chữ Hán gốc nào.\n"
+                entry_line = f"- {c_clean} -> {v_clean}"
+
+                # Phân nhóm chuẩn xác: tránh đẩy thuật ngữ tu luyện / phân kỳ / thời kỳ vào bảng nhân vật
+                if c_clean.endswith("期") or c_clean.endswith("时期") or c_clean in ["花石纲"]:
+                    lore_list.append(entry_line)
+                elif c_clean.startswith("半步") or c_clean in ["法天象地", "超倍化之术"]:
+                    skills_list.append(entry_line)
+                elif c_clean in ["水泊梁山", "八百里水泊梁山"] or any(t in e_type for t in ["PLACE", "LOCATION"]):
+                    places_list.append(entry_line)
+                elif "SECT" in e_type:
+                    sects_list.append(entry_line)
+                elif "SKILL" in e_type:
+                    skills_list.append(entry_line)
+                elif "ITEM" in e_type:
+                    items_list.append(entry_line)
+                elif any(t in e_type for t in ["LORE_TERM", "OTHER"]):
+                    lore_list.append(entry_line)
+                else:
+                    names_list.append(entry_line)
+
+            sections = []
+
+            # Bảng Tên riêng cố định (Nhân vật, Địa danh, Tông môn)
+            fixed_blocks = []
+            if names_list:
+                fixed_blocks.append("【1. NHÂN VẬT & NGOẠI HIỆU / DANH XƯNG】:\n" + "\n".join(names_list[:80]))
+            if places_list:
+                fixed_blocks.append("【2. ĐỊA DANH, SƠN TRẠI & CĂN CỨ】:\n" + "\n".join(places_list[:40]))
+            if sects_list:
+                fixed_blocks.append("【3. TÔNG MÔN, BANG PHÁI & THẾ LỰC】:\n" + "\n".join(sects_list[:30]))
+
+            if fixed_blocks:
+                sections.append(
+                    "=== PHẦN 1: BẢNG TÊN RIÊNG & ĐỊA DANH CỐ ĐỊNH (KHÓA NHẤT QUÁN 1-1) ===\n"
+                    "(Chỉ áp dụng khi từ đó là tên nhân vật / ngoại hiệu / địa danh / môn phái trong câu)\n\n"
+                    + "\n\n".join(fixed_blocks)
+                    + "\n\n(LƯU Ý: Khi xuất hiện các nhân vật/ngoại hiệu/địa danh trên, bắt buộc dùng đúng tên tiếng Việt trong bảng, dịch trọn vẹn toàn bộ các chữ sang tiếng Việt có dấu, sạch 100% chữ Hán.)"
                 )
+
+            # Bảng Thuật ngữ bản sắc (Võ học, Bảo vật, Thế giới quan)
+            lore_blocks = []
+            if skills_list:
+                lore_blocks.append("【4. VÕ HỌC, TUYỆT KỸ & THẦN THÔNG】:\n" + "\n".join(skills_list[:40]))
+            if items_list:
+                lore_blocks.append("【5. BẢO VẬT, BINH KHÍ & ĐAN DƯỢC】:\n" + "\n".join(items_list[:30]))
+            if lore_list:
+                lore_blocks.append("【6. THUẬT NGỮ THẾ GIỚI QUAN & BỐI CẢNH】:\n" + "\n".join(lore_list[:30]))
+
+            if lore_blocks:
+                sections.append(
+                    "=== PHẦN 2: THUẬT NGỮ THẾ GIỚI QUAN, VÕ HỌC & BẢO VẬT ===\n\n"
+                    + "\n\n".join(lore_blocks)
+                )
+
+            if sections:
+                entity_prompt_block = "\n\n".join(sections)
 
         # 3. Lấy ngữ cảnh 3-5 câu cuối của chương liền trước (Context Awareness)
         first_chap_no = min(chapter_map.values()) if chapter_map else (first_ch.chapter_no if first_ch else 1)
@@ -234,38 +341,31 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
 - Giữ trọn vẹn các danh từ, động từ nhạy cảm và các mã placeholder tương ứng.
 """
 
-    system_prompt = f"""Bạn là biên kịch và chuyên gia dịch thuật văn học xuất sắc nhất.
-Nhiệm vụ: Chuyển ngữ tác phẩm sang tiếng Việt văn học truyền cảm, tự nhiên, xuôi tai, dễ hiểu tuyệt đối cho người nghe audiobook. Kết hợp nhuần nhuyễn giữa từ ngữ Hán-Việt phổ thông thanh thoát với tiếng Việt toàn dân trong sáng, tuyệt đối không dùng từ Hán-Việt cổ hủ, xa lạ làm người nghe khó hiểu.
+    system_prompt = f"""🔴 VAI TRÒ: BẠN LÀ MÁY DỊCH TIỂU THUYẾT TRUNG - VIỆT (CHINESE TO VIETNAMESE TRANSLATOR).
+- Ngôn ngữ nguồn: Tiếng Trung (RAW).
+- Ngôn ngữ đầu ra: 100% Tiếng Việt hoàn chỉnh, sạch chữ Hán, câu văn trôi chảy chuẩn âm hưởng audiobook.
+- Không trả lời câu hỏi hay trò chuyện ngoài lề, chỉ tập trung dịch toàn bộ nội dung.
 
 {context_profile_prompt}
 {prev_context_block}
 {entity_prompt_block}
 {custom_prompt_block}
 {erotic_prompt_block}
+
 === CẤU TRÚC PHÂN CHƯƠNG XML ({chap_count} CHƯƠNG: {chap_list_str}) ===
-BẮT BUỘC DỊCH ĐẦY ĐỦ 100% CẢ {chap_count} CHƯƠNG LẦN LƯỢT: {chap_list_str}.
-🔴 NGUYÊN TẮC BẢO TOÀN NỘI DUNG & ĐỐI ỨNG 1-1 TUYỆT ĐỐI (STRICT 1:1 CHAPTER LOCK):
-1. ĐỐI ỨNG 1-1 CHÍNH XÁC: Mỗi thẻ <chapter_X> trong bản gốc BẮT BUỘC chỉ sinh ra đúng một thẻ <chapter_X> tương ứng trong bản dịch.
-2. 🔴 CẤM CẮT ĐÔI CHƯƠNG (TUYỆT ĐỐI KHÔNG TÁCH 1 CHƯƠNG THÀNH 2):
-   - Trong quá trình dịch một chương, dù gặp dấu chấm lửng '……', dấu ngắt cảnh, dòng trống hay chuyển đoạn, BẮT BUỘC DỊCH TIẾP TỤC toàn bộ cho đến tận thẻ đóng </chapter_X> của chính chương đó!
-   - TUYỆT ĐỐI CẤM thấy chuyển cảnh hoặc dấu '……' giữa chừng mà ngộ nhận kết chương rồi tự ý đóng thẻ </chapter_X> và mở thẻ chương tiếp theo! Hành vi này sẽ cắt đôi chương và làm mất trắng nội dung chương sau.
-3. 🔴 KHÓA TIÊU ĐỀ THEO ĐÚNG CHƯƠNG GỐC:
-   - Dòng đầu tiên ngay sau thẻ <chapter_X> BẮT BUỘC là: 'Chương X: [Tên chương dịch chuẩn Tiếng Việt]'.
-   - Tên chương của <chapter_X> BẮT BUỘC phải dịch từ chính dòng tiêu đề của <chapter_X> trong bản gốc. TUYỆT ĐỐI CẤM lặp lại tiêu đề của chương trước!
-4. CẤM NHẢY CÓC, CẤM BỎ RƠI BẤT KỲ CHƯƠNG NÀO TRONG {chap_list_str}:
-   - Dịch đủ 100% từng câu chữ từ câu đầu đến câu cuối cùng của từng chương, không tóm tắt, không cắt bớt.
+Dịch đầy đủ lần lượt cả {chap_count} chương: {chap_list_str}.
 Mỗi chương bọc trong đúng cặp thẻ XML số chương tương ứng:
+
 <chapter_X>
 Chương X: [Tên chương dịch chuẩn Tiếng Việt]
 
 (Nội dung thân truyện đầy đủ của chương X)
 </chapter_X>
-QUY TẮC TIÊU ĐỀ VÀ THẺ XML CHƯƠNG (BẮT BUỘC):
-- Dòng đầu tiên ngay sau thẻ <chapter_X> BẮT BUỘC là: 'Chương X: [Tên chương]'. Nếu bản gốc không có tên chương thì để 'Chương X:'.
-- Số X trong <chapter_X>, Chương X: và </chapter_X> PHẢI TRÙNG NHAU 100%. TUYỆT ĐỐI CẤM gõ lệch số (ví dụ mở thẻ <chapter_41> mà bên trong lại là Chương 42).
-- TIÊU ĐỀ CHƯƠNG PHẢI ĐỨNG TRÊN 1 DÒNG ĐỘC LẬP RIÊNG BIỆT, sau đó là 1 DÒNG TRỐNG rồi mới đến nội dung truyện.
-- TUYỆT ĐỐI KHÔNG ĐƯỢC BỎ MẤT TIỀN TỐ 'Chương X:' VÀ TUYỆT ĐỐI CẤM DÍNH LIỀN TIÊU ĐỀ VÀO CÂU VĂN ĐẦU TIÊN CỦA TRUYỆN!
-CẤM gộp 2 chương, CẤM gõ nhầm số thẻ, CẤM bỏ quên bất kỳ chương nào trong {chap_list_str}.
+
+Quy tắc phân chương:
+1. Đối ứng 1:1 chính xác: Mỗi thẻ <chapter_X> trong bản gốc sinh ra đúng một thẻ <chapter_X> tương ứng trong bản dịch, số X trùng khớp 100%. Không gộp chương, không nhảy cóc.
+2. Không cắt đôi chương: Trong một chương, dù gặp dấu chấm lửng '……' hay chuyển cảnh, tiếp tục dịch đầy đủ cho đến hết chương rồi mới đóng thẻ </chapter_X>.
+3. Tiêu đề: Đứng độc lập ở dòng đầu tiên sau thẻ mở ('Chương X: [Tên chương]'), cách 1 dòng trống rồi mới đến nội dung truyện.
 """
 
     enable_unblock = kwargs.get("enable_unblock", True)
@@ -352,35 +452,12 @@ CẤM gộp 2 chương, CẤM gõ nhầm số thẻ, CẤM bỏ quên bất kỳ
                 pass
 
         user_task_prompt = (
-            f"Dưới đây là văn bản chương truyện tiếng Trung cần dịch sang tiếng Việt chuẩn mực cho audiobook:\n\n"
+            f"Dưới đây là văn bản chương truyện tiếng Trung cần dịch hoàn toàn sang 100% TIẾNG VIỆT theo đúng Hồ sơ thể loại, Bộ quy tắc chuyển ngữ và Bảng thực thể đã cung cấp:\n\n"
             f"<ngu_lieu_nguon>\n{chunk_text}\n</ngu_lieu_nguon>\n\n"
-            f"=== MỆNH LỆNH THỰC THI (TRANSLATION DIRECTIVES) ===\n"
-            f"1. DỊCH TRUNG THỰC, CHUẨN XÁC & CÂU VĂN TỰ NHIÊN (FAITHFUL & NATURAL TRANSLATION):\n"
-            f"   - Dịch sát đúng 100% nội dung, cốt truyện và ý tứ của nguyên tác; tuyệt đối KHÔNG tự ý bịa chữ, không chế từ, không bôi vẽ tình tiết lạ.\n"
-            f"   - Tên thần thoại, điển cố kinh điển (như 巨灵神 là Cự Linh Thần, 法天象地 là Pháp Thiên Tượng Địa): BẮT BUỘC dùng đúng âm Hán-Việt văn học quen thuộc, TUYỆT ĐỐI CẤM tự ý dịch chệch hoặc bịa tên mới.\n"
-            f"   - Những từ ngữ không phải tên riêng và không mang bản sắc thể loại: Dùng tiếng Việt phổ thông toàn dân tự nhiên, dễ hiểu nhất, cấm gượng ép Hán-Việt tối nghĩa.\n"
-            f"2. BẢO TOÀN THỰC THỂ & TÍNH NHẤT QUÁN 100% (BẢNG THỰC THỂ):\n"
-            f"   - Mọi TÊN NHÂN VẬT, ĐỊA DANH, TỔ CHỨC, CÔNG PHÁP đã có trong BẢNG THỰC THỂ bắt buộc dùng đúng 100% bản dịch đã cung cấp xuyên suốt toàn bộ tác phẩm, tuyệt đối không tự ý đổi tên, đổi âm hay chế tên khác.\n"
-            f"3. TUÂN THỦ TUYỆT ĐỐI HỒ SƠ THỂ LOẠI & QUY TẮC CHUYỂN NGỮ Ở TRÊN:\n"
-            f"   - Bắt buộc tuân thủ 100% bản sắc thể loại, thuật ngữ cảnh giới/võ học và hệ thống xưng hô đã quy định trong hồ sơ thể loại.\n"
-            f"   - DUY TRÌ BẢN ĐỒ QUAN HỆ: Xác định rõ NGƯỜI NÓI -> NGƯỜI NGHE -> QUAN HỆ ĐÃ KHÓA trước khi dịch từng câu thoại để xưng hô nhất quán 2 chiều xuyên suốt.\n"
-            f"4. NGUYÊN TẮC TỪ VỰNG: ƯU TIÊN TỪ THÔNG DỤNG DỄ HIỂU:\n"
-            f"   - Ngôn ngữ dịch phải tự nhiên, thuần thục, giàu ngữ cảm văn học đại chúng tiếng Việt, tối ưu tuyệt đối cho người nghe audio.\n"
-            f"   - Chống hai thái cực: (1) Tránh lạm dụng từ Hán-Việt cổ hủ, thô cứng mà đại chúng không dùng; (2) Tránh dịch nghĩa đen từng chữ một cách ngô nghê, máy móc khi tiếng Việt đã có cách diễn đạt tự nhiên, chuẩn mực.\n"
-            f"5. BẢO TOÀN TRỌN VẸN NỘI DUNG & ĐỐI ỨNG 1-1 TỪNG CHƯƠNG:\n"
-            f"   - Dịch đủ 100% tình tiết của cả {chap_count} chương ({chap_list_str}) từ câu đầu đến TẬN CÂU CUỐI CÙNG của mỗi chương, tuyệt đối không tóm tắt hay cắt cụt.{unblock_final_reminder}\n"
-            f"   - 🔴 CẤM CẮT ĐÔI CHƯƠNG: Mỗi thẻ <chapter_X> gốc chỉ tương ứng đúng 1 thẻ <chapter_X> bản dịch. Dù gặp dấu chấm lửng '……', dấu ngắt cảnh hay chuyển đoạn giữa chừng, BẮT BUỘC dịch tiếp tục đến hết chương, cấm tự ý đóng thẻ giữa chừng làm trượt số chương và mất trắng chương kế tiếp!\n"
-            f"   - Tiêu đề của <chapter_X> bắt buộc dịch đúng từ dòng tiêu đề của <chapter_X> gốc, TUYỆT ĐỐI CẤM lặp lại tiêu đề của chương trước.\n"
-            f"   - Đảm bảo tình tiết cuối chương trước nối mạch tự nhiên vào đầu chương sau, không để mất đoạn chuyển tiếp.\n"
-            f"   - Chấm câu dứt khoát theo từng ý hoàn chỉnh, đặt dấu phẩy ngắt nghỉ tự nhiên cho Edge-TTS, cấm nhân đôi dấu câu (không gõ .., ,, !..).\n"
-            f"   - Cặp thẻ XML mỗi chương:\n"
-            f"<chapter_X>\n"
-            f"Chương X: [Tên chương dịch chuẩn Tiếng Việt]\n\n"
-            f"(Nội dung thân truyện dịch đầy đủ)\n"
-            f"</chapter_X>\n"
-            f"   - Dòng đầu tiên ngay sau thẻ <chapter_X> BẮT BUỘC là 'Chương X: [Tên chương]' trên 1 dòng độc lập riêng biệt, cách 1 dòng trống với thân truyện.\n"
-            f"   - TUYỆT ĐỐI CẤM ĐỂ SÓT BẤT KỲ CHỮ HÁN NÀO TRONG BẢN DỊCH: Toàn bộ danh xưng, chức vị (như 寨主, 帮主, 堂主, 长老...), tên người (như 晁盖, 林冲), địa danh, tâm lý, từ ngữ đều BẮT BUỘC DỊCH HOÀN TOÀN 100% SANG TIẾNG VIỆT. 100% bản dịch phải là chữ Quốc ngữ tiếng Việt sạch sẽ!"
-
+            f"Yêu cầu thực thi:\n"
+            f"1. Dịch thoát ý tự nhiên, mạch lạc, dễ hiểu, chuẩn văn phong dịch thuật tiểu thuyết tiếng Việt.\n"
+            f"2. Áp dụng chuẩn xác tên riêng theo Bảng thực thể, bản dịch hoàn toàn bằng tiếng Việt sạch chữ Hán.\n"
+            f"3. Dịch đủ từng chương trong {chap_list_str}, mỗi chương bọc trong đúng cặp thẻ XML <chapter_X> tương ứng.{unblock_final_reminder}\n"
         )
 
         if is_grok_local:
@@ -418,20 +495,19 @@ CẤM gộp 2 chương, CẤM gõ nhầm số thẻ, CẤM bỏ quên bất kỳ
                 "messages": [
                     {"role": "system", "content": full_system_instruction},
                     {"role": "user", "content": user_task_prompt}
-                ],
-                "max_tokens": 16384,
-                "temperature": 0.2,
-                "top_p": 0.95
+                ]
             }
-            if custom_temp_str.strip():
+            if custom_temp_str:
                 try:
-                    payload["temperature"] = float(custom_temp_str.strip())
-                except ValueError:
-                    pass
-            if custom_topp_str.strip():
+                    payload["temperature"] = float(custom_temp_str)
+                except Exception:
+                    payload["temperature"] = 0.3
+            else:
+                payload["temperature"] = 0.3
+            if custom_topp_str:
                 try:
-                    payload["top_p"] = float(custom_topp_str.strip())
-                except ValueError:
+                    payload["top_p"] = float(custom_topp_str)
+                except Exception:
                     pass
 
             async with httpx.AsyncClient(timeout=600.0) as client:
@@ -451,33 +527,32 @@ CẤM gộp 2 chương, CẤM gõ nhầm số thẻ, CẤM bỏ quên bất kỳ
                 {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"}
             ]
-            gen_config = {
-                "maxOutputTokens": 65536,
-                "temperature": 0.2,
-                "topP": 0.95
-            }
-            if custom_temp_str.strip():
+            gen_config = {}
+            if custom_temp_str:
                 try:
-                    gen_config["temperature"] = float(custom_temp_str.strip())
-                except ValueError:
+                    gen_config["temperature"] = float(custom_temp_str)
+                except Exception:
+                    gen_config["temperature"] = 0.3
+            else:
+                gen_config["temperature"] = 0.3
+            if custom_topp_str:
+                try:
+                    gen_config["topP"] = float(custom_topp_str)
+                except Exception:
                     pass
-            if custom_topp_str.strip():
+            if custom_topk_str:
                 try:
-                    gen_config["topP"] = float(custom_topp_str.strip())
-                except ValueError:
-                    pass
-            if custom_topk_str.strip():
-                try:
-                    gen_config["topK"] = int(custom_topk_str.strip())
-                except ValueError:
+                    gen_config["topK"] = int(custom_topk_str)
+                except Exception:
                     pass
 
             payload = {
                 "system_instruction": {"parts": [{"text": full_system_instruction}]},
                 "contents": [{"role": "user", "parts": [{"text": user_task_prompt}]}],
-                "generationConfig": gen_config,
                 "safetySettings": safety_settings
             }
+            if gen_config:
+                payload["generationConfig"] = gen_config
 
             async with httpx.AsyncClient(timeout=600.0) as client:
                 resp = await post_gemini_with_retry(client, url, headers, payload)
@@ -506,8 +581,10 @@ CẤM gộp 2 chương, CẤM gõ nhầm số thẻ, CẤM bỏ quên bất kỳ
                 retry_temperature = 0.35 if finish_reason == "RECITATION" else 0.25
                 
                 # System prompt chuyển thể độc lập sạch sẽ, giữ định dạng XML chapter chuẩn
-                clean_system_instruction = f"""Bạn là chuyên gia dịch thuật và chuyển thể văn học đối chiếu Hán - Việt.
-Nhiệm vụ: Chuyển ngữ sáng tạo độc lập (Transformative Translation) từ ngữ liệu nghiên cứu sang tác phẩm tiếng Việt mượt mà, thuần Việt 100%, giàu hình ảnh, đúng nghĩa và bảo toàn 100% cốt truyện nguyên tác. Tái cấu trúc câu từ tự nhiên cho người Việt, thoát ly sao chép thô cứng. Tuyệt đối cấm dịch '瓶颈' thành 'bình phong' (phải dịch 'bình cảnh'), cấm từ ngữ kỳ dị như 'ti tì ti ti'.
+                clean_system_instruction = f"""🔴 VAI TRÒ & MỆNH LỆNH TỐI CAO: BẠN LÀ MÁY DỊCH TIỂU THUYẾT TRUNG - VIỆT (CHINESE TO VIETNAMESE TRANSLATOR).
+- NGÔN NGỮ NGUỒN: TIẾNG TRUNG.
+- NGÔN NGỮ ĐÍCH BẮT BUỘC: 100% TIẾNG VIỆT HOÀN CHỈNH (VIETNAMESE ONLY).
+Nhiệm vụ: Chuyển ngữ sáng tạo độc lập (Transformative Translation) từ ngữ liệu nghiên cứu sang tác phẩm TIẾNG VIỆT mượt mà, thuần Việt 100%, giàu hình ảnh, đúng nghĩa và bảo toàn 100% cốt truyện nguyên tác. Tuyệt đối không đàm thoại, không trả lời câu hỏi, không xuất tiếng Trung hay tiếng Anh. Tái cấu trúc câu từ tự nhiên cho người Việt, thoát ly sao chép thô cứng. Tuyệt đối không dùng từ Hán-Việt xa lạ, tối nghĩa; tuyệt đối không dịch nghĩa đen từng chữ một cách ngô nghê, sượng sùng; cấm mọi từ ngữ kỳ dị làm suy giảm chất lượng văn học.
 
 === MỆNH LỆNH BẮT BUỘC ===
 1. Cấu trúc phân chương & Tiêu đề chương: Mỗi chương BẮT BUỘC bọc trong cặp thẻ XML:
@@ -527,8 +604,6 @@ Dòng đầu tiên ngay sau thẻ <chapter_X> BẮT BUỘC là: 'Chương X: [T�
                 )
                 
                 retry_gen_config = dict(gen_config)
-                if finish_reason == "RECITATION":
-                    retry_gen_config["temperature"] = 0.35
                 
                 retry_payload = {
                     "system_instruction": {"parts": [{"text": clean_system_instruction}]},
@@ -578,6 +653,8 @@ Dòng đầu tiên ngay sau thẻ <chapter_X> BẮT BUỘC là: 'Chương X: [T�
     translated_text = re.sub(r'[\u0e00-\u0e7f\u0370-\u03ff\u0400-\u04ff]', '', translated_text)
     # Chuẩn hóa lỗi gõ lặp nguyên âm có dấu lạ do chập token (như bềề -> bề, lêuu -> lêu)
     translated_text = re.sub(r'([àáảãạâầấẩẫậăằắẳẵặèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵ])\1+', r'\1', translated_text)
+    # Chuẩn hóa xóa khoảng trắng thừa trước dấu câu (ví dụ: "thao tác ?" -> "thao tác?", "nữa chứ !!!" -> "nữa chứ!!!")
+    translated_text = re.sub(r'[ \t]+([,.:;?!…])', r'\1', translated_text)
 
     # Đảm bảo các thẻ chương bao bọc toàn bộ văn bản (chỉ áp dụng an toàn cho lô 1 chương duy nhất)
     if len(chapter_map) == 1:

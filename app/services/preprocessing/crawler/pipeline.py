@@ -188,9 +188,8 @@ async def process_single_chapter_crawl(chapter_id: int, skip_gg: bool = True) ->
             content_text=raw_content
         )
 
-        # 2. Ghi DB
+        # 2. Ghi DB bản RAW
         async with AsyncSessionLocal() as session:
-            # Ghi nhận bản RAW
             stmt_v_raw = select(ChapterVersion).where(
                 ChapterVersion.chapter_id == chapter_id, 
                 ChapterVersion.version_type == "RAW"
@@ -220,6 +219,7 @@ async def process_single_chapter_crawl(chapter_id: int, skip_gg: bool = True) ->
                 ch.error_message = ""
 
             await session.commit()
+
 
         # Giải phóng RAM
         del raw_content

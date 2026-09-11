@@ -47,6 +47,13 @@ def sanitize_chinese_raw_text(text: str) -> str:
     # Chuẩn hóa dòng chỉ có dấu chấm lửng cô lập thành dấu phân đoạn nhẹ nhàng
     t = re.sub(r'(?m)^\s*……\s*$', '……', t)
 
+    # Chuẩn hóa các chữ Hán phồn thể phổ biến rò rỉ từ web lậu sang giản thể chuẩn
+    t = re.sub(r'(?<=[^\w\s])著|(?<=[\u4e00-\u9fff])著', '着', t)  # 摸著天 -> 摸着天, 看著 -> 看着, 拿著 -> 拿着
+    t = t.replace('摸著天', '摸着天')
+    t = t.replace('杓子', '勺子').replace('握杓', '握勺')
+    t = t.replace('裏面', '里面').replace('這裏', '这里').replace('那裏', '那里')
+    t = t.replace('麼', '么')
+
     # Chuẩn hóa các từ lóng mạng Trung Quốc dễ kích hoạt nhầm bộ lọc Gemini (PROHIBITED_CONTENT / HARASSMENT)
     # Ví dụ: '舔狗' (simp/kẻ lụy tình) bị Google Perspective API / Gemini hiểu nhầm là từ ngữ nhục mạ cực đoan
     t = t.replace('做舔狗', '做深情之人')

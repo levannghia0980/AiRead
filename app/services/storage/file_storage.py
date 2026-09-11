@@ -12,6 +12,7 @@ OUTPUT_ROOT = OUTPUT_DIR
 # Các thư mục chuẩn lưu trữ dữ liệu Output
 VERSION_FOLDER_MAP: Dict[str, str] = {
     "RAW": "01_BanGoc",
+    "GG": "01b_DichTho_GG",
     "BATCH_INPUT": "02_ChuanBi_DauVao",
     "LLM": "03_DichAI_LLM",
     "FINAL": "04_KetQua",

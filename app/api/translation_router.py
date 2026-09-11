@@ -95,6 +95,7 @@ class StartTranslationRequest(BaseModel):
     enable_llm_extract: Optional[bool] = False
     enable_names_dict: Optional[bool] = True
     enable_gg_corrections: Optional[bool] = False
+    enable_advanced_translation: Optional[bool] = False
     force_retranslate: Optional[bool] = False
 
 async def _bg_translation_worker(payload: StartTranslationRequest):
@@ -136,7 +137,6 @@ async def _bg_translation_worker(payload: StartTranslationRequest):
             end_chapter=end_ch,
             enable_llm_extract=payload.enable_llm_extract if payload.enable_llm_extract is not None else False,
             enable_names_dict=payload.enable_names_dict if payload.enable_names_dict is not None else True,
-            enable_gg_corrections=payload.enable_gg_corrections if payload.enable_gg_corrections is not None else False,
             enable_unblock=payload.enable_unblock if payload.enable_unblock is not None else True,
             enable_erotic=payload.enable_erotic if payload.enable_erotic is not None else False,
             force_retranslate=bool(payload.force_retranslate),

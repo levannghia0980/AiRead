@@ -667,6 +667,10 @@ async def reset_chapter_translations(chapter_id: int = Path(...)):
                         if p_mp3.exists():
                             try: p_mp3.unlink()
                             except Exception: pass
+                
+                # Xóa metadata JSON của chương (06_Metadata/chapters/XXXXXX.json) để khi dịch lại không bị dính thực thể cũ
+                from app.services.storage.metadata_cache import invalidate_chapter_metadata
+                invalidate_chapter_metadata(novel_title, chap.chapter_no)
             
         return {
             "status": "success",
@@ -1137,6 +1141,12 @@ async def reset_chapters(novel_id: int = Path(...), payload: ResetChaptersReques
                 else:
                     ch.status = "WAIT"
                 ch.error_message = ""
+
+                # Tự động xóa file cache thực thể JSON của chương (06_Metadata/chapters/XXXXXX.json)
+                if novel:
+                    from app.services.storage.metadata_cache import invalidate_chapter_metadata
+                    novel_title_rough = novel.title_rough or novel.title_raw
+                    invalidate_chapter_metadata(novel_title_rough, ch.chapter_no)
 
         # === FULL RESTART: Xóa thêm entities, TTS chunks, metadata ===
         if payload.full_restart and novel:

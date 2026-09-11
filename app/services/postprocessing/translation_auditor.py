@@ -34,32 +34,44 @@ async def call_gemini_api(prompt: str, model: str = None, is_json: bool = True) 
     
     provider_val = os.environ.get("AIREAD_PROVIDER") or await get_active_setting("AIREAD_PROVIDER") or "gemini"
     provider = str(provider_val).lower().strip()
-    is_openrouter = (provider == "openrouter") or ("/" in selected_model) or ("qwen" in selected_model.lower()) or ("openrouter" in selected_model.lower())
+    
+    # Nếu cấu hình hệ thống là gemini, BẮT BUỘC dùng Gemini và chuẩn hóa model
+    if provider == "gemini":
+        is_openrouter = False
+        if "/" in selected_model or "openrouter" in selected_model.lower() or "free" in selected_model.lower():
+            selected_model = "gemini-3.5-flash-lite"
+    else:
+        is_openrouter = (provider == "openrouter") or ("/" in selected_model) or ("qwen" in selected_model.lower()) or ("openrouter" in selected_model.lower())
 
     if is_openrouter:
         api_key = keys[0]
-        or_headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:8000",
-            "X-Title": "AiRead"
-        }
-        or_body = {
-            "model": selected_model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.2,
-            "max_tokens": 4096
-        }
-        try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=or_headers, json=or_body)
-            if resp.status_code == 200:
-                text_out = resp.json()["choices"][0]["message"]["content"].strip()
-                if text_out:
-                    return text_out, None
-            return None, f"OpenRouter API Error (HTTP {resp.status_code}): {resp.text[:300]}"
-        except Exception as e:
-            return None, f"OpenRouter Exception: {str(e)}"
+        # Nếu key truyền vào là key Gemini (bắt đầu bằng AIza) hoặc rỗng, tự động fallback về Gemini
+        if api_key.startswith("AIza") or not api_key:
+            is_openrouter = False
+            selected_model = "gemini-3.5-flash-lite"
+        else:
+            or_headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "http://localhost:8000",
+                "X-Title": "AiRead"
+            }
+            or_body = {
+                "model": selected_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2,
+                "max_tokens": 4096
+            }
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    resp = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=or_headers, json=or_body)
+                if resp.status_code == 200:
+                    text_out = resp.json()["choices"][0]["message"]["content"].strip()
+                    if text_out:
+                        return text_out, None
+                return None, f"OpenRouter API Error (HTTP {resp.status_code}): {resp.text[:300]}"
+            except Exception as e:
+                return None, f"OpenRouter Exception: {str(e)}"
     
     # Gemini path
     headers = {"Content-Type": "application/json"}

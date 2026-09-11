@@ -371,10 +371,13 @@ export default function App() {
 
     setIsFixingRed(true)
     try {
+      const activeModel = provider === 'gemini'
+        ? (model && model.includes('gemini') ? model : 'gemini-3.5-flash-lite')
+        : model
       const response = await fetch(`/api/translation/novel/${novelId}/batch-fix-swept-errors`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model })
+        body: JSON.stringify({ model: activeModel })
       })
       const result = await response.json()
       if (response.ok && result.status === 'success') {
@@ -388,7 +391,7 @@ export default function App() {
     } finally {
       setIsFixingRed(false)
     }
-  }, [fetchNovelDetails])
+  }, [fetchNovelDetails, provider, model])
 
   const handleDownloadNovel = useCallback(async (novelId: number, fmt: 'txt' | 'docx') => {
     setIsDownloading(true)
