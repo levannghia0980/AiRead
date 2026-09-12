@@ -6,11 +6,36 @@ from typing import Dict, Any, List, Optional
 from sqlalchemy import select
 from app.core.database import AsyncSessionLocal
 from app.core.config import get_active_setting
-from app.models.schema import Novel, Chapter, ChapterVersion, NovelEntity
+from app.models.schema import Novel, Chapter, ChapterVersion, NovelEntity, ChapterEntityLink
 from app.services.storage.file_storage import sanitize_filename
-from app.services.translation.rawt.profiles import get_context_profile_prompt
+from app.services.translation.rawt.profiles import (
+    get_context_profile_prompt,
+    build_standard_system_prompt,
+    build_super_refine_req1_prompt,
+    build_super_refine_req2_prompt,
+)
 from app.core.llm_client import post_gemini_with_retry, post_openrouter_with_retry, post_grok_local_with_retry
 from app.services.preprocessing.dichhan.raw_text_cleaner import sanitize_chinese_raw_text
+
+FORBIDDEN_JUNK_WORDS = {
+    "倒是", "大家", "大不了", "大声", "好日子", "按人头", "媳妇", "一下子", "出乱子",
+    "租子", "日子", "围裙", "勺子", "大包", "磕头", "大梦", "大悟",
+    "大礼", "前些日子", "些日子", "不仅日子", "过日子", "自治", "大时间",
+    "今天", "明天", "昨天", "几天", "后天", "前天", "那天", "有一天", "精神", "眼神",
+    "留神", "回神", "回过神", "门客", "不客", "画蛇", "悲天", "吊炸天", "吃上几天", "一听今天", "日上中天"
+}
+
+
+def dedupe_keep_order(lst: List[Any]) -> List[Any]:
+    seen = set()
+    res = []
+    for item in lst:
+        if item not in seen:
+            seen.add(item)
+            res.append(item)
+    return res
+
+
 
 async def translate_chapter_llm(chapter_id: int) -> Dict[str, Any]:
     """
@@ -81,6 +106,145 @@ async def get_previous_chapter_context(session, novel_id: int, current_first_cha
                 except Exception:
                     return f"=== BỐI CẢNH ĐOẠN KẾT CHƯƠNG {prev_chap_no} (ĐỂ NỐI MẠCH TỰ NHIÊN VÀO ĐẦU CHƯƠNG {current_first_chapter_no}) ===\n\"{snippet}\"\n-> Yêu cầu: Hãy dịch phần mở đầu Chương {current_first_chapter_no} nối mạch tự nhiên, liền mạch diễn biến câu chuyện với đoạn kết trên.\n"
     return ""
+
+
+async def _execute_single_llm_call(
+    user_prompt: str,
+    system_instruction: str,
+    provider: str,
+    model: str,
+    api_key: str,
+    is_grok_local: bool,
+    is_openrouter: bool,
+    custom_temp_str: str = "",
+    custom_topp_str: str = "",
+    custom_topk_str: str = "",
+    default_temp: float = 0.7,
+    chapter_map: dict = None,
+    unblock_final_reminder: str = ""
+) -> str:
+    """Gọi LLM (Gemini, OpenRouter, Grok Local) và trả về text phản hồi hoàn chỉnh."""
+    if is_grok_local:
+        grok_url = os.environ.get("AIREAD_GROK_URL") or "http://127.0.0.1:8020/translate-text"
+        payload = {
+            "text": user_prompt,
+            "system_instruction": system_instruction,
+            "timeout": 300.0
+        }
+        async with httpx.AsyncClient(timeout=360.0) as client:
+            res_data = await post_grok_local_with_retry(client, grok_url, payload, timeout=300.0)
+        trans_text = res_data.get("translated_text", "").strip()
+        if not trans_text:
+            raise Exception("Grok Local Server không trả về nội dung (kết quả rỗng).")
+        return trans_text
+
+    elif is_openrouter:
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://localhost:8000",
+            "X-Title": "AiRead"
+        }
+        use_temp = default_temp
+        if custom_temp_str:
+            try:
+                use_temp = float(custom_temp_str)
+            except Exception:
+                pass
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": user_prompt}
+            ],
+            "temperature": use_temp
+        }
+        if custom_topp_str:
+            try:
+                payload["top_p"] = float(custom_topp_str)
+            except Exception:
+                pass
+
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            resp = await post_openrouter_with_retry(client, url, headers, payload)
+        if resp.status_code == 200:
+            res_json = resp.json()
+            return res_json["choices"][0]["message"]["content"].strip()
+        else:
+            raise Exception(f"OpenRouter API Error (HTTP {resp.status_code}): {resp.text}")
+
+    else:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        headers = {"Content-Type": "application/json"}
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"}
+        ]
+        # Cấu hình chuẩn khuyến nghị của Google cho Gemini 3.x / Flash-Lite:
+        # temperature: 0.7, topP: 0.9, topK: 40, thinkingConfig: thinkingLevel = "medium"
+        use_temp = float(custom_temp_str) if custom_temp_str else (default_temp if default_temp is not None else 0.7)
+        use_topp = float(custom_topp_str) if custom_topp_str else 0.9
+        use_topk = int(custom_topk_str) if custom_topk_str else 40
+        thinking_level = (os.environ.get("AIREAD_THINKING_LEVEL") or "medium").strip().lower()
+
+        gen_config = {
+            "temperature": use_temp,
+            "topP": use_topp,
+            "topK": use_topk,
+            "thinkingConfig": {
+                "thinkingLevel": thinking_level
+            }
+        }
+
+        payload = {
+            "system_instruction": {"parts": [{"text": system_instruction}]},
+            "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+            "safetySettings": safety_settings,
+            "generationConfig": gen_config
+        }
+
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            resp = await post_gemini_with_retry(client, url, headers, payload)
+
+        res_json = resp.json()
+        if resp.status_code != 200:
+            err_msg = res_json.get("error", {}).get("message", resp.text)
+            raise Exception(f"Gemini API Error (HTTP {resp.status_code}): {err_msg}")
+
+        candidates = res_json.get("candidates", [])
+        candidate = candidates[0] if candidates else {}
+        prompt_block = res_json.get("promptFeedback", {}).get("blockReason")
+        finish_reason = candidate.get("finishReason")
+
+        if prompt_block or finish_reason in ["SAFETY", "PROHIBITED_CONTENT", "BLOCK", "OTHER", "RECITATION"] or not candidate.get("content"):
+            err_cause = prompt_block or finish_reason or "NO_CONTENT"
+            print(f"[LLM-TRANSLATOR] Cảnh báo: Gemini chặn bộ lọc ({err_cause}). Thử lại với prompt độc lập...")
+            clean_system_instruction = f"""🔴 VAI TRÒ & MỆNH LỆNH TỐI CAO: BẠN LÀ MÁY DỊCH TIỂU THUYẾT TRUNG - VIỆT (CHINESE TO VIETNAMESE TRANSLATOR).
+- NGÔN NGỮ NGUỒN: TIẾNG TRUNG.
+- NGÔN NGỮ ĐÍCH BẮT BUỘC: 100% TIẾNG VIỆT HOÀN CHỈNH (VIETNAMESE ONLY).
+Nhiệm vụ: Chuyển ngữ từ ngữ liệu sang tác phẩm TIẾNG VIỆT hoàn chỉnh, dễ hiểu, đúng nghĩa và bảo toàn 100% cốt truyện nguyên tác. Mỗi chương bọc trong đúng cặp thẻ XML <chapter_X>. Dòng đầu tiên là 'Chương X: [Tên chương]'.
+"""
+            retry_payload = {
+                "system_instruction": {"parts": [{"text": clean_system_instruction}]},
+                "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+                "generationConfig": {"temperature": 0.35 if finish_reason == "RECITATION" else default_temp},
+                "safetySettings": safety_settings
+            }
+            async with httpx.AsyncClient(timeout=600.0) as client:
+                retry_resp = await post_gemini_with_retry(client, url, headers, retry_payload)
+            retry_json = retry_resp.json()
+            retry_cands = retry_json.get("candidates", [])
+            retry_cand = retry_cands[0] if retry_cands else {}
+            if retry_cand.get("content"):
+                candidate = retry_cand
+            else:
+                raise Exception(f"Bị chặn bởi bộ lọc Gemini: {retry_json}")
+
+        return candidate["content"]["parts"][0]["text"].strip() if (candidate.get("content") and candidate["content"].get("parts")) else ""
 
 
 async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = True, **kwargs) -> Dict[str, Any]:
@@ -168,6 +332,16 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
                                     "role": role
                                 }
 
+            # 1b. Tự động nạp trước các thực thể kinh điển từ SPECIAL_ENTITIES_MAP (Gold Standard)
+            from app.services.preprocessing.dichhan.hanviet_data import SPECIAL_ENTITIES_MAP
+            for sp_k, sp_v in SPECIAL_ENTITIES_MAP.items():
+                if sp_k in combined_text:
+                    batch_entities_dict[sp_k] = {
+                        "vn": sp_v,
+                        "type": "NAME" if any(x in sp_v for x in ["Tú Sĩ", "Kim Cương", "Thần", "Thiên", "Tiến", "Luân", "Vạn", "Cái", "Mai", "Cấu", "Phi", "Cung", "Vương", "Tẩu", "Trùng", "Hổ", "Thú", "Hành Giả", "Toàn Phong", "Hòa Thượng", "Tòng", "Quỳ", "Thâm"]) else "LORE",
+                        "role": ""
+                    }
+
             # 2. Bổ sung các thực thể trong DB có xuất hiện thực tế trong văn bản lô dịch này
             # (Chỉ nạp những từ có trong combined_text để tránh gây nhiễu prompt)
             stmt_novel_ents = select(NovelEntity).where(
@@ -178,26 +352,36 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
             for ent in res_novel_ents.scalars():
                 if ent.chinese_name and ent.rough_translation:
                     c_clean = ent.chinese_name.strip()
-                    if c_clean in combined_text and c_clean not in batch_entities_dict:
-                        batch_entities_dict[c_clean] = {
-                            "vn": ent.rough_translation.strip(),
-                            "type": (ent.entity_type or "NAME").upper(),
-                            "role": (ent.role or "").strip()
-                        }
+                    if c_clean in combined_text:
+                        # ƯU TIÊN VÀNG: Nếu có trong SPECIAL_ENTITIES_MAP thì ghi đè ngay bằng chuẩn
+                        if c_clean in SPECIAL_ENTITIES_MAP:
+                            batch_entities_dict[c_clean] = {
+                                "vn": SPECIAL_ENTITIES_MAP[c_clean],
+                                "type": (ent.entity_type or "NAME").upper(),
+                                "role": (ent.role or "").strip()
+                            }
+                        elif c_clean not in batch_entities_dict:
+                            # Làm sạch bản dịch thô từ DB: gọt bỏ ghi chú trong ngoặc đơn/kép, mũi tên suy luận, chữ Hán sót
+                            raw_v = ent.rough_translation.strip()
+                            raw_v = re.sub(r'[\(（\[【].*?[\)）\]】]', '', raw_v).strip()
+                            if '->' in raw_v:
+                                raw_v = raw_v.split('->')[-1].strip()
+                            if '=>' in raw_v:
+                                raw_v = raw_v.split('=>')[-1].strip()
+                            raw_v = re.sub(r'[\u4e00-\u9fff]', '', raw_v).strip()
+                            raw_v = re.sub(r'^(?:không có trong bảng|giữ nguyên|hoặc|tạm dịch)[:\s-]*', '', raw_v, flags=re.IGNORECASE).strip()
+                            if raw_v:
+                                batch_entities_dict[c_clean] = {
+                                    "vn": raw_v,
+                                    "type": (ent.entity_type or "NAME").upper(),
+                                    "role": (ent.role or "").strip()
+                                }
 
         # Tạo prompt thực thể phân loại: Tên riêng cố định vs Thuật ngữ bản sắc truyện
         entity_prompt_block = ""
         # Tạo prompt thực thể phân loại chi tiết theo từng nhóm & áp dụng Sub-string Suppression
         entity_prompt_block = ""
         if batch_entities_dict:
-            FORBIDDEN_JUNK_WORDS = {
-                "倒是", "大家", "大不了", "大声", "好日子", "按人头", "媳妇", "一下子", "出乱子",
-                "租子", "日子", "围裙", "勺子", "大包", "磕头", "大梦", "大悟",
-                "大礼", "前些日子", "些日子", "不仅日子", "过日子", "自治", "大时间",
-                "今天", "明天", "昨天", "几天", "后天", "前天", "那天", "有一天", "精神", "眼神",
-                "留神", "回神", "回过神", "门客", "不客", "画蛇", "悲天", "吊炸天", "吃上几天", "一听今天", "日上中天"
-            }
-
             from app.services.preprocessing.dichhan.common_lists import CHINESE_SURNAMES, EPITHET_SUFFIXES, LEADING_STRIP_PARTICLES
             from app.services.preprocessing.dichhan.hanviet_data import SPECIAL_ENTITIES_MAP
 
@@ -261,7 +445,7 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
                 if c_clean in FORBIDDEN_JUNK_WORDS or any(bw in c_clean for bw in ("日子", "租子", "乱子", "大声", "大不了", "倒是", "按人头")):
                     continue
 
-                entry_line = f"- {c_clean} -> {v_clean}"
+                entry_line = f"- {c_clean} dịch thành {v_clean}"
 
                 # Phân nhóm chuẩn xác: tránh đẩy thuật ngữ tu luyện / phân kỳ / thời kỳ vào bảng nhân vật
                 if c_clean.endswith("期") or c_clean.endswith("时期") or c_clean in ["花石纲"]:
@@ -281,42 +465,34 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
                 else:
                     names_list.append(entry_line)
 
-            sections = []
+            # Khử trùng lặp trong từng nhóm
+            names_list = dedupe_keep_order(names_list)
+            places_list = dedupe_keep_order(places_list)
+            sects_list = dedupe_keep_order(sects_list)
+            skills_list = dedupe_keep_order(skills_list)
+            items_list = dedupe_keep_order(items_list)
+            lore_list = dedupe_keep_order(lore_list)
 
-            # Bảng Tên riêng cố định (Nhân vật, Địa danh, Tông môn)
-            fixed_blocks = []
+            all_blocks = []
             if names_list:
-                fixed_blocks.append("【1. NHÂN VẬT & NGOẠI HIỆU / DANH XƯNG】:\n" + "\n".join(names_list[:80]))
+                all_blocks.append("【1. DANH SÁCH NHÂN VẬT & NGOẠI HIỆU】:\n" + "\n".join(names_list[:80]))
             if places_list:
-                fixed_blocks.append("【2. ĐỊA DANH, SƠN TRẠI & CĂN CỨ】:\n" + "\n".join(places_list[:40]))
+                all_blocks.append("【2. ĐỊA DANH, SƠN TRẠI & CĂN CỨ】:\n" + "\n".join(places_list[:40]))
             if sects_list:
-                fixed_blocks.append("【3. TÔNG MÔN, BANG PHÁI & THẾ LỰC】:\n" + "\n".join(sects_list[:30]))
-
-            if fixed_blocks:
-                sections.append(
-                    "=== PHẦN 1: BẢNG TÊN RIÊNG & ĐỊA DANH CỐ ĐỊNH (KHÓA NHẤT QUÁN 1-1) ===\n"
-                    "(Chỉ áp dụng khi từ đó là tên nhân vật / ngoại hiệu / địa danh / môn phái trong câu)\n\n"
-                    + "\n\n".join(fixed_blocks)
-                    + "\n\n(LƯU Ý: Khi xuất hiện các nhân vật/ngoại hiệu/địa danh trên, bắt buộc dùng đúng tên tiếng Việt trong bảng, dịch trọn vẹn toàn bộ các chữ sang tiếng Việt có dấu, sạch 100% chữ Hán.)"
-                )
-
-            # Bảng Thuật ngữ bản sắc (Võ học, Bảo vật, Thế giới quan)
-            lore_blocks = []
+                all_blocks.append("【3. TÔNG MÔN, BANG PHÁI & THẾ LỰC】:\n" + "\n".join(sects_list[:30]))
             if skills_list:
-                lore_blocks.append("【4. VÕ HỌC, TUYỆT KỸ & THẦN THÔNG】:\n" + "\n".join(skills_list[:40]))
+                all_blocks.append("【4. VÕ HỌC, TUYỆT KỸ & THẦN THÔNG】:\n" + "\n".join(skills_list[:40]))
             if items_list:
-                lore_blocks.append("【5. BẢO VẬT, BINH KHÍ & ĐAN DƯỢC】:\n" + "\n".join(items_list[:30]))
+                all_blocks.append("【5. BẢO VẬT, BINH KHÍ & ĐAN DƯỢC】:\n" + "\n".join(items_list[:30]))
             if lore_list:
-                lore_blocks.append("【6. THUẬT NGỮ THẾ GIỚI QUAN & BỐI CẢNH】:\n" + "\n".join(lore_list[:30]))
+                all_blocks.append("【6. THUẬT NGỮ THẾ GIỚI QUAN & BỐI CẢNH】:\n" + "\n".join(lore_list[:30]))
 
-            if lore_blocks:
-                sections.append(
-                    "=== PHẦN 2: THUẬT NGỮ THẾ GIỚI QUAN, VÕ HỌC & BẢO VẬT ===\n\n"
-                    + "\n\n".join(lore_blocks)
+            if all_blocks:
+                entity_prompt_block = (
+                    "=== QUY TẮC KHÓA DỊCH THỰC THỂ CỐ ĐỊNH (CHUẨN 100% TIẾNG VIỆT) ===\n"
+                    "(Khi xuất hiện các danh từ riêng dưới đây trong bản gốc tiếng Trung, BẮT BUỘC dịch sang đúng tên tiếng Việt tương ứng, sạch bóng chữ Hán, không mở ngoặc chú thích song ngữ):\n\n"
+                    + "\n\n".join(all_blocks)
                 )
-
-            if sections:
-                entity_prompt_block = "\n\n".join(sections)
 
         # 3. Lấy ngữ cảnh 3-5 câu cuối của chương liền trước (Context Awareness)
         first_chap_no = min(chapter_map.values()) if chapter_map else (first_ch.chapter_no if first_ch else 1)
@@ -341,39 +517,22 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
 - Giữ trọn vẹn các danh từ, động từ nhạy cảm và các mã placeholder tương ứng.
 """
 
-    system_prompt = f"""🔴 VAI TRÒ: BẠN LÀ MÁY DỊCH TIỂU THUYẾT TRUNG - VIỆT (CHINESE TO VIETNAMESE TRANSLATOR).
-- Ngôn ngữ nguồn: Tiếng Trung (RAW).
-- Ngôn ngữ đầu ra: 100% Tiếng Việt hoàn chỉnh, sạch chữ Hán, câu văn trôi chảy chuẩn âm hưởng audiobook.
-- Không trả lời câu hỏi hay trò chuyện ngoài lề, chỉ tập trung dịch toàn bộ nội dung.
-
-{context_profile_prompt}
-{prev_context_block}
-{entity_prompt_block}
-{custom_prompt_block}
-{erotic_prompt_block}
-
-=== CẤU TRÚC PHÂN CHƯƠNG XML ({chap_count} CHƯƠNG: {chap_list_str}) ===
-Dịch đầy đủ lần lượt cả {chap_count} chương: {chap_list_str}.
-Mỗi chương bọc trong đúng cặp thẻ XML số chương tương ứng:
-
-<chapter_X>
-Chương X: [Tên chương dịch chuẩn Tiếng Việt]
-
-(Nội dung thân truyện đầy đủ của chương X)
-</chapter_X>
-
-Quy tắc phân chương:
-1. Đối ứng 1:1 chính xác: Mỗi thẻ <chapter_X> trong bản gốc sinh ra đúng một thẻ <chapter_X> tương ứng trong bản dịch, số X trùng khớp 100%. Không gộp chương, không nhảy cóc.
-2. Không cắt đôi chương: Trong một chương, dù gặp dấu chấm lửng '……' hay chuyển cảnh, tiếp tục dịch đầy đủ cho đến hết chương rồi mới đóng thẻ </chapter_X>.
-3. Tiêu đề: Đứng độc lập ở dòng đầu tiên sau thẻ mở ('Chương X: [Tên chương]'), cách 1 dòng trống rồi mới đến nội dung truyện.
-"""
+    system_prompt = build_standard_system_prompt(
+        profile_key=novel.context_profile,
+        prev_context_block=prev_context_block,
+        entity_prompt_block=entity_prompt_block,
+        custom_prompt_block=custom_prompt_block,
+        erotic_prompt_block=erotic_prompt_block,
+        chap_count=chap_count,
+        chap_list_str=chap_list_str
+    )
 
     enable_unblock = kwargs.get("enable_unblock", True)
     if enable_unblock:
         from app.services.unblock.rawt.rawt_pipeline import clear_rawt_trie_cache
         clear_rawt_trie_cache()
         from app.services.unblock.unblock_pipeline import mask_text_with_dictionary, get_unblock_prompt_enforcer
-        masked_text, mapping_table, _ = await mask_text_with_dictionary(combined_text, flow="rawt")
+        masked_text, mapping_table, _ = await mask_text_with_dictionary(combined_text, flow="rawt", enable_erotic=enable_erotic)
         enforcer_prompt = "\n" + get_unblock_prompt_enforcer() if mapping_table else ""
     else:
         masked_text = combined_text
@@ -433,228 +592,314 @@ Quy tắc phân chương:
         return [text]
 
     is_single_chapter = (len(chapter_map) <= 1)
-    if is_single_chapter and len(masked_text) > 52000:
-        text_chunks = split_text_into_halves(masked_text)
-    else:
-        text_chunks = [masked_text]
+    text_chunks = split_text_into_halves(masked_text) if (is_single_chapter and len(masked_text) > 8000) else [masked_text]
 
-    translated_parts = []
+    enable_super_refine = kwargs.get("enable_super_refine", False)
 
-    for chunk_idx, chunk_text in enumerate(text_chunks):
-        if len(text_chunks) > 1:
-            cno = list(chapter_map.values())[0] if chapter_map else ""
-            chunk_msg = f"📄 [CHIA ĐÔI CHƯƠNG {cno}] Đang dịch Phần {chunk_idx + 1}/2 ({len(chunk_text)} ký tự)..."
-            print(chunk_msg)
-            try:
-                from app.api.translation_router import add_system_log
-                add_system_log(chunk_msg, "pre")
-            except Exception:
-                pass
+    if enable_super_refine:
+        # =====================================================================
+        # CHẾ ĐỘ DỊCH SIÊU KỸ: 2 REQUESTS CHO MỘT LÔ
+        # - REQUEST 1: GỘP THỰC THỂ + DỊCH DEMO (Input là RAW)
+        # - REQUEST 2: LÀM SẠCH, TRAU CHUỐT & HIỆU ĐÍNH (Input là Bản dịch Demo, KHÔNG RAW)
+        # =====================================================================
+        from app.api.translation_router import add_system_log
+        add_system_log(f"💎 [DỊCH SIÊU KỸ | REQUEST 1/2] Gửi văn bản RAW lô Chương {chap_nos_list} để vừa bóc tách thực thể vừa dịch demo...", "purple")
 
-        user_task_prompt = (
-            f"Dưới đây là văn bản chương truyện tiếng Trung cần dịch hoàn toàn sang 100% TIẾNG VIỆT theo đúng Hồ sơ thể loại, Bộ quy tắc chuyển ngữ và Bảng thực thể đã cung cấp:\n\n"
-            f"<ngu_lieu_nguon>\n{chunk_text}\n</ngu_lieu_nguon>\n\n"
-            f"Yêu cầu thực thi:\n"
-            f"1. Dịch thoát ý tự nhiên, mạch lạc, dễ hiểu, chuẩn văn phong dịch thuật tiểu thuyết tiếng Việt.\n"
-            f"2. Áp dụng chuẩn xác tên riêng theo Bảng thực thể, bản dịch hoàn toàn bằng tiếng Việt sạch chữ Hán.\n"
-            f"3. Dịch đủ từng chương trong {chap_list_str}, mỗi chương bọc trong đúng cặp thẻ XML <chapter_X> tương ứng.{unblock_final_reminder}\n"
+        req1_system_instruction = build_super_refine_req1_prompt(
+            profile_key=novel.context_profile,
+            chap_count=chap_count,
+            chap_list_str=chap_list_str
         )
 
-        if is_grok_local:
-            grok_url = os.environ.get("AIREAD_GROK_URL") or "http://127.0.0.1:8020/translate-text"
-            grok_msg = f"🚀 [GROK WEB AUTOMATION] Đang gửi yêu cầu dịch sang Grok Server cổng 8020 (Model: {model})..."
-            print(grok_msg)
-            try:
-                from app.api.translation_router import add_system_log
-                add_system_log(grok_msg, "pre")
-            except Exception:
-                pass
+        req1_user_prompt = (
+            f"Dưới đây là văn bản chương truyện tiếng Trung của lô {chap_list_str}.\n"
+            f"Hãy thực hiện đầy đủ cả 2 nhiệm vụ: (1) Bóc tách thực thể vào <entities> và (2) Dịch toàn văn theo chuẩn điện ảnh & tiểu thuyết dịch (tuyệt đối cấm convert thô cơ học) vào <chapter_X>:\n\n"
+            f"<ngu_lieu_nguon>\n{masked_text}\n</ngu_lieu_nguon>"
+        )
 
-            payload = {
-                "text": user_task_prompt,
-                "system_instruction": full_system_instruction,
-                "timeout": 300.0
-            }
-            async with httpx.AsyncClient(timeout=360.0) as client:
-                res_data = await post_grok_local_with_retry(client, grok_url, payload, timeout=300.0)
-            
-            trans_text = res_data.get("translated_text", "").strip()
-            if not trans_text:
-                raise Exception("Grok Local Server không trả về nội dung dịch (kết quả rỗng).")
-            translated_parts.append(trans_text)
-        elif is_openrouter:
-            url = "https://openrouter.ai/api/v1/chat/completions"
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "http://localhost:8000",
-                "X-Title": "AiRead"
-            }
-            payload = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": full_system_instruction},
-                    {"role": "user", "content": user_task_prompt}
-                ]
-            }
-            if custom_temp_str:
-                try:
-                    payload["temperature"] = float(custom_temp_str)
-                except Exception:
-                    payload["temperature"] = 0.3
-            else:
-                payload["temperature"] = 0.3
-            if custom_topp_str:
-                try:
-                    payload["top_p"] = float(custom_topp_str)
-                except Exception:
-                    pass
+        req1_raw_output = await _execute_single_llm_call(
+            user_prompt=req1_user_prompt,
+            system_instruction=req1_system_instruction,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            is_grok_local=is_grok_local,
+            is_openrouter=is_openrouter,
+            custom_temp_str=custom_temp_str,
+            custom_topp_str=custom_topp_str,
+            custom_topk_str=custom_topk_str,
+            default_temp=0.7,
+            chapter_map=chapter_map,
+            unblock_final_reminder=unblock_final_reminder
+        )
 
-            async with httpx.AsyncClient(timeout=600.0) as client:
-                resp = await post_openrouter_with_retry(client, url, headers, payload)
-            if resp.status_code == 200:
-                res_json = resp.json()
-                translated_parts.append(res_json["choices"][0]["message"]["content"].strip())
+        # 1. Bóc tách thực thể mới từ Request 1
+        newly_found_entities = []
+        entities_match = re.search(r'<entities>(.*?)</entities>', req1_raw_output, re.DOTALL | re.IGNORECASE)
+        if entities_match:
+            ent_block_text = entities_match.group(1).strip()
+            for line in ent_block_text.splitlines():
+                line = line.strip()
+                m = re.match(r'^[-*•]?\s*([^\s\-\–\—:=]+(?:\s+[^\s\-\–\—:=]+)*?)\s*(?:dịch thành|=>|->|=|:)\s*(.+)$', line, re.IGNORECASE)
+                if m:
+                    c_n = m.group(1).strip()
+                    v_n = m.group(2).strip()
+                    if c_n and v_n and c_n in combined_text and c_n not in FORBIDDEN_JUNK_WORDS:
+                        from app.services.preprocessing.dichhan.hanviet_data import SPECIAL_ENTITIES_MAP
+                        # 1. Nếu c_n có trong SPECIAL_ENTITIES_MAP -> Luôn lấy chuẩn từ điển vàng
+                        if c_n in SPECIAL_ENTITIES_MAP:
+                            v_n = SPECIAL_ENTITIES_MAP[c_n]
+                        else:
+                            # Gọt sạch mọi phần chú thích trong ngoặc đơn/kép hoặc giải thích của LLM
+                            v_n = re.sub(r'[\(（\[【].*?[\)）\]】]', '', v_n).strip()
+                            if '->' in v_n:
+                                v_n = v_n.split('->')[-1].strip()
+                            if '=>' in v_n:
+                                v_n = v_n.split('=>')[-1].strip()
+                            v_n = re.sub(r'[\u4e00-\u9fff]', '', v_n).strip()
+                            v_n = re.sub(r'^(?:không có trong bảng|giữ nguyên|hoặc|tạm dịch)[:\s-]*', '', v_n, flags=re.IGNORECASE).strip()
+
+                        if v_n and len(v_n) < 50:
+                            newly_found_entities.append((c_n, v_n))
+                            batch_entities_dict[c_n] = {"vn": v_n, "type": "NAME", "role": ""}
+
+            if newly_found_entities:
+                try:
+                    async with AsyncSessionLocal() as session:
+                        stmt_ex = select(NovelEntity).where(NovelEntity.novel_id == novel.id)
+                        res_ex = await session.execute(stmt_ex)
+                        existing_entity_map = {e.chinese_name: e for e in res_ex.scalars().all()}
+                        for c_n, v_n in newly_found_entities:
+                            if c_n in existing_entity_map:
+                                ent_obj = existing_entity_map[c_n]
+                                ent_obj.frequency_count += 1
+                                ent_id = ent_obj.id
+                                if c_n in SPECIAL_ENTITIES_MAP:
+                                    ent_obj.rough_translation = SPECIAL_ENTITIES_MAP[c_n]
+                                elif '(' in ent_obj.rough_translation or '->' in ent_obj.rough_translation:
+                                    ent_obj.rough_translation = v_n
+                            else:
+                                new_ent = NovelEntity(
+                                    novel_id=novel.id,
+                                    chinese_name=c_n,
+                                    rough_translation=v_n,
+                                    entity_type="NAME",
+                                    frequency_count=1
+                                )
+                                session.add(new_ent)
+                                await session.flush()
+                                existing_entity_map[c_n] = new_ent
+                                ent_id = new_ent.id
+                            for cid in chapter_ids:
+                                stmt_link = select(ChapterEntityLink).where(
+                                    ChapterEntityLink.chapter_id == cid,
+                                    ChapterEntityLink.entity_id == ent_id
+                                )
+                                link_res = await session.execute(stmt_link)
+                                if not link_res.scalars().first():
+                                    session.add(ChapterEntityLink(chapter_id=cid, entity_id=ent_id))
+                        await session.commit()
+                    from app.services.storage.metadata_cache import sync_novel_metadata
+                    await sync_novel_metadata(novel.id)
+                except Exception as db_err:
+                    print(f"⚠️ [DỊCH SIÊU KỸ] Lỗi lưu thực thể Request 1 vào CSDL: {db_err}")
+
+        # 2. Tách bản dịch demo từ Request 1
+        demo_text = re.sub(r'<entities>.*?</entities>', '', req1_raw_output, flags=re.DOTALL | re.IGNORECASE).strip()
+        if enable_unblock and mapping_table:
+            from app.services.unblock.unblock_pipeline import unmask_text_with_dictionary
+            demo_text = unmask_text_with_dictionary(demo_text, mapping_table, enable_erotic=enable_erotic)
+
+        # Lưu bản dịch demo vào Output/01b_DichTho_GG/<Tên Truyện>/
+        try:
+            from app.core.config import OUTPUT_DIR
+            novel_folder = sanitize_filename(novel.title_rough or novel.title_raw or "Novel")
+            demo_out_dir = os.path.join(str(OUTPUT_DIR / "01b_DichTho_GG"), novel_folder)
+            os.makedirs(demo_out_dir, exist_ok=True)
+            res_chap_nos = sorted(list(chapter_map.values()))
+            batch_tag = "_".join(map(str, res_chap_nos))
+            demo_std_path = os.path.join(demo_out_dir, f"batch_ch{batch_tag}.txt")
+            demo_alt_path = os.path.join(demo_out_dir, f"batch_ch{batch_tag}_demo.txt")
+            demo_header_content = f"=== [BẢN DỊCH DEMO ĐỢT 1: CHƯƠNG {res_chap_nos}] ===\n"
+            demo_header_content += f"Tiểu thuyết: {novel.title_rough or novel.title_raw}\n\n"
+            if newly_found_entities:
+                demo_header_content += f"=== THỰC THỂ TRÍCH XUẤT TỪ LÔ NÀY ({len(newly_found_entities)} TỪ) ===\n"
+                for cn, vn in newly_found_entities:
+                    demo_header_content += f"- {cn} dịch thành {vn}\n"
+                demo_header_content += "\n" + "="*70 + "\n\n"
+            demo_full_file_content = demo_header_content + demo_text
+
+            with open(demo_std_path, "w", encoding="utf-8") as f_demo:
+                f_demo.write(demo_full_file_content)
+            with open(demo_alt_path, "w", encoding="utf-8") as f_demo:
+                f_demo.write(demo_full_file_content)
+
+            msg_demo_ok = f"📝 [DỊCH SIÊU KỸ | REQUEST 1/2 XONG] Đã trích xuất {len(newly_found_entities)} thực thể mới & lưu bản dịch demo tại Output/01b_DichTho_GG/{novel_folder}/batch_ch{batch_tag}.txt"
+            print(msg_demo_ok)
+            add_system_log(msg_demo_ok, "purple")
+        except Exception as e_demo:
+            print(f"⚠️ Lỗi lưu file demo 01b_DichTho_GG: {e_demo}")
+
+        # 3. Tái tạo bảng thực thể cập nhật đầy đủ có phân nhóm chuẩn cho Request 2
+        req2_names_list = []
+        req2_places_list = []
+        req2_sects_list = []
+        req2_skills_list = []
+        req2_items_list = []
+        req2_lore_list = []
+
+        for c_k, info in batch_entities_dict.items():
+            if isinstance(info, dict):
+                v_k = info.get("vn", "").strip()
+                e_type = (info.get("type") or "NAME").upper()
             else:
-                raise Exception(f"OpenRouter API Error (HTTP {resp.status_code}): {resp.text}")
+                v_k = str(info).strip()
+                e_type = "NAME"
+
+            if not c_k or not v_k or c_k == v_k:
+                continue
+            if c_k not in combined_text:
+                continue
+            if c_k in FORBIDDEN_JUNK_WORDS or any(bw in c_k for bw in ("日子", "租子", "乱子", "大声", "大不了", "倒是", "按人头")):
+                continue
+
+            entry_line = f"- {c_k} dịch thành {v_k}"
+            if c_k.endswith("期") or c_k.endswith("时期") or c_k in ["花石纲"]:
+                req2_lore_list.append(entry_line)
+            elif c_k.startswith("半步") or c_k in ["法天象地", "超倍化之术"]:
+                req2_skills_list.append(entry_line)
+            elif c_k in ["水泊梁山", "八百里水泊梁山"] or any(t in e_type for t in ["PLACE", "LOCATION"]):
+                req2_places_list.append(entry_line)
+            elif "SECT" in e_type:
+                req2_sects_list.append(entry_line)
+            elif "SKILL" in e_type:
+                req2_skills_list.append(entry_line)
+            elif "ITEM" in e_type:
+                req2_items_list.append(entry_line)
+            elif any(t in e_type for t in ["LORE_TERM", "OTHER"]):
+                req2_lore_list.append(entry_line)
+            else:
+                req2_names_list.append(entry_line)
+
+        req2_blocks = []
+        if req2_names_list:
+            req2_blocks.append("【1. DANH SÁCH NHÂN VẬT & NGOẠI HIỆU】:\n" + "\n".join(dedupe_keep_order(req2_names_list)[:80]))
+        if req2_places_list:
+            req2_blocks.append("【2. ĐỊA DANH, SƠN TRẠI & CĂN CỨ】:\n" + "\n".join(dedupe_keep_order(req2_places_list)[:40]))
+        if req2_sects_list:
+            req2_blocks.append("【3. TÔNG MÔN, BANG PHÁI & THẾ LỰC】:\n" + "\n".join(dedupe_keep_order(req2_sects_list)[:30]))
+        if req2_skills_list:
+            req2_blocks.append("【4. VÕ HỌC, TUYỆT KỸ & THẦN THÔNG】:\n" + "\n".join(dedupe_keep_order(req2_skills_list)[:40]))
+        if req2_items_list:
+            req2_blocks.append("【5. BẢO VẬT, BINH KHÍ & ĐAN DƯỢC】:\n" + "\n".join(dedupe_keep_order(req2_items_list)[:30]))
+        if req2_lore_list:
+            req2_blocks.append("【6. THUẬT NGỮ THẾ GIỚI QUAN & BỐI CẢNH】:\n" + "\n".join(dedupe_keep_order(req2_lore_list)[:30]))
+
+        req2_entity_block = ""
+        if req2_blocks:
+            req2_entity_block = (
+                "=== QUY TẮC KHÓA DỊCH THỰC THỂ CỐ ĐỊNH (CHUẨN 100% TIẾNG VIỆT) ===\n"
+                "(Khi xuất hiện các danh từ riêng dưới đây trong bản dịch, BẮT BUỘC dịch sang đúng tên tiếng Việt tương ứng, sạch bóng chữ Hán, không mở ngoặc chú thích song ngữ):\n\n"
+                + "\n\n".join(req2_blocks)
+            )
+
+        # 4. REQUEST 2: HIỆU ĐÍNH & LÀM SẠCH LƯỢT 2
+        add_system_log(f"💎 [DỊCH SIÊU KỸ | REQUEST 2/2] Đang gửi bản dịch demo lên LLM để hiệu đính, sửa câu convert thô và quét sạch chữ Hán...", "purple")
+
+        req2_system_instruction, req2_user_prompt = build_super_refine_req2_prompt(
+            profile_key=novel.context_profile,
+            req2_entity_block=req2_entity_block,
+            prev_context_block=prev_context_block,
+            custom_prompt_block=custom_prompt_block,
+            erotic_prompt_block=erotic_prompt_block,
+            chap_count=chap_count,
+            chap_list_str=chap_list_str,
+            demo_text=demo_text,
+            first_chap_no=list(chapter_map.values())[0] if chapter_map else 1
+        )
+
+        # Lưu file input của Request 2 vào 02_ChuanBi_DauVao
+        try:
+            in_pass2_path = os.path.join(in_out_dir, f"batch_ch{batch_tag}_input_pass2.txt")
+            with open(in_pass2_path, "w", encoding="utf-8") as f_in2:
+                f_in2.write(f"=== [ĐẦU VÀO DỊCH LÔ LƯỢT 2 LÀM SẠCH: CHƯƠNG {res_chap_nos}] ===\n")
+                f_in2.write(f"Tiểu thuyết: {novel.title_rough or novel.title_raw} (ID: {novel.id})\n\n")
+                f_in2.write("======================================================================\n")
+                f_in2.write("1. SYSTEM INSTRUCTION (HỒ SƠ DỊCH, BỐI CẢNH & BẢNG THỰC THỂ CỦA LÔ)\n")
+                f_in2.write("======================================================================\n")
+                f_in2.write(req2_system_instruction)
+                f_in2.write("\n\n======================================================================\n")
+                f_in2.write("2. BẢN DỊCH DEMO THEO TỪNG CHƯƠNG GỬI CHO LLM (THAY THẾ RAW)\n")
+                f_in2.write("======================================================================\n")
+                f_in2.write(demo_text)
+            print(f"📝 [2/2 DỊCH SIÊU KỸ] Đã lưu ĐẦU VÀO lượt 2 vào: Output/02_ChuanBi_DauVao/{novel_folder}/batch_ch{batch_tag}_input_pass2.txt")
+        except Exception as e_in2:
+            print(f"⚠️ Không thể lưu file đầu vào pass2: {e_in2}")
+
+        req2_response = await _execute_single_llm_call(
+            user_prompt=req2_user_prompt,
+            system_instruction=req2_system_instruction,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            is_grok_local=is_grok_local,
+            is_openrouter=is_openrouter,
+            custom_temp_str=custom_temp_str,
+            custom_topp_str=custom_topp_str,
+            custom_topk_str=custom_topk_str,
+            default_temp=0.35,
+            chapter_map=chapter_map,
+            unblock_final_reminder=""
+        )
+
+        has_chap_tag = any(f"<chapter_{c}" in req2_response for c in chapter_map.values())
+        if req2_response and has_chap_tag and len(req2_response) > len(demo_text) * 0.4:
+            translated_text = req2_response.strip()
+            add_system_log(f"💎 [DỊCH SIÊU KỸ | REQUEST 2/2 XONG] Đã làm sạch & trau chuốt thành công {len(translated_text)} ký tự cho lô Chương {chap_nos_list}!", "success")
         else:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-            headers = {"Content-Type": "application/json"}
-            safety_settings = [
-                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-                {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"}
-            ]
-            gen_config = {}
-            if custom_temp_str:
+            print(f"⚠️ [DỊCH SIÊU KỸ] Kết quả Request 2 thiếu thẻ hoặc quá ngắn, sử dụng bản dịch demo hợp lệ!")
+            translated_text = demo_text
+    else:
+        translated_parts = []
+        for chunk_idx, chunk_text in enumerate(text_chunks):
+            if len(text_chunks) > 1:
+                cno = list(chapter_map.values())[0] if chapter_map else ""
+                chunk_msg = f"📄 [CHIA ĐÔI CHƯƠNG {cno}] Đang dịch Phần {chunk_idx + 1}/2 ({len(chunk_text)} ký tự)..."
+                print(chunk_msg)
                 try:
-                    gen_config["temperature"] = float(custom_temp_str)
-                except Exception:
-                    gen_config["temperature"] = 0.3
-            else:
-                gen_config["temperature"] = 0.3
-            if custom_topp_str:
-                try:
-                    gen_config["topP"] = float(custom_topp_str)
-                except Exception:
-                    pass
-            if custom_topk_str:
-                try:
-                    gen_config["topK"] = int(custom_topk_str)
+                    from app.api.translation_router import add_system_log
+                    add_system_log(chunk_msg, "pre")
                 except Exception:
                     pass
 
-            payload = {
-                "system_instruction": {"parts": [{"text": full_system_instruction}]},
-                "contents": [{"role": "user", "parts": [{"text": user_task_prompt}]}],
-                "safetySettings": safety_settings
-            }
-            if gen_config:
-                payload["generationConfig"] = gen_config
+            user_task_prompt = (
+                f"Dưới đây là văn bản chương truyện tiếng Trung cần dịch hoàn toàn sang 100% TIẾNG VIỆT theo đúng Hồ sơ thể loại, Bộ quy tắc chuyển ngữ và Bảng thực thể đã cung cấp:\n\n"
+                f"<ngu_lieu_nguon>\n{chunk_text}\n</ngu_lieu_nguon>\n\n"
+                f"Yêu cầu thực thi:\n"
+                f"1. Dịch thoát ý tự nhiên, mạch lạc, dễ hiểu, chuẩn văn phong dịch thuật tiểu thuyết tiếng Việt.\n"
+                f"2. Áp dụng chuẩn xác tên riêng theo Bảng thực thể, bản dịch hoàn toàn bằng tiếng Việt sạch chữ Hán.\n"
+                f"3. Dịch đủ từng chương trong {chap_list_str}, mỗi chương bọc trong đúng cặp thẻ XML <chapter_X> tương ứng.{unblock_final_reminder}\n"
+            )
 
-            async with httpx.AsyncClient(timeout=600.0) as client:
-                resp = await post_gemini_with_retry(client, url, headers, payload)
-
-            res_json = resp.json()
-            if resp.status_code != 200:
-                err_msg = res_json.get("error", {}).get("message", resp.text)
-                raise Exception(f"Gemini API Error (HTTP {resp.status_code}): {err_msg}")
-
-            candidates = res_json.get("candidates", [])
-            candidate = candidates[0] if candidates else {}
-            prompt_block = res_json.get("promptFeedback", {}).get("blockReason")
-            finish_reason = candidate.get("finishReason")
-            print(f"[LLM-TRANSLATOR DEBUG] Main Call: finishReason={finish_reason}, promptBlock={prompt_block}, candidates_count={len(candidates)}")
-            
-            # Nếu bị chặn bởi Gemini Safety Policy / RECITATION -> Xóa cache Trie, dọn sạch system prompt và thử lại bằng LLM
-            if prompt_block or finish_reason in ["SAFETY", "PROHIBITED_CONTENT", "BLOCK", "OTHER", "RECITATION"] or not candidate.get("content"):
-                err_cause = prompt_block or finish_reason or "NO_CONTENT"
-                print(f"[LLM-TRANSLATOR] Cảnh báo: Gemini chặn bộ lọc ({err_cause}). Tiến hành tối ưu prompt chuyển ngữ sáng tạo và thử lại...")
-                from app.services.unblock.rawt.rawt_pipeline import clear_rawt_trie_cache
-                clear_rawt_trie_cache()
-                from app.services.unblock.unblock_pipeline import mask_text_with_dictionary
-                re_masked_text, extra_mapping, _ = await mask_text_with_dictionary(chunk_text, flow="rawt")
-                
-                # Khi gặp RECITATION (bộ lọc bản quyền), chỉ tăng nhẹ temperature lên 0.35 để tránh sinh token sai chính tả
-                retry_temperature = 0.35 if finish_reason == "RECITATION" else 0.25
-                
-                # System prompt chuyển thể độc lập sạch sẽ, giữ định dạng XML chapter chuẩn
-                clean_system_instruction = f"""🔴 VAI TRÒ & MỆNH LỆNH TỐI CAO: BẠN LÀ MÁY DỊCH TIỂU THUYẾT TRUNG - VIỆT (CHINESE TO VIETNAMESE TRANSLATOR).
-- NGÔN NGỮ NGUỒN: TIẾNG TRUNG.
-- NGÔN NGỮ ĐÍCH BẮT BUỘC: 100% TIẾNG VIỆT HOÀN CHỈNH (VIETNAMESE ONLY).
-Nhiệm vụ: Chuyển ngữ sáng tạo độc lập (Transformative Translation) từ ngữ liệu nghiên cứu sang tác phẩm TIẾNG VIỆT mượt mà, thuần Việt 100%, giàu hình ảnh, đúng nghĩa và bảo toàn 100% cốt truyện nguyên tác. Tuyệt đối không đàm thoại, không trả lời câu hỏi, không xuất tiếng Trung hay tiếng Anh. Tái cấu trúc câu từ tự nhiên cho người Việt, thoát ly sao chép thô cứng. Tuyệt đối không dùng từ Hán-Việt xa lạ, tối nghĩa; tuyệt đối không dịch nghĩa đen từng chữ một cách ngô nghê, sượng sùng; cấm mọi từ ngữ kỳ dị làm suy giảm chất lượng văn học.
-
-=== MỆNH LỆNH BẮT BUỘC ===
-1. Cấu trúc phân chương & Tiêu đề chương: Mỗi chương BẮT BUỘC bọc trong cặp thẻ XML:
-<chapter_X>
-Chương X: [Tên chương dịch chuẩn Tiếng Việt]
-
-(Nội dung thân truyện dịch đầy đủ)
-</chapter_X>
-Dòng đầu tiên ngay sau thẻ <chapter_X> BẮT BUỘC là: 'Chương X: [Tên chương]' nằm trên 1 dòng độc lập riêng biệt, cách dòng trống với thân truyện. Tuyệt đối không dính tiêu đề chương vào câu văn đầu tiên.
-2. Dịch đầy đủ 100% nội dung cốt truyện từ đầu đến câu cuối cùng, không cắt xén tình tiết.{unblock_final_reminder}
-3. Tối ưu dấu câu cho TTS: Dùng dấu chuẩn (. , : ! ? ...), câu kết thúc hoặc sau lời thoại BẮT BUỘC dùng dấu chấm đơn (.) trước khi đóng ngoặc kép, dùng hai chấm trước lời thoại (: \\n\\"[Lời thoại]\\"). Tuyệt đối cấm tạo dấu kép lỗi ('..', ',,').
-"""
-                
-                retry_user_prompt = (
-                    f"=== NGỮ LIỆU NGHIÊN CỨU VĂN HỌC ĐỐI CHIẾU ===\n{re_masked_text}\n\n"
-                    f"=== CHỈ DẪN: Chuyển ngữ sáng tạo và biên soạn lại toàn bộ câu chuyện bằng tiếng Việt văn học tự nhiên, uyển chuyển, bảo toàn 100% tình tiết và ý đồ của ngữ liệu trên, bọc đúng thẻ XML <chapter_X>! ==="
-                )
-                
-                retry_gen_config = dict(gen_config)
-                
-                retry_payload = {
-                    "system_instruction": {"parts": [{"text": clean_system_instruction}]},
-                    "contents": [{"role": "user", "parts": [{"text": retry_user_prompt}]}],
-                    "generationConfig": retry_gen_config,
-                    "safetySettings": safety_settings
-                }
-                
-                async with httpx.AsyncClient(timeout=600.0) as client:
-                    retry_resp = await post_gemini_with_retry(client, url, headers, retry_payload)
-                
-                retry_json = retry_resp.json()
-                retry_cands = retry_json.get("candidates", [])
-                retry_cand = retry_cands[0] if retry_cands else {}
-                retry_prompt_block = retry_json.get("promptFeedback", {}).get("blockReason")
-                retry_finish_reason = retry_cand.get("finishReason")
-                
-                if not retry_prompt_block and retry_finish_reason not in ["SAFETY", "PROHIBITED_CONTENT", "BLOCK", "OTHER", "RECITATION"] and retry_cand.get("content"):
-                    candidate = retry_cand
-                    mapping_table.update(extra_mapping)
-                else:
-                    err_blocked = f"❌ [BỊ CHẶN BỞI BỘ LỌC GEMINI ({retry_finish_reason or retry_prompt_block})] Lô Chương {list(chapter_map.values())} bị Gemini chặn bản quyền/safety, không chia nhỏ nội dung."
-                    print(f"[LLM-TRANSLATOR] {err_blocked}")
-                    raise Exception(err_blocked)
-
-            finish_reason = candidate.get("finishReason")
-            chunk_out = candidate["content"]["parts"][0]["text"].strip() if (candidate.get("content") and candidate["content"].get("parts")) else ""
-
-            if finish_reason == "MAX_TOKENS":
-                if chunk_out and not is_single_chapter:
-                    warn_max_tok = f"⚠️ [LLM-TRANSLATOR] Lô Chương {list(chapter_map.values())} chạm giới hạn MAX_TOKENS của Gemini ở phần cuối (đã tạo {len(chunk_out)} ký tự). Vẫn chuyển sang Hậu xử lý để cứu và lưu các chương đầu đủ thẻ!"
-                    print(warn_max_tok)
-                    add_system_log(warn_max_tok, "warning")
-                elif not chunk_out:
-                    err_max_tok = f"❌ [TRÀN TỐI ĐA TOKEN GEMINI] Lô Chương {list(chapter_map.values())} bị ngắt do chạm giới hạn token tối đa nhưng không có nội dung trả về."
-                    print(f"[LLM-TRANSLATOR] {err_max_tok}")
-                    raise ValueError(err_max_tok)
-
+            chunk_out = await _execute_single_llm_call(
+                user_prompt=user_task_prompt,
+                system_instruction=full_system_instruction,
+                provider=provider,
+                model=model,
+                api_key=api_key,
+                is_grok_local=is_grok_local,
+                is_openrouter=is_openrouter,
+                custom_temp_str=custom_temp_str,
+                custom_topp_str=custom_topp_str,
+                custom_topk_str=custom_topk_str,
+                default_temp=0.7,
+                chapter_map=chapter_map,
+                unblock_final_reminder=unblock_final_reminder
+            )
             translated_parts.append(chunk_out)
 
-    translated_text = "\n\n".join(translated_parts).strip()
+        translated_text = "\n\n".join(translated_parts).strip()
     
-    # Dọn dẹp vòng lặp suy thoái nếu có
-    translated_text = re.sub(r'(\b\w+\b)(?:[\s,.]+\1){5,}', r'\1', translated_text)
-    translated_text = re.sub(r'(?i)\b(cổng game|casino|nhà cái|nổ hũ|game slot|pagcor|baccarat|uy tín hơn\. Cụ thể).*', '', translated_text, flags=re.DOTALL)
-    # Dọn dẹp các ký tự ngoại lai rò rỉ từ tokenizer đa ngữ (như chữ Thái, Hy Lạp, Cyrillic)
-    translated_text = re.sub(r'[\u0e00-\u0e7f\u0370-\u03ff\u0400-\u04ff]', '', translated_text)
-    # Chuẩn hóa lỗi gõ lặp nguyên âm có dấu lạ do chập token (như bềề -> bề, lêuu -> lêu)
-    translated_text = re.sub(r'([àáảãạâầấẩẫậăằắẳẵặèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵ])\1+', r'\1', translated_text)
-    # Chuẩn hóa xóa khoảng trắng thừa trước dấu câu (ví dụ: "thao tác ?" -> "thao tác?", "nữa chứ !!!" -> "nữa chứ!!!")
-    translated_text = re.sub(r'[ \t]+([,.:;?!…])', r'\1', translated_text)
 
     # Đảm bảo các thẻ chương bao bọc toàn bộ văn bản (chỉ áp dụng an toàn cho lô 1 chương duy nhất)
     if len(chapter_map) == 1:
@@ -741,8 +986,8 @@ Dòng đầu tiên ngay sau thẻ <chapter_X> BẮT BUỘC là: 'Chương X: [T�
                     print(f"[LLM-TRANSLATOR] {err_missing}")
                     return {"error": err_missing}
 
-    # === KIỂM TRA & KHÔI PHỤC THẺ PLACEHOLDER ===
-    if enable_unblock and mapping_table:
+    # === KIỂM TRA & KHÔI PHỤC THẺ PLACEHOLDER (Chỉ áp dụng cho dịch 1 lượt thông thường) ===
+    if enable_unblock and mapping_table and not enable_super_refine:
         from app.services.unblock.unblock_pipeline import validate_placeholders, build_placeholder_reminder
         
         check = validate_placeholders(translated_text, mapping_table)
@@ -760,45 +1005,41 @@ Dòng đầu tiên ngay sau thẻ <chapter_X> BẮT BUỘC là: 'Chương X: [T�
             
             # === RETRY 1 LẦN với prompt nhắc cụ thể thẻ nào thiếu ===
             reminder = build_placeholder_reminder(check["missing"], mapping_table)
-            retry_prompt = user_task_prompt + "\n\n" + reminder
-            
+            base_prompt = req2_user_prompt if enable_super_refine else (
+                f"Dưới đây là văn bản chương truyện tiếng Trung cần dịch hoàn toàn sang 100% TIẾNG VIỆT theo đúng Hồ sơ thể loại, Bộ quy tắc chuyển ngữ và Bảng thực thể đã cung cấp:\n\n"
+                f"<ngu_lieu_nguon>\n{masked_text}\n</ngu_lieu_nguon>\n\n"
+                f"Yêu cầu thực thi:\n"
+                f"1. Dịch thoát ý tự nhiên, mạch lạc, dễ hiểu, chuẩn văn phong dịch thuật tiểu thuyết tiếng Việt.\n"
+                f"2. Áp dụng chuẩn xác tên riêng theo Bảng thực thể, bản dịch hoàn toàn bằng tiếng Việt sạch chữ Hán.\n"
+                f"3. Dịch đủ từng chương trong {chap_list_str}, mỗi chương bọc trong đúng cặp thẻ XML <chapter_X> tương ứng.{unblock_final_reminder}\n"
+            )
+            retry_prompt = base_prompt + "\n\n" + reminder
+            sys_inst = req2_system_instruction if enable_super_refine else full_system_instruction
+
             try:
-                if is_openrouter:
-                    payload_retry = {
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": full_system_instruction},
-                            {"role": "user", "content": retry_prompt}
-                        ],
-                        "temperature": 0.3,
-                        "max_tokens": 16384
-                    }
-                    async with httpx.AsyncClient(timeout=600.0) as client:
-                        resp2 = await post_openrouter_with_retry(client, url, headers, payload_retry)
-                    if resp2.status_code == 200:
-                        retry_text = resp2.json()["choices"][0]["message"]["content"].strip()
-                        check2 = validate_placeholders(retry_text, mapping_table)
-                        if check2["found"] > check["found"]:
-                            translated_text = retry_text
-                            pct2 = round(check2["found"] / check2["total"] * 100)
-                            print(f"✅ [UNBLOCK RAWT RETRY] Lô Chương {list(chapter_map.values())} Cải thiện: {check['found']}→{check2['found']}/{check2['total']} thẻ trên TỔNG LÔ ({pct2}%)")
-                        else:
-                            print(f"ℹ️ [UNBLOCK RAWT RETRY] Lô Chương {list(chapter_map.values())} Không cải thiện, giữ bản gốc ({pct}%)")
-                else:
-                    payload["contents"] = [{"role": "user", "parts": [{"text": retry_prompt}]}]
-                    async with httpx.AsyncClient(timeout=600.0) as client:
-                        resp2 = await post_gemini_with_retry(client, url, headers, payload)
-                    res2 = resp2.json()
-                    c2 = res2.get("candidates", [{}])[0]
-                    if c2.get("content") and c2.get("content", {}).get("parts"):
-                        retry_text = c2["content"]["parts"][0]["text"].strip()
-                        check2 = validate_placeholders(retry_text, mapping_table)
-                        if check2["found"] > check["found"]:
-                            translated_text = retry_text
-                            pct2 = round(check2["found"] / check2["total"] * 100)
-                            print(f"✅ [UNBLOCK RAWT RETRY] Lô Chương {list(chapter_map.values())} Cải thiện: {check['found']}→{check2['found']}/{check2['total']} thẻ trên TỔNG LÔ ({pct2}%)")
-                        else:
-                            print(f"ℹ️ [UNBLOCK RAWT RETRY] Lô Chương {list(chapter_map.values())} Không cải thiện, giữ bản gốc ({pct}%)")
+                retry_text = await _execute_single_llm_call(
+                    user_prompt=retry_prompt,
+                    system_instruction=sys_inst,
+                    provider=provider,
+                    model=model,
+                    api_key=api_key,
+                    is_grok_local=is_grok_local,
+                    is_openrouter=is_openrouter,
+                    custom_temp_str=custom_temp_str,
+                    custom_topp_str=custom_topp_str,
+                    custom_topk_str=custom_topk_str,
+                    default_temp=0.25,
+                    chapter_map=chapter_map,
+                    unblock_final_reminder=unblock_final_reminder
+                )
+                if retry_text:
+                    check2 = validate_placeholders(retry_text, mapping_table)
+                    if check2["found"] > check["found"]:
+                        translated_text = retry_text
+                        pct2 = round(check2["found"] / check2["total"] * 100) if check2["total"] > 0 else 100
+                        print(f"✅ [UNBLOCK RAWT RETRY] Lô Chương {list(chapter_map.values())} Cải thiện: {check['found']}→{check2['found']}/{check2['total']} thẻ trên TỔNG LÔ ({pct2}%)")
+                    else:
+                        print(f"ℹ️ [UNBLOCK RAWT RETRY] Lô Chương {list(chapter_map.values())} Không cải thiện, giữ bản gốc ({pct}%)")
             except Exception as e:
                 print(f"⚠️ [UNBLOCK RAWT RETRY] Retry thất bại: {e}.")
                 
@@ -827,7 +1068,7 @@ Dòng đầu tiên ngay sau thẻ <chapter_X> BẮT BUỘC là: 'Chương X: [T�
     return {
         "status": "success",
         "translated_text_masked": translated_text,
-        "mapping_table": mapping_table,
+        "mapping_table": {} if enable_super_refine else mapping_table,
         "chapter_map": chapter_map,
         "novel_id": novel.id
     }
