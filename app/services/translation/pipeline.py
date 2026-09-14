@@ -153,8 +153,6 @@ async def _extract_and_save_batch_entities(novel_id: int, batch: List[int], forc
     - Đồng bộ ra Metadata JSON Cache (Output/06_Metadata/.../chapters/*.json và entities.json).
     """
     from app.models.schema import ChapterEntityLink, NovelEntity
-    from app.services.preprocessing.dichhan.evidence_collector import collect_batch_entities
-    from app.services.preprocessing.dichhan.llm_extractor import process_2branch_evidence_via_llm
     from app.services.storage.metadata_cache import sync_novel_metadata
 
     chap_nos = await _get_chap_numbers(batch)
@@ -304,27 +302,21 @@ async def _extract_and_save_batch_entities(novel_id: int, batch: List[int], forc
                 })
                 seen_entity_names.add(sp_cn)
 
-        # Bổ sung các thực thể MỚI do LLM vừa bóc tách (đã qua lọc gọt tiền tố và hậu tố rác)
-        JUNK_PREFIXES = ("给", "过", "杀", "看", "见", "当", "算", "做", "被", "在", "站", "摆", "出", "了", "知", "父", "向", "跟", "和", "对", "把", "是", "有", "个", "这", "那", "的")
+        # Bổ sung các thực thể do LLM bóc tách cho lô này
         for ent in new_llm_entities:
             cn = ent.get("chinese_name", "").strip()
             vn = ent.get("vietnamese_name", ent.get("rough_translation", "")).strip()
             if not cn or not vn or len(cn) < 2 or cn in seen_entity_names:
                 continue
 
-            # Bỏ qua các từ thông dụng đời thường
+            # Bỏ qua một số hư từ ngữ pháp hoặc trạng thái vô nghĩa đời thường
             if cn in ["和尚", "行者", "郎君", "回神", "回过神", "成佛", "成圣", "明君", "大神", "一尊", "舵主"]:
                 continue
 
-            # Bỏ qua nếu bắt đầu bằng động từ/hư từ rác
-            if any(cn.startswith(p) for p in JUNK_PREFIXES):
-                continue
-
-            # Gọt sạch đuôi '神' nếu dính vào sau tên nhân vật
-            if cn.endswith("神") and len(cn) >= 4 and not cn.endswith("眼神") and not cn.endswith("精神"):
-                base_name = cn[:-1]
-                if any(base_name in e.get("chinese_name", "") for e in entities if len(e.get("chinese_name", "")) < len(cn)):
-                    continue
+            # Nếu tên này đã có trong CSDL từ trước, luôn khóa cứng 100% bản dịch cũ
+            if cn in confirmed_db_map:
+                ent["vietnamese_name"] = confirmed_db_map[cn]["vietnamese_name"]
+                ent["rough_translation"] = confirmed_db_map[cn]["vietnamese_name"]
 
             entities.append(ent)
             seen_entity_names.add(cn)
