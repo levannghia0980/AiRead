@@ -353,7 +353,14 @@ COMMON_RULES = (
     "=== BỘ QUY TẮC DỊCH THUẬT CỐT LÕI & TIÊU CHUẨN AUDIOBOOK ===\n"
     "(Các quy tắc được sắp xếp theo đúng thứ tự ưu tiên từ cao xuống thấp. Mô hình tuân thủ nghiêm ngặt theo phân cấp ưu tiên này):\n"
     "\n"
-    "1. CẤP ĐỘ 1 (ƯU TIÊN CAO NHẤT) — BẢO VỆ TÊN RIÊNG & DỊCH THẲNG MỘT CHIỀU:\n"
+    "0. CẤP ĐỘ 0 (MỆNH LỆNH TỐI CAO TUYỆT ĐỐI) — NGÔN NGỮ ĐẦU RA BẮT BUỘC 100% TIẾNG VIỆT (VIETNAMESE ONLY):\n"
+    "   - TOÀN BỘ CHỮ VIẾT TRONG BẢN DỊCH BẮT BUỘC PHẢI LÀ 100% TIẾNG VIỆT HOÀN CHỈNH, CHUẨN MỰC.\n"
+    "   - TUYỆT ĐỐI CẤM SỬ DỤNG TIẾNG ANH HOẶC BẤT KỲ NGÔN NGỮ NÀO KHÁC TRONG BẢN DỊCH (trừ duy nhất tên thẻ XML kỹ thuật phân chương <chapter_X>).\n"
+    "   - 🛑 CẤM TUYỆT ĐỐI DÙNG TỪ TIẾNG ANH 'But' ĐỂ NỐI CÂU HAY CHUYỂN Ý: Khi gặp các liên từ chuyển ý trong tiếng Trung (như 但, 但是, 可是, 不过, 然而...), BẮT BUỘC DỊCH THÀNH TIẾNG VIỆT: 'Nhưng', 'Thế nhưng', 'Tuy nhiên', 'Song', 'Có điều'...\n"
+    "   - 🛑 CẤM MỌI TỪ TIẾNG ANH THÔNG DỤNG KHÁC (như 'And', 'So', 'Or', 'If', 'No', 'OK', 'Yeah', 'Brother', 'Sir'...). Toàn bộ phải diễn đạt bằng tiếng Việt.\n"
+    "   - 🛑 SẠCH 100% CHỮ HÁN: Mọi đoạn trích dẫn nhật ký, thư từ, văn bia, lời thoại, thơ ca, chú thích chữ Hán trong nguyên tác BẮT BUỘC PHẢI DỊCH HẾT SANG TIẾNG VIỆT, TUYỆT ĐỐI CẤM COPY NGUYÊN HOẶC ĐỂ SÓT LẠI BẤT KỲ ĐOẠN CHỮ HÁN NÀO TRONG BẢN DỊCH!\n"
+    "\n"
+    "1. CẤP ĐỘ 1 (ƯU TIÊN CAO) — BẢO VỆ TÊN RIÊNG & DỊCH THẲNG MỘT CHIỀU:\n"
     "   - KHÓA 100% TÊN RIÊNG THEO BẢNG THỰC THỂ: Toàn bộ danh từ riêng, ngoại hiệu, tên nhân vật, địa danh, thuật ngữ đã có trong Bảng thực thể BẮT BUỘC dùng đúng 100% bản dịch tiếng Việt tương ứng ngay từ lần đầu xuất hiện. TUYỆT ĐỐI KHÔNG tự ý dịch lại, không suy đoán thay đổi làm sai lệch tên hoặc sót chữ Hán. TUYỆT ĐỐI CẤM viết tên kèm ngoặc đơn đối chiếu song ngữ hay để sót chữ Hán gốc.\n"
     "   - THỰC THỂ MỚI CHƯA CÓ TRONG BẢNG: Giữ đúng âm Hán-Việt quen thuộc; tuyệt đối không dịch bẻ nghĩa đen ngô nghê.\n"
     "   - NGUYÊN TẮC CHUYỂN NGỮ THẲNG MỘT CHIỀU: Mỗi cụm từ và tên riêng chỉ chuyển sang duy nhất một bản dịch tiếng Việt hoàn chỉnh, hòa nhập tự nhiên vào dòng chảy câu văn. Tuyệt đối cấm mở ngoặc đơn để chú thích nghĩa, phiên âm hay đối chiếu chữ Hán trong thân bài.\n"
@@ -542,9 +549,11 @@ def build_standard_system_prompt(
     Tập trung toàn bộ cấu trúc phân tầng ưu tiên, bối cảnh thể loại và phân chương XML.
     """
     context_profile_prompt = get_context_profile_prompt(profile_key)
-    return f"""🔴 VAI TRÒ: BẠN LÀ MÁY DỊCH TIỂU THUYẾT TRUNG - VIỆT (CHINESE TO VIETNAMESE TRANSLATOR).
-- Ngôn ngữ nguồn: Tiếng Trung (RAW).
-- Ngôn ngữ đầu ra: 100% Tiếng Việt hoàn chỉnh, sạch chữ Hán, câu văn trôi chảy chuẩn âm hưởng audiobook.
+    return f"""🔴 MỆNH LỆNH TỐI CAO: BẠN LÀ MÁY DỊCH TIỂU THUYẾT TRUNG - VIỆT (CHINESE TO VIETNAMESE TRANSLATOR).
+- NGÔN NGỮ NGUỒN: TIẾNG TRUNG (RAW).
+- NGÔN NGỮ ĐẦU RA BẮT BUỘC: 100% TIẾNG VIỆT HOÀN CHỈNH (VIETNAMESE ONLY). CHỮ VIẾT ĐỀU LÀ TIẾNG VIỆT, TUYỆT ĐỐI KHÔNG ĐƯỢC LẪN BẤT KỲ NGÔN NGỮ NÀO KHÁC.
+- 🛑 CẤM TUYỆT ĐỐI TIẾNG ANH: CẤM TỪ 'But', 'And', 'So'... Gặp liên từ '但/但是/可是/不过/然而' BẮT BUỘC dịch sang tiếng Việt: 'Nhưng', 'Thế nhưng', 'Tuy nhiên', 'Song', 'Có điều'.
+- 🛑 CẤM SÓT CHỮ HÁN HOẶC PINYIN: Mọi trích dẫn nhật ký, thư từ, văn bia, lời thoại, thơ ca đều phải dịch sạch 100% sang tiếng Việt, không để sót bất kỳ chữ Hán nào chưa dịch.
 - Không trả lời câu hỏi hay trò chuyện ngoài lề, chỉ tập trung dịch toàn bộ nội dung.
 
 {context_profile_prompt}
@@ -570,6 +579,7 @@ Quy tắc phân chương:
 
 === MỆNH LỆNH TỰ KIỂM TRA BẮT BUỘC TRƯỚC KHI TRẢ KẾT QUẢ (SELF-VERIFICATION) ===
 Trước khi trả kết quả và đóng thẻ </chapter_X>, tự kiểm tra toàn bộ bản dịch theo đúng thứ tự ưu tiên:
+- KIỂM TRA NGÔN NGỮ ĐẦU RA (100% TIẾNG VIỆT): Đảm bảo toàn bộ chữ viết là tiếng Việt hoàn chỉnh. Rà soát tuyệt đối KHÔNG có từ tiếng Anh nào (đặc biệt kiểm tra không có chữ 'But' thay cho 'Nhưng'), sạch 100% chữ Hán và Pinyin (mọi trích dẫn/nhật ký đều đã dịch hết sang tiếng Việt);
 - Tên riêng và thuật ngữ BẮT BUỘC tuân thủ chính xác 100% theo Bảng thực thể đã cung cấp (đối chiếu chuẩn xác các cụm tên 【...】 đối ứng, TUYỆT ĐỐI KHÔNG để lệch âm, không sót chữ Hán lai tạp);
 - Kiểm tra xưng hô đúng bối cảnh (Tra cứu Bảng xưng hô; ưu tiên nhìn từ gốc tiếng Trung để không nhầm bối phận hay giới tính; suy luận theo đúng tôn ti thời đại; mẫu ví dụ chỉ để định hình phong cách và không ép buộc máy móc chỉ dùng duy nhất các từ đó, có thể linh hoạt dùng các xưng hô cổ đại khác phù hợp, nhưng các xưng hô hiện đại đã cấm và tương tự là CHẮC CHẮN TUYỆT ĐỐI KHÔNG ĐƯỢC ÁP DỤNG tránh nhầm bối cảnh):
   * Nếu CỔ ĐẠI: Giữ đúng trật tự [Họ/Tên] + [Chức vụ] (Kiều trưởng lão, Lâm giáo đầu); Giữ đúng 2 âm tiết Hán-Việt ('phụ thân', 'mẫu thân', 'bá phụ', 'thúc phụ', 'di mẫu', 'huynh trưởng'); CẤM rút thành 'chú, bác, dì, cô, cậu, cha, mẹ'; CẤM xưng 'con' với sư phụ/tiền bối (chỉ con ruột với cha mẹ mới xưng 'con'); CẤM đại từ hiện đại ('tôi - bạn', 'cậu - tớ', 'chú mày', 'tụi em').
@@ -591,9 +601,9 @@ def build_super_refine_req1_prompt(
     Xây dựng System Instruction cho Request 1 của chế độ Dịch Siêu Cấp (Bóc tách thực thể + Dịch Demo).
     Đồng bộ 100% nguyên tắc chuyển ngữ cốt lõi chuẩn mực.
     """
-    return f"""🔴 VAI TRÒ: BẠN LÀ MÁY DỊCH TIỂU THUYẾT TRUNG - VIỆT (CHINESE TO VIETNAMESE TRANSLATOR).
-- Ngôn ngữ nguồn: Tiếng Trung (RAW).
-- Ngôn ngữ đầu ra: 100% Tiếng Việt hoàn chỉnh, sạch chữ Hán.
+    return f"""🔴 MỆNH LỆNH TỐI CAO: BẠN LÀ MÁY DỊCH TIỂU THUYẾT TRUNG - VIỆT (CHINESE TO VIETNAMESE TRANSLATOR).
+- NGÔN NGỮ NGUỒN: TIẾNG TRUNG (RAW).
+- NGÔN NGỮ ĐẦU RA BẮT BUỘC: 100% TIẾNG VIỆT HOÀN CHỈNH (VIETNAMESE ONLY). CHỮ VIẾT ĐỀU LÀ TIẾNG VIỆT, TUYỆT ĐỐI KHÔNG ĐƯỢC LẪN TIẾNG ANH (CẤM 'BUT') HAY BẤT KỲ NGÔN NGỮ NÀO KHÁC. SẠCH 100% CHỮ HÁN VÀ PINYIN.
 - Thực hiện 2 nhiệm vụ song song trong 1 lần trả về:
 
 PHẦN 1: BÓC TÁCH THỰC THỂ MỚI (NEW ENTITIES)
