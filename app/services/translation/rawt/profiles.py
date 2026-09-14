@@ -355,10 +355,8 @@ COMMON_RULES = (
     "\n"
     "0. CẤP ĐỘ 0 (MỆNH LỆNH TỐI CAO TUYỆT ĐỐI) — NGÔN NGỮ ĐẦU RA BẮT BUỘC 100% TIẾNG VIỆT (VIETNAMESE ONLY):\n"
     "   - TOÀN BỘ CHỮ VIẾT TRONG BẢN DỊCH BẮT BUỘC PHẢI LÀ 100% TIẾNG VIỆT HOÀN CHỈNH, CHUẨN MỰC.\n"
-    "   - TUYỆT ĐỐI CẤM SỬ DỤNG TIẾNG ANH HOẶC BẤT KỲ NGÔN NGỮ NÀO KHÁC TRONG BẢN DỊCH (trừ duy nhất tên thẻ XML kỹ thuật phân chương <chapter_X>).\n"
-    "   - 🛑 CẤM TUYỆT ĐỐI DÙNG TỪ TIẾNG ANH 'But' ĐỂ NỐI CÂU HAY CHUYỂN Ý: Khi gặp các liên từ chuyển ý trong tiếng Trung (như 但, 但是, 可是, 不过, 然而...), BẮT BUỘC DỊCH THÀNH TIẾNG VIỆT: 'Nhưng', 'Thế nhưng', 'Tuy nhiên', 'Song', 'Có điều'...\n"
-    "   - 🛑 CẤM MỌI TỪ TIẾNG ANH THÔNG DỤNG KHÁC (như 'And', 'So', 'Or', 'If', 'No', 'OK', 'Yeah', 'Brother', 'Sir'...). Toàn bộ phải diễn đạt bằng tiếng Việt.\n"
-    "   - 🛑 SẠCH 100% CHỮ HÁN: Mọi đoạn trích dẫn nhật ký, thư từ, văn bia, lời thoại, thơ ca, chú thích chữ Hán trong nguyên tác BẮT BUỘC PHẢI DỊCH HẾT SANG TIẾNG VIỆT, TUYỆT ĐỐI CẤM COPY NGUYÊN HOẶC ĐỂ SÓT LẠI BẤT KỲ ĐOẠN CHỮ HÁN NÀO TRONG BẢN DỊCH!\n"
+    "   - 🛑 TUYỆT ĐỐI CẤM TIẾNG ANH: Tuyệt đối cấm sử dụng bất kỳ từ tiếng Anh nào trong bản dịch (đặc biệt cấm các từ như 'But', 'And', 'So', 'Or'...). Toàn bộ câu từ đều phải diễn đạt bằng 100% tiếng Việt tự nhiên.\n"
+    "   - 🛑 SẠCH 100% CHỮ HÁN: Mọi đoạn trích dẫn nhật ký, thư từ, văn bia, lời thoại, thơ ca trong nguyên tác BẮT BUỘC PHẢI DỊCH HẾT SANG TIẾNG VIỆT, TUYỆT ĐỐI CẤM COPY NGUYÊN HOẶC ĐỂ SÓT LẠI BẤT KỲ ĐOẠN CHỮ HÁN GỐC NÀO TRONG BẢN DỊCH!\n"
     "\n"
     "1. CẤP ĐỘ 1 (ƯU TIÊN CAO) — BẢO VỆ TÊN RIÊNG & DỊCH THẲNG MỘT CHIỀU:\n"
     "   - KHÓA 100% TÊN RIÊNG THEO BẢNG THỰC THỂ: Toàn bộ danh từ riêng, ngoại hiệu, tên nhân vật, địa danh, thuật ngữ đã có trong Bảng thực thể BẮT BUỘC dùng đúng 100% bản dịch tiếng Việt tương ứng ngay từ lần đầu xuất hiện. TUYỆT ĐỐI KHÔNG tự ý dịch lại, không suy đoán thay đổi làm sai lệch tên hoặc sót chữ Hán. TUYỆT ĐỐI CẤM viết tên kèm ngoặc đơn đối chiếu song ngữ hay để sót chữ Hán gốc.\n"
@@ -552,7 +550,7 @@ def build_standard_system_prompt(
     return f"""🔴 MỆNH LỆNH TỐI CAO: BẠN LÀ MÁY DỊCH TIỂU THUYẾT TRUNG - VIỆT (CHINESE TO VIETNAMESE TRANSLATOR).
 - NGÔN NGỮ NGUỒN: TIẾNG TRUNG (RAW).
 - NGÔN NGỮ ĐẦU RA BẮT BUỘC: 100% TIẾNG VIỆT HOÀN CHỈNH (VIETNAMESE ONLY). CHỮ VIẾT ĐỀU LÀ TIẾNG VIỆT, TUYỆT ĐỐI KHÔNG ĐƯỢC LẪN BẤT KỲ NGÔN NGỮ NÀO KHÁC.
-- 🛑 CẤM TUYỆT ĐỐI TIẾNG ANH: CẤM TỪ 'But', 'And', 'So'... Gặp liên từ '但/但是/可是/不过/然而' BẮT BUỘC dịch sang tiếng Việt: 'Nhưng', 'Thế nhưng', 'Tuy nhiên', 'Song', 'Có điều'.
+- 🛑 CẤM TUYỆT ĐỐI TIẾNG ANH: Tuyệt đối không dùng bất kỳ từ tiếng Anh nào (cấm các từ như 'But', 'And', 'So'...). Toàn bộ câu từ bắt buộc phải là 100% tiếng Việt.
 - 🛑 CẤM SÓT CHỮ HÁN HOẶC PINYIN: Mọi trích dẫn nhật ký, thư từ, văn bia, lời thoại, thơ ca đều phải dịch sạch 100% sang tiếng Việt, không để sót bất kỳ chữ Hán nào chưa dịch.
 - Không trả lời câu hỏi hay trò chuyện ngoài lề, chỉ tập trung dịch toàn bộ nội dung.
 

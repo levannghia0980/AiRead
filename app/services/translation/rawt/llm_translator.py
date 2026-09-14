@@ -224,7 +224,7 @@ async def _execute_single_llm_call(
             clean_system_instruction = f"""🔴 MỆNH LỆNH TỐI CAO: BẠN LÀ MÁY DỊCH TIỂU THUYẾT TRUNG - VIỆT (CHINESE TO VIETNAMESE TRANSLATOR).
 - NGÔN NGỮ NGUỒN: TIẾNG TRUNG.
 - NGÔN NGỮ ĐÍCH BẮT BUỘC: 100% TIẾNG VIỆT HOÀN CHỈNH (VIETNAMESE ONLY). CHỮ VIẾT ĐỀU LÀ TIẾNG VIỆT, TUYỆT ĐỐI KHÔNG ĐƯỢC LẪN BẤT KỲ NGÔN NGỮ NÀO KHÁC.
-- 🛑 CẤM TUYỆT ĐỐI TIẾNG ANH: CẤM TỪ 'But', 'And', 'So'... Gặp liên từ '但/但是/可是/不过/然而' BẮT BUỘC dịch sang tiếng Việt: 'Nhưng', 'Thế nhưng', 'Tuy nhiên', 'Song', 'Có điều'.
+- 🛑 CẤM TUYỆT ĐỐI TIẾNG ANH: Tuyệt đối không dùng bất kỳ từ tiếng Anh nào (cấm các từ như 'But', 'And', 'So'...). Toàn bộ câu từ bắt buộc phải là 100% tiếng Việt.
 - 🛑 CẤM SÓT CHỮ HÁN HOẶC PINYIN: Dịch sạch 100% sang tiếng Việt, không bỏ sót chữ Hán.
 Nhiệm vụ: Chuyển ngữ từ ngữ liệu sang tác phẩm TIẾNG VIỆT hoàn chỉnh, dễ hiểu, đúng nghĩa và bảo toàn 100% cốt truyện nguyên tác. Mỗi chương bọc trong đúng cặp thẻ XML <chapter_X>. Dòng đầu tiên là 'Chương X: [Tên chương]'.
 """
