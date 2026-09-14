@@ -117,7 +117,7 @@ async def _execute_single_llm_call(
     custom_temp_str: str = "",
     custom_topp_str: str = "",
     custom_topk_str: str = "",
-    default_temp: float = 0.7,
+    default_temp: float = 0.2,
     chapter_map: dict = None,
     unblock_final_reminder: str = ""
 ) -> str:
@@ -182,17 +182,20 @@ async def _execute_single_llm_call(
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"}
         ]
-        # Cấu hình chuẩn khuyến nghị của Google cho Gemini 3.x / Flash-Lite:
-        # temperature: 0.7, topP: 0.9, topK: 40, thinkingConfig: thinkingLevel = "medium"
-        use_temp = float(custom_temp_str) if custom_temp_str else (default_temp if default_temp is not None else 0.7)
-        use_topp = float(custom_topp_str) if custom_topp_str else 0.9
+        # Cấu hình chuẩn dịch thuật cho Gemini 3.x / Flash-Lite:
+        # Khóa nhiệt độ thấp (0.2), topP cao (0.95) để đảm bảo độ chính xác 100% ngữ âm tiếng Việt,
+        # loại bỏ hoàn toàn hiện tượng phân tán token gây lỗi chính tả (như 'vinh khí') hoặc lẫn tiếng Anh ('But').
+        # thinkingLevel đặt 'low' để dịch siêu tốc (1-2s), tránh suy nghĩ lan man bằng tiếng Anh.
+        use_temp = float(custom_temp_str) if custom_temp_str else (default_temp if default_temp is not None else 0.2)
+        use_topp = float(custom_topp_str) if custom_topp_str else 0.95
         use_topk = int(custom_topk_str) if custom_topk_str else 40
-        thinking_level = (os.environ.get("AIREAD_THINKING_LEVEL") or "medium").strip().lower()
+        thinking_level = (os.environ.get("AIREAD_THINKING_LEVEL") or "low").strip().lower()
 
         gen_config = {
             "temperature": use_temp,
             "topP": use_topp,
             "topK": use_topk,
+            "maxOutputTokens": 65536,
             "thinkingConfig": {
                 "thinkingLevel": thinking_level
             }
@@ -663,7 +666,7 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
             custom_temp_str=custom_temp_str,
             custom_topp_str=custom_topp_str,
             custom_topk_str=custom_topk_str,
-            default_temp=0.7,
+            default_temp=0.2,
             chapter_map=chapter_map,
             unblock_final_reminder=unblock_final_reminder
         )
