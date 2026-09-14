@@ -1,3 +1,4 @@
+import os
 import asyncio
 import re
 from typing import List, Optional, Dict, Any
@@ -178,58 +179,181 @@ async def _extract_and_save_batch_entities(novel_id: int, batch: List[int], forc
     add_system_log(msg_ent_start, "pre")
 
     try:
+        from app.services.preprocessing.dichhan.hanviet_data import SPECIAL_ENTITIES_MAP, sanitize_entity_vietnamese
+        from app.models.schema import ChapterVersion
+
+        # -------------------------------------------------------------
+        # BƯỚC 1: TÌM TRỰC TIẾP CÁC TÊN ĐÃ DỊCH TRONG DB TRÊN BẢN RAW CỦA LÔ NÀY
+        # (Đây là cốt lõi: Tên đã có rồi thì tìm trực tiếp, KHÔNG ĐOÁN MÒ LẠI, KHÓA 100% TÊN CHUẨN)
+        # -------------------------------------------------------------
+        combined_raw_text = ""
+        chapter_raw_map: Dict[int, str] = {}
+        async with AsyncSessionLocal() as session:
+            stmt_raws = select(ChapterVersion).where(
+                ChapterVersion.chapter_id.in_(unlinked_batch),
+                ChapterVersion.version_type == "RAW"
+            )
+            res_raws = await session.execute(stmt_raws)
+            for r_ver in res_raws.scalars():
+                if r_ver.file_path and os.path.exists(r_ver.file_path):
+                    try:
+                        with open(r_ver.file_path, "r", encoding="utf-8", errors="ignore") as rf:
+                            c_content = rf.read()
+                            chapter_raw_map[r_ver.chapter_id] = c_content
+                            combined_raw_text += "\n" + c_content
+                    except Exception:
+                        pass
+
+            # Lấy các thực thể TÊN RIÊNG đã có của bộ truyện (bỏ qua từ thường và correction)
+            stmt_all_ents = select(NovelEntity).where(
+                NovelEntity.novel_id == novel_id,
+                NovelEntity.entity_type.in_(["NAME", "PLACE", "SECT", "SKILL", "ITEM", "CREATURE", "PERSON"])
+            )
+            res_all_ents = await session.execute(stmt_all_ents)
+            all_db_entities = []
+            for e in res_all_ents.scalars():
+                role_str = (e.role or "").upper()
+                if "TỪ THƯỜNG" in role_str or "TU THUONG" in role_str or "THAM KHẢO" in role_str or "THAM KHAO" in role_str:
+                    continue
+                all_db_entities.append(e)
+
+        # 🚀 TỐI ƯU HÓA: Phân nhóm từ điển theo ký tự đầu tiên (Bucket Indexing O(N))
+        prefix_db_bucket: Dict[str, List[NovelEntity]] = {}
+        for ent in all_db_entities:
+            cn = ent.chinese_name.strip() if ent.chinese_name else ""
+            if cn and len(cn) >= 2:
+                prefix_db_bucket.setdefault(cn[0], []).append(ent)
+        for first_char in prefix_db_bucket:
+            prefix_db_bucket[first_char].sort(key=lambda x: len(x.chinese_name.strip()), reverse=True)
+
+        confirmed_db_map: Dict[str, Dict[str, Any]] = {}
+        text_len = len(combined_raw_text)
+        t_idx = 0
+        while t_idx < text_len:
+            ch = combined_raw_text[t_idx]
+            cand_ents = prefix_db_bucket.get(ch)
+            if not cand_ents:
+                t_idx += 1
+                continue
+
+            matched_len = 0
+            for ent in cand_ents:
+                cn = ent.chinese_name.strip()
+                c_len = len(cn)
+                if t_idx + c_len <= text_len and combined_raw_text[t_idx:t_idx + c_len] == cn:
+                    if cn not in confirmed_db_map:
+                        vn = sanitize_entity_vietnamese(ent.rough_translation, cn)
+                        confirmed_db_map[cn] = {
+                            "chinese_name": cn,
+                            "vietnamese_name": vn,
+                            "rough_translation": vn,
+                            "entity_type": ent.entity_type or "NAME",
+                            "gender": ent.gender,
+                            "role": ent.role or "[TÊN CỐ ĐỊNH]",
+                            "evaluation": "TÊN CỐ ĐỊNH",
+                            "from_db": True,
+                            "db_id": ent.id
+                        }
+                    matched_len = c_len
+                    break
+
+            t_idx += (matched_len if matched_len > 0 else 1)
+
+        print(f"ℹ️ [THỰC THỂ ĐÃ CÓ] Đã tìm thấy trực tiếp {len(confirmed_db_map)} thực thể đã có trong CSDL xuất hiện ở lô này.")
+
+        # -------------------------------------------------------------
+        # BƯỚC 2: THU THẬP VÀ GỬI ĐẦY ĐỦ CỤM NGỮ CẢNH CHO LLM BÓC TÁCH & PHÂN TÍCH
+        # (Vẫn gửi toàn bộ ứng viên kèm ngữ cảnh xung quanh để LLM thấy trọn vẹn cả câu và phân tích quan hệ nhân vật)
+        # -------------------------------------------------------------
         evidence_payload = await collect_batch_entities(unlinked_batch)
-        candidates = evidence_payload.get("branch_1_ner_candidates", [])
-        entities = []
-        if candidates:
+        raw_candidates = evidence_payload.get("branch_1_ner_candidates", [])
+
+        # Với các ứng viên đã có trong confirmed_db_map, gắn mốc neo rõ ràng [ĐÃ DỊCH CHUẨN TỪ TRƯỚC]
+        for cand in raw_candidates:
+            orig = (cand.get("original_han") or cand.get("han") or "").strip()
+            if orig in confirmed_db_map:
+                cand["suggested_hanviet_example"] = f"[ĐÃ DỊCH CHUẨN TỪ TRƯỚC]: {confirmed_db_map[orig]['vietnamese_name']}"
+
+        # Cung cấp từ điển thực thể đã có cho LLM làm mốc tra cứu
+        existing_context_for_llm = {
+            cn: {"vietnamese_name": info["vietnamese_name"], "entity_type": info["entity_type"], "role": info["role"]}
+            for cn, info in confirmed_db_map.items()
+        }
+        evidence_payload["existing_db_entities"] = existing_context_for_llm
+        evidence_payload["branch_1_ner_candidates"] = raw_candidates
+
+        new_llm_entities = []
+        if raw_candidates:
             try:
                 llm_res = await process_2branch_evidence_via_llm(evidence_payload)
-                entities = llm_res.get("entities", [])
+                new_llm_entities = llm_res.get("entities", [])
             except Exception as llm_err:
                 msg_llm_fail = f"⚠️ [THỰC THỂ LLM LỖI]: {llm_err}. Kích hoạt chế độ Fallback Hán-Việt tự động..."
                 print(msg_llm_fail)
                 add_system_log(msg_llm_fail, "warning")
 
-        # Chỉ bổ sung các ngoại hiệu, thần thoại, tác phẩm văn học nếu LLM bỏ sót, tuyệt đối KHÔNG tự động ép từ ngữ đời thường thành tên riêng
-        from app.services.preprocessing.dichhan.common_lists import EPITHET_SUFFIXES, CHINESE_SURNAMES
-        from app.services.preprocessing.dichhan.hanviet_data import SPECIAL_ENTITIES_MAP
-        existing_names = {e.get("chinese_name", "").strip() for e in entities}
-        for cand in candidates:
-            orig = (cand.get("original_han") or cand.get("han") or "").strip()
-            sugg = (cand.get("suggested_hanviet_example") or cand.get("db_example") or "").strip()
-            if not orig or not sugg or orig in existing_names or orig == sugg:
-                continue
-            
-            is_special = orig in SPECIAL_ENTITIES_MAP
-            is_epithet = 2 <= len(orig) <= 5 and any(orig.endswith(ep) for ep in EPITHET_SUFFIXES)
-            is_moniker = cand.get("ner_type") == "EPITHET" or cand.get("is_epithet")
-            is_myth_deity = 2 <= len(orig) <= 5 and any(orig.endswith(sf) for sf in ["神", "仙", "圣", "佛", "祖", "君", "尊"]) and not any(orig.endswith(b) for b in ["精神", "眼神", "留神", "心神", "走神"])
-            is_book_canon = orig in ["金瓶梅", "水浒传", "西游记", "三国演义", "红楼梦", "道德经"] or cand.get("entity_type") in ["BOOK", "BOOK_CANON"]
-            
-            if is_special or is_epithet or is_moniker or is_myth_deity:
-                entities.append({
-                    "chinese_name": orig,
-                    "vietnamese_name": sugg,
-                    "entity_type": "ITEM" if is_book_canon else "NAME",
-                    "gender": None,
-                    "role": "[TÊN CỐ ĐỊNH] " + ("tác phẩm văn học" if is_book_canon else "ngoại hiệu / thần thoại")
-                })
-                existing_names.add(orig)
-            elif is_book_canon:
-                entities.append({
-                    "chinese_name": orig,
-                    "vietnamese_name": sugg,
-                    "entity_type": "ITEM",
-                    "gender": None,
-                    "role": "[TÊN CỐ ĐỊNH] tác phẩm văn học / kinh thư"
-                })
-                existing_names.add(orig)
+        # -------------------------------------------------------------
+        # BƯỚC 3: HỢP NHẤT VÀ LÀM SẠCH THỰC THỂ
+        # -------------------------------------------------------------
+        # Bắt đầu từ các thực thể đã xác thực 100% trong DB
+        entities = list(confirmed_db_map.values())
+        seen_entity_names = set(confirmed_db_map.keys())
 
-        # 🔴 SUB-STRING SUPPRESSION AN TOÀN: Lọc sạch từ con bị nuốt trong từ mẹ dài hơn
-        # (Ví dụ: nếu đã có 白衣秀士 thì loại bỏ ngay 衣秀士; có 云里金刚 thì loại bỏ ngay 里金刚; có 沧州小旋风 thì loại bỏ ngay 州小旋风)
+        # Bổ sung các thực thể chuẩn vàng SPECIAL_ENTITIES_MAP nếu có xuất hiện trong văn bản
+        # (Chỉ nạp danh từ riêng, tên nhân vật, tác phẩm kinh điển; không nạp các phân kỳ như '后期' hay từ chung)
+        for sp_cn, sp_vn in SPECIAL_ENTITIES_MAP.items():
+            if sp_cn.endswith("期") or sp_cn.endswith("时期") or sp_cn in ["行者", "装逼", "抱大腿", "火并", "武力值", "战斗力", "大冤种"]:
+                continue
+            if sp_cn in combined_raw_text and sp_cn not in seen_entity_names:
+                entities.append({
+                    "chinese_name": sp_cn,
+                    "vietnamese_name": sp_vn,
+                    "rough_translation": sp_vn,
+                    "entity_type": "ITEM" if sp_cn in ["金瓶梅", "水浒传", "西游记", "三国演义", "红楼梦", "道德经"] else "NAME",
+                    "gender": None,
+                    "role": "[TÊN CỐ ĐỊNH] chuẩn vàng",
+                    "evaluation": "TÊN CỐ ĐỊNH"
+                })
+                seen_entity_names.add(sp_cn)
+
+        # Bổ sung các thực thể MỚI do LLM vừa bóc tách (đã qua lọc gọt tiền tố và hậu tố rác)
+        JUNK_PREFIXES = ("给", "过", "杀", "看", "见", "当", "算", "做", "被", "在", "站", "摆", "出", "了", "知", "父", "向", "跟", "和", "对", "把", "是", "有", "个", "这", "那", "的")
+        for ent in new_llm_entities:
+            cn = ent.get("chinese_name", "").strip()
+            vn = ent.get("vietnamese_name", ent.get("rough_translation", "")).strip()
+            if not cn or not vn or len(cn) < 2 or cn in seen_entity_names:
+                continue
+
+            # Bỏ qua các từ thông dụng đời thường
+            if cn in ["和尚", "行者", "郎君", "回神", "回过神", "成佛", "成圣", "明君", "大神", "一尊", "舵主"]:
+                continue
+
+            # Bỏ qua nếu bắt đầu bằng động từ/hư từ rác
+            if any(cn.startswith(p) for p in JUNK_PREFIXES):
+                continue
+
+            # Gọt sạch đuôi '神' nếu dính vào sau tên nhân vật
+            if cn.endswith("神") and len(cn) >= 4 and not cn.endswith("眼神") and not cn.endswith("精神"):
+                base_name = cn[:-1]
+                if any(base_name in e.get("chinese_name", "") for e in entities if len(e.get("chinese_name", "")) < len(cn)):
+                    continue
+
+            entities.append(ent)
+            seen_entity_names.add(cn)
+
+        # 🔴 LÀM SẠCH THỰC THỂ AN TOÀN: Bảo toàn 100% thực thể thật (như 煤球), loại bỏ chuỗi dài rác (như 煤球确实比较灵)
+        from app.services.preprocessing.dichhan.common_lists import CHINESE_SURNAMES, EPITHET_SUFFIXES
         entities_sorted = sorted(entities, key=lambda x: len(x.get("chinese_name", "").strip()), reverse=True)
-        filtered_entities = []
         suppressed_names = set()
+
+        # 1. Phát hiện và loại bỏ chuỗi dính liên từ/phó từ/động từ ngữ pháp rác
+        JUNK_PARTICLES = ("确实", "比较", "一伙", "而且", "但是", "如果", "说道", "冷笑", "问道", "大声", "一下", "起来", "由于", "导致")
+        for e in entities_sorted:
+            cn = e.get("chinese_name", "").strip()
+            if any(jp in cn for jp in JUNK_PARTICLES):
+                suppressed_names.add(cn)
+
+        # 2. Xử lý chuỗi dài vs thực thể ngắn
         for i, e_long in enumerate(entities_sorted):
             c_long = e_long.get("chinese_name", "").strip()
             if c_long in suppressed_names:
@@ -239,14 +363,17 @@ async def _extract_and_save_batch_entities(novel_id: int, batch: List[int], forc
                 if c_short in suppressed_names:
                     continue
                 if c_short and c_long and (c_short in c_long) and len(c_short) < len(c_long):
-                    is_standalone = (
-                        c_short in SPECIAL_ENTITIES_MAP or
-                        any(c_short.startswith(s) for s in CHINESE_SURNAMES) or
-                        any(c_short.endswith(ep) for ep in EPITHET_SUFFIXES)
-                    )
-                    if not is_standalone:
-                        suppressed_names.add(c_short)
-            filtered_entities.append(e_long)
+                    # Nếu c_long dài (>= 5 chữ) nuốt thực thể chuẩn 2-4 chữ (như '煤球' trong '煤球确实比较灵'):
+                    # Chuỗi dài c_long là chuỗi câu rác bóc dính -> LOẠI BỎ c_long, BẢO TOÀN c_short!
+                    if len(c_long) >= 5 and len(c_short) in (2, 3, 4):
+                        suppressed_names.add(c_long)
+                        break
+                    # Chỉ loại bỏ c_short nếu c_short là đuôi bị cụt đầu của một danh hiệu/tên riêng đầy đủ (như 白衣秀士 -> 衣秀士, 云里金刚 -> 里金刚)
+                    elif c_long.endswith(c_short) and len(c_long) - len(c_short) == 1 and c_short not in SPECIAL_ENTITIES_MAP:
+                        if not any(c_short.startswith(s) for s in CHINESE_SURNAMES):
+                            suppressed_names.add(c_short)
+
+        filtered_entities = [e for e in entities_sorted if e.get("chinese_name", "").strip() not in suppressed_names]
         entities = filtered_entities
 
         if not entities:
@@ -298,15 +425,17 @@ async def _extract_and_save_batch_entities(novel_id: int, batch: List[int], forc
                     ent_id = new_ent.id
                     saved_count += 1
 
-                # Liên kết với các chương trong batch (ChapterEntityLink)
+                # Liên kết với các chương trong batch mà thực thể THỰC SỰ xuất hiện trong bản RAW của chương đó
                 for cid in batch:
-                    stmt_link = select(ChapterEntityLink).where(
-                        ChapterEntityLink.chapter_id == cid,
-                        ChapterEntityLink.entity_id == ent_id
-                    )
-                    link_res = await session.execute(stmt_link)
-                    if not link_res.scalars().first():
-                        session.add(ChapterEntityLink(chapter_id=cid, entity_id=ent_id))
+                    c_raw = chapter_raw_map.get(cid, "")
+                    if ch_name in c_raw:
+                        stmt_link = select(ChapterEntityLink).where(
+                            ChapterEntityLink.chapter_id == cid,
+                            ChapterEntityLink.entity_id == ent_id
+                        )
+                        link_res = await session.execute(stmt_link)
+                        if not link_res.scalars().first():
+                            session.add(ChapterEntityLink(chapter_id=cid, entity_id=ent_id))
 
             await session.commit()
 
@@ -337,7 +466,8 @@ async def _translate_batch(batch: List[int], enable_names_dict: bool = True, **k
             batch, 
             enable_names_dict=enable_names_dict, 
             enable_unblock=enable_unblock, 
-            enable_erotic=enable_erotic
+            enable_erotic=enable_erotic,
+            custom_prompt=kwargs.get("custom_prompt", "")
         )
         ver_type = "LLM"
             
@@ -550,7 +680,7 @@ async def run_translation_batch_pipeline(
                 # Đảm bảo lô hiện tại có sẵn file bản gốc RAW tiếng Trung
                 await _ensure_chapters_crawled(current_batch)
 
-                # BƯỚC 1: BÓC TÁCH THỰC THỂ LÔ & LƯU VÀO MÁY (chỉ bóc tách cho các chương chưa có)
+                # BƯỚC 1: BÓC TÁCH THỰC THỂ LÔ & LƯU VÀO MÁY
                 if enable_names_dict:
                     await _extract_and_save_batch_entities(novel_id, current_batch)
 

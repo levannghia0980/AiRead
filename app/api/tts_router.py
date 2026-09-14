@@ -3,9 +3,12 @@ import re
 import json
 import shutil
 import asyncio
+import math
+from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
-from fastapi import APIRouter, HTTPException, Path, Query
+from fastapi import APIRouter, HTTPException, Path, Query, Body
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from app.core.database import AsyncSessionLocal
 from app.models.schema import Novel, Chapter, ChapterVersion
@@ -45,6 +48,87 @@ def get_cached_audio_duration(file_path: str) -> str:
         return dur
     except Exception:
         return "00:00:00"
+
+# ── QUẢN LÝ METADATA CHƯƠNG ĐÃ XUẤT (BỀN VỮNG) ──
+class SetLastExportRequest(BaseModel):
+    last_chapter: int
+
+def _get_export_meta_path(novel_folder: str) -> str:
+    base_audio_dir = str(OUTPUT_DIR / "05_Audio_TTS")
+    return os.path.join(base_audio_dir, novel_folder, "_export_meta.json")
+
+def get_last_exported_chapter(novel_folder: str) -> int:
+    """
+    Trả về số chương cuối cùng đã từng được xuất gộp cho truyện.
+    Kết hợp giữa:
+    1. Metadata bền vững trong _export_meta.json
+    2. Quét tên file thực tế trên đĩa (*_Ch{start}_to_Ch{end}*.mp3/json)
+    """
+    last_ch = 0
+    meta_path = _get_export_meta_path(novel_folder)
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                last_ch = int(data.get("last_exported_chapter", 0))
+        except Exception:
+            pass
+
+    # Quét đĩa tìm nếu có file xuất có end_chapter lớn hơn
+    base_audio_dir = str(OUTPUT_DIR / "05_Audio_TTS")
+    out_dir = os.path.join(base_audio_dir, novel_folder)
+    if os.path.exists(out_dir):
+        for f in os.listdir(out_dir):
+            if f.startswith("_"):
+                continue
+            m = re.search(r"_Ch(\d+)_to_Ch(\d+)", f)
+            if m:
+                try:
+                    end_c = int(m.group(2))
+                    if end_c > last_ch:
+                        last_ch = end_c
+                except ValueError:
+                    pass
+
+    return last_ch
+
+def record_exported_chapter(novel_folder: str, start_c: int, end_c: int, speed: float = 1.0):
+    """
+    Ghi nhận lại chương đã xuất vào metadata _export_meta.json bền vững.
+    Không bao giờ bị mất kể cả khi dọn dẹp file MP3 gộp.
+    """
+    meta_path = _get_export_meta_path(novel_folder)
+    data = {"last_exported_chapter": 0, "history": []}
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            pass
+
+    curr_last = int(data.get("last_exported_chapter", 0))
+    disc_last = get_last_exported_chapter(novel_folder)
+    new_last = max(curr_last, disc_last, end_c)
+    data["last_exported_chapter"] = new_last
+    data["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if "history" not in data or not isinstance(data["history"], list):
+        data["history"] = []
+    data["history"].append({
+        "start": start_c,
+        "end": end_c,
+        "speed": speed,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    })
+    if len(data["history"]) > 50:
+        data["history"] = data["history"][-50:]
+
+    try:
+        os.makedirs(os.path.dirname(meta_path), exist_ok=True)
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[EXPORT-META] Lỗi ghi metadata: {e}")
 
 router = APIRouter(prefix="/novels/{novel_id}/audio", tags=["Audiobook"])
 test_router = APIRouter(prefix="/tts", tags=["TTS Testing"])
@@ -691,6 +775,9 @@ async def merge_custom_range(
     dur_str = await asyncio.to_thread(get_audio_duration_ffmpeg, final_path)
     sz = os.path.getsize(final_path) if os.path.exists(final_path) else 0
     
+    # Tự động ghi nhớ mốc chương đã xuất (bền vững, không mất khi dọn dẹp)
+    record_exported_chapter(novel_folder, cached_chapters[0], cached_chapters[-1], speed)
+
     speed_info = f" (Tốc độ {speed}x)" if abs(speed - 1.0) >= 0.01 else ""
     json_filename = f"{short_title}_Ch{cached_chapters[0]}_to_Ch{cached_chapters[-1]}{speed_tag}_timeline.json"
     json_download_url = f"/api/novels/{novel_id}/audio/export_timeline_json?start_chapter={cached_chapters[0]}&end_chapter={cached_chapters[-1]}&speed={speed}"
@@ -708,16 +795,144 @@ async def merge_custom_range(
         "json_download_url": json_download_url
     }
 
+@router.get("/export_meta")
+async def get_novel_export_meta(
+    novel_id: int = Path(...),
+    speed: float = Query(1.5, ge=0.25, le=4.0)
+):
+    """
+    Lấy thông tin chương xuất cuối cùng và tính toán gợi ý khoảng chương tiếp theo
+    sao cho thời lượng < 12 tiếng (khoảng 10h - 11.5h).
+    """
+    async with AsyncSessionLocal() as session:
+        stmt = select(Novel).where(Novel.id == novel_id)
+        res = await session.execute(stmt)
+        novel = res.scalar_one_or_none()
+        if not novel:
+            raise HTTPException(status_code=404, detail="Không tìm thấy truyện.")
+
+    base_audio_dir = str(OUTPUT_DIR / "05_Audio_TTS")
+    novel_folder = sanitize_filename(novel.title_rough if novel.title_rough else novel.title_raw)
+    out_dir = os.path.join(base_audio_dir, novel_folder)
+    chapters_cache_dir = os.path.join(out_dir, "chapters")
+
+    last_exported = get_last_exported_chapter(novel_folder)
+
+    # Đọc danh sách chương có audio
+    cached_items = []
+    if os.path.exists(chapters_cache_dir):
+        for f in sorted(os.listdir(chapters_cache_dir)):
+            if f.endswith(".json") and not f.startswith("_"):
+                try:
+                    c_num = int(os.path.splitext(f)[0])
+                    mp3_p = _find_chapter_audio_path(chapters_cache_dir, c_num)
+                    if mp3_p and os.path.exists(mp3_p) and os.path.getsize(mp3_p) > 100:
+                        dur_sec = 0.0
+                        try:
+                            with open(os.path.join(chapters_cache_dir, f), "r", encoding="utf-8") as jf:
+                                jdata = json.load(jf)
+                                dur_sec = float(jdata.get("duration", 0))
+                        except Exception:
+                            pass
+                        if dur_sec <= 0:
+                            dur_str = get_audio_duration_ffmpeg(mp3_p)
+                            parts = dur_str.split(":")
+                            if len(parts) == 3:
+                                dur_sec = float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+                        if dur_sec > 0:
+                            cached_items.append((c_num, dur_sec))
+                except ValueError:
+                    pass
+
+    cached_items.sort(key=lambda x: x[0])
+
+    next_start = (last_exported + 1) if last_exported > 0 else (cached_items[0][0] if cached_items else 1)
+    remaining_items = [it for it in cached_items if it[0] >= next_start]
+
+    effective_speed = max(0.25, min(4.0, float(speed)))
+    target_cap_sec = 11.8 * 3600 * effective_speed  # thời lượng gốc trước scale
+
+    suggested_end = next_start
+    suggested_dur_sec = 0.0
+
+    if remaining_items:
+        acc_dur = 0.0
+        for c_num, d_sec in remaining_items:
+            if acc_dur + d_sec <= target_cap_sec or not suggested_dur_sec:
+                acc_dur += d_sec
+                suggested_end = c_num
+                suggested_dur_sec = acc_dur
+            else:
+                break
+    elif cached_items:
+        suggested_end = cached_items[-1][0]
+
+    scaled_dur = suggested_dur_sec / effective_speed
+    h = int(scaled_dur // 3600)
+    m = int((scaled_dur % 3600) // 60)
+    s = int(scaled_dur % 60)
+    dur_formatted = f"{h}h {m}m {s}s"
+
+    return {
+        "status": "success",
+        "last_exported_chapter": last_exported,
+        "next_start_chapter": next_start,
+        "suggested_end_chapter": suggested_end,
+        "suggested_duration_seconds": round(scaled_dur, 1),
+        "suggested_duration_formatted": dur_formatted,
+        "remaining_chapters_count": len(remaining_items),
+        "total_audio_chapters": len(cached_items),
+        "min_available_chapter": cached_items[0][0] if cached_items else 1,
+        "max_available_chapter": cached_items[-1][0] if cached_items else 1,
+    }
+
+@router.post("/set_last_exported_chapter")
+async def set_novel_last_exported_chapter(
+    novel_id: int = Path(...),
+    req: SetLastExportRequest = Body(...)
+):
+    """Cho phép người dùng tự thiết lập lại mốc số chương đã xuất cuối cùng"""
+    async with AsyncSessionLocal() as session:
+        stmt = select(Novel).where(Novel.id == novel_id)
+        res = await session.execute(stmt)
+        novel = res.scalar_one_or_none()
+        if not novel:
+            raise HTTPException(status_code=404, detail="Không tìm thấy truyện.")
+
+    novel_folder = sanitize_filename(novel.title_rough if novel.title_rough else novel.title_raw)
+    meta_path = _get_export_meta_path(novel_folder)
+    data = {"last_exported_chapter": max(0, req.last_chapter), "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "history": []}
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            pass
+    data["last_exported_chapter"] = max(0, req.last_chapter)
+    data["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    os.makedirs(os.path.dirname(meta_path), exist_ok=True)
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    return {
+        "status": "success",
+        "message": f"Đã cập nhật mốc chương xuất cuối cùng thành Chương {req.last_chapter}",
+        "last_exported_chapter": max(0, req.last_chapter)
+    }
+
 @router.get("/auto_partition_bundles")
 async def get_auto_partition_bundles(
     novel_id: int = Path(...),
     speed: float = Query(1.5, ge=0.25, le=4.0),
     min_hours: float = Query(10.0, ge=1.0, le=24.0),
-    max_hours: float = Query(11.95, ge=2.0, le=24.0)
+    max_hours: float = Query(11.8, ge=2.0, le=24.0),
+    from_chapter: Optional[int] = Query(None)
 ):
     """
     Tự động tính toán phân tập thông minh cho truyện dựa trên độ dài thực tế của từng chương audio.
-    Mỗi tập được gom sao cho thời lượng sau khi scale tốc độ (ví dụ 1.5x) nằm trong khoảng min_hours -> max_hours (10h - <12h).
+    - Bắt đầu từ chương tiếp theo sau chương xuất cuối (bỏ qua các chương đã cắt).
+    - Áp dụng thuật toán cân bằng (Balanced Partitioning) để các tập có độ dài tương đương nhau (<12h),
+      triệt tiêu hoàn toàn hiện tượng tập cuối cùng bị 30 phút cụt ngủn hoặc lúc dài lúc ngắn.
     """
     async with AsyncSessionLocal() as session:
         stmt = select(Novel).where(Novel.id == novel_id)
@@ -732,7 +947,9 @@ async def get_auto_partition_bundles(
     chapters_cache_dir = os.path.join(out_dir, "chapters")
 
     if not os.path.exists(chapters_cache_dir):
-        return {"status": "success", "bundles": [], "total_chapters": 0}
+        return {"status": "success", "bundles": [], "total_chapters": 0, "last_exported_chapter": 0}
+
+    last_exported = get_last_exported_chapter(novel_folder)
 
     # Đọc danh sách tất cả các chương audio có sẵn và thời lượng của chúng
     cached_items = []
@@ -761,39 +978,76 @@ async def get_auto_partition_bundles(
 
     cached_items.sort(key=lambda x: x[0])
     if not cached_items:
-        return {"status": "success", "bundles": [], "total_chapters": 0}
+        return {"status": "success", "bundles": [], "total_chapters": 0, "last_exported_chapter": last_exported}
 
     effective_speed = float(speed.default if hasattr(speed, 'default') else speed)
     effective_speed = max(0.25, min(4.0, effective_speed))
-    effective_min_h = float(min_hours.default if hasattr(min_hours, 'default') else min_hours)
-    effective_max_h = float(max_hours.default if hasattr(max_hours, 'default') else max_hours)
-    min_sec = effective_min_h * 3600
-    max_sec = effective_max_h * 3600
 
+    # Xác định chương bắt đầu gom tập
+    if from_chapter is not None and from_chapter >= 1:
+        start_from = from_chapter
+    else:
+        start_from = (last_exported + 1) if last_exported > 0 else cached_items[0][0]
+
+    # Chỉ gom các chương từ start_from trở đi (các chương trước đó đã xuất rồi, không liên quan)
+    items_to_partition = [it for it in cached_items if it[0] >= start_from]
+    if not items_to_partition:
+        return {
+            "status": "success",
+            "bundles": [],
+            "total_audio_chapters": len(cached_items),
+            "remaining_chapters": 0,
+            "last_exported_chapter": last_exported,
+            "from_chapter": start_from,
+            "message": f"Tất cả các chương (đến Chương {last_exported}) đã được xuất file gộp!"
+        }
+
+    total_scaled_sec = sum(it[1] for it in items_to_partition) / effective_speed
+
+    # Giới hạn trần nghiêm ngặt: 11.8 giờ (đảm bảo luôn dưới 12 tiếng)
+    target_cap_hours = min(float(max_hours.default if hasattr(max_hours, 'default') else max_hours), 11.8)
+    target_cap_sec = target_cap_hours * 3600
+    target_ideal_hours = 11.2
+    target_ideal_sec = target_ideal_hours * 3600
+
+    # ── THUẬT TOÁN CHIA TẬP CÂN BẰNG THÔNG MINH (BALANCED PARTITIONING) ──
+    # Tránh tuyệt đối trường hợp tập cuối bị 30 phút cụt ngủn hoặc lúc dài lúc ngắn
     bundles_raw = []
-    curr_bundle = []
-    curr_dur_orig = 0.0
+    if total_scaled_sec <= target_cap_sec:
+        all_ch = [it[0] for it in items_to_partition]
+        all_dur_orig = sum(it[1] for it in items_to_partition)
+        bundles_raw.append((all_ch, all_dur_orig))
+    else:
+        num_bundles = max(2, math.ceil(total_scaled_sec / target_ideal_sec))
+        ideal_per_bundle_sec = total_scaled_sec / num_bundles
 
-    for c_num, dur, mp3_p in cached_items:
-        new_dur_scaled = (curr_dur_orig + dur) / effective_speed
-        if curr_bundle and new_dur_scaled > max_sec and (curr_dur_orig / effective_speed) >= min_sec:
-            bundles_raw.append((curr_bundle, curr_dur_orig))
-            curr_bundle = [c_num]
-            curr_dur_orig = dur
-        elif curr_bundle and new_dur_scaled > max_sec:
-            if (curr_dur_orig / effective_speed) >= 8.0 * 3600:
-                bundles_raw.append((curr_bundle, curr_dur_orig))
-                curr_bundle = [c_num]
-                curr_dur_orig = dur
-            else:
-                curr_bundle.append(c_num)
-                curr_dur_orig += dur
-        else:
+        curr_bundle = []
+        curr_dur_orig = 0.0
+        remaining_sec = total_scaled_sec
+
+        for i, (c_num, dur, mp3_p) in enumerate(items_to_partition):
+            c_scaled = dur / effective_speed
             curr_bundle.append(c_num)
             curr_dur_orig += dur
 
-    if curr_bundle:
-        bundles_raw.append((curr_bundle, curr_dur_orig))
+            bundles_left = num_bundles - len(bundles_raw)
+            if bundles_left > 1:
+                curr_scaled = curr_dur_orig / effective_speed
+                target_this = remaining_sec / bundles_left
+
+                if i + 1 < len(items_to_partition):
+                    next_scaled = items_to_partition[i + 1][1] / effective_speed
+                    diff_now = abs(curr_scaled - target_this)
+                    diff_next = abs((curr_scaled + next_scaled) - target_this)
+
+                    if (curr_scaled + next_scaled) > target_cap_sec or (curr_scaled >= target_this * 0.92 and diff_now <= diff_next):
+                        bundles_raw.append((curr_bundle, curr_dur_orig))
+                        remaining_sec -= curr_scaled
+                        curr_bundle = []
+                        curr_dur_orig = 0.0
+
+        if curr_bundle:
+            bundles_raw.append((curr_bundle, curr_dur_orig))
 
     short_title = novel_folder[:30].strip() if len(novel_folder) > 30 else novel_folder
     speed_tag = f"_{effective_speed}x" if abs(effective_speed - 1.0) >= 0.01 else ""
@@ -807,7 +1061,7 @@ async def get_auto_partition_bundles(
         m = int((dur_scaled % 3600) // 60)
         s = int(dur_scaled % 60)
         dur_formatted = f"{h}h {m}m {s}s"
-        
+
         merged_filename = f"{short_title}_Ch{start_c}_to_Ch{end_c}{speed_tag}.mp3"
         merged_path = os.path.join(out_dir, merged_filename)
         is_merged = os.path.exists(merged_path) and os.path.getsize(merged_path) > 1024
@@ -816,9 +1070,10 @@ async def get_auto_partition_bundles(
         json_filename = f"{short_title}_Ch{start_c}_to_Ch{end_c}{speed_tag}_timeline.json"
         json_download_url = f"/api/novels/{novel_id}/audio/export_timeline_json?start_chapter={start_c}&end_chapter={end_c}&speed={effective_speed}"
 
+        part_num = idx + 1
         result_bundles.append({
-            "part": idx + 1,
-            "title": f"Tập {idx + 1}: Chương {start_c} → Chương {end_c}",
+            "part": part_num,
+            "title": f"Tập {part_num}: Chương {start_c} → Chương {end_c}",
             "start_chapter": start_c,
             "end_chapter": end_c,
             "chapter_count": len(ch_list),
@@ -837,7 +1092,10 @@ async def get_auto_partition_bundles(
     return {
         "status": "success",
         "speed": effective_speed,
+        "last_exported_chapter": last_exported,
+        "from_chapter": start_from,
         "total_audio_chapters": len(cached_items),
+        "remaining_chapters": len(items_to_partition),
         "total_bundles": len(result_bundles),
         "bundles": result_bundles
     }
@@ -1121,6 +1379,7 @@ async def get_audio_playlist(novel_id: int = Path(...)):
             if not is_completed_translation:
                 continue
                 
+            dur_str = get_cached_audio_duration(found_p) if found_p else ""
             playlist.append({
                 "chapter_no": ch.chapter_no,
                 "title": ch.title_rough or ch.title_raw or f"Chương {ch.chapter_no}",
@@ -1129,7 +1388,8 @@ async def get_audio_playlist(novel_id: int = Path(...)):
                 "audio_url": f"/api/novels/{novel_id}/audio/stream_chapter/{ch.chapter_no}" if has_audio else None,
                 "json_url": f"/api/novels/{novel_id}/audio/json/{ch.chapter_no}" if has_json else None,
                 "file_size": size_str,
-                "size_bytes": f_size
+                "size_bytes": f_size,
+                "duration": dur_str
             })
             
         return {
@@ -1340,6 +1600,9 @@ async def export_timeline_json(
         initial_offset=initial_offset,
         intro_segment=intro_segment
     )
+
+    # Tự động ghi nhớ mốc chương đã xuất bền vững
+    record_exported_chapter(novel_folder, start_chapter, end_chapter, speed)
 
     return FileResponse(
         merged_output_path,

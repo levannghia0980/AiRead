@@ -60,10 +60,10 @@ async def call_gemini_api(prompt: str, model: str = None, is_json: bool = True) 
                 "model": selected_model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.2,
-                "max_tokens": 4096
+                "max_tokens": 32768
             }
             try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
+                async with httpx.AsyncClient(timeout=600.0) as client:
                     resp = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=or_headers, json=or_body)
                 if resp.status_code == 200:
                     text_out = resp.json()["choices"][0]["message"]["content"].strip()
@@ -75,19 +75,27 @@ async def call_gemini_api(prompt: str, model: str = None, is_json: bool = True) 
     
     # Gemini path
     headers = {"Content-Type": "application/json"}
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {}
+    gen_config = {
+        "temperature": 0.3,
+        "topP": 0.9,
+        "topK": 40
     }
     if is_json:
-        payload["generationConfig"]["responseMimeType"] = "application/json"
+        gen_config["responseMimeType"] = "application/json"
+    if any(m in selected_model.lower() for m in ["2.0", "2.5", "3.0", "3.5", "flash"]):
+        gen_config["maxOutputTokens"] = 65536
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": gen_config
+    }
         
     last_err = None
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=600.0) as client:
         for key_idx, api_key in enumerate(keys):
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent?key={api_key}"
             try:
-                resp = await post_gemini_with_retry(client, url, headers, payload, max_retries=2)
+                resp = await post_gemini_with_retry(client, url, headers, payload, max_retries=3)
                 if resp.status_code == 200:
                     data = resp.json()
                     try:
@@ -196,7 +204,7 @@ def apply_swept_corrections(content: str, corrections_map: Dict[str, Any], chapt
             # ƯU TIÊN 1: Nếu Gemini trả về cả câu văn hoàn chỉnh (fixed_sentence)
             if fixed_sentence and fixed_sentence.strip():
                 clean_fixed = fixed_sentence.strip()
-                # Chuyển [FIX]...[/FIX] thành thẻ gạch chân và màu xanh lá
+                # Chuyển [FIX]...[/FIX] thành thẻ gạch chân và màu cam
                 if '[FIX]' in clean_fixed and '[/FIX]' in clean_fixed:
                     formatted_fixed = re.sub(
                         r'\[FIX\](.*?)\[/FIX\]',
@@ -204,7 +212,6 @@ def apply_swept_corrections(content: str, corrections_map: Dict[str, Any], chapt
                         clean_fixed
                     )
                 elif corrected_term and corrected_term in clean_fixed:
-                    # Tự động bọc corrected_term nếu Gemini quên đóng thẻ [FIX]
                     formatted_fixed = clean_fixed.replace(
                         corrected_term,
                         f'<span class="fixed-sentence" style="text-decoration: underline; text-decoration-color: #f59e0b; text-underline-offset: 4px;"><span class="fixed-word" style="color: #f59e0b; font-weight: bold; background: rgba(245, 158, 11, 0.18); padding: 1px 5px; border-radius: 3px; text-decoration: none;" title="{tooltip_str}">{corrected_term}</span></span>',
@@ -220,7 +227,6 @@ def apply_swept_corrections(content: str, corrections_map: Dict[str, Any], chapt
                 lines[line_idx] = re.sub(pattern, ' ', line, count=1)
                 lines[line_idx] = re.sub(r'[ \t]{2,}', ' ', lines[line_idx]).strip()
             else:
-                # Khử trùng lặp từ đứng trước span_html nếu bị dính chữ (VD: "rãnh quy" + "đầu cặc" -> "rãnh đầu cặc", "tiếng kêu" + "kêu la" -> "tiếng kêu la")
                 pre_span = line[:line.find(span_html)] if span_html in line else ""
                 post_span = line[line.find(span_html) + len(span_html):] if span_html in line else ""
                 
@@ -255,7 +261,6 @@ def apply_swept_corrections(content: str, corrections_map: Dict[str, Any], chapt
                 lines[line_idx] = (pre_span + " " + highlighted_term + " " + post_span).strip()
                 lines[line_idx] = re.sub(r'[ \t]{2,}', ' ', lines[line_idx])
             
-    # Chạy lại fix_broken_words cho an toàn lỡ dính dấu câu
     from app.services.postprocessing.post_processor import fix_broken_words
     new_content = '\n'.join(lines)
     return fix_broken_words(new_content)
@@ -264,9 +269,9 @@ def apply_swept_corrections(content: str, corrections_map: Dict[str, Any], chapt
 async def batch_fix_swept_errors_llm(novel_id: int, model: Optional[str] = None):
     """
     1. Quét toàn bộ chương dịch (FINAL) của truyện
-    2. Gom tất cả lỗi
-    3. Gửi 1 request LLM duy nhất với Model người dùng cấu hình
-    4. Áp dụng sửa lỗi siêu chính xác và lưu lại DB + file
+    2. Gom tất cả lỗi câu cụ thể
+    3. Chia batch tối ưu theo giới hạn đầu ra của Gemini API (tiết kiệm request tối đa, gửi liên tiếp cho tới khi hết sạch lỗi)
+    4. Áp dụng sửa lỗi câu siêu chính xác và lưu lại DB + file
     """
     async with AsyncSessionLocal() as session:
         # Lấy thông tin truyện để biết thể loại
@@ -317,31 +322,54 @@ async def batch_fix_swept_errors_llm(novel_id: int, model: Optional[str] = None)
         if not all_errors:
             return {"status": "success", "message": "Không tìm thấy lỗi Hán tự gạch chân xanh nào cần sửa.", "fixed_count": 0}
 
-        # 2. Gom nhóm các chương theo kích thước Lô (batch_size) từ Cài đặt hệ thống
-        try:
-            batch_size_str = await get_active_setting("AIREAD_BATCH_SIZE")
-            batch_size = max(1, int(batch_size_str)) if batch_size_str and str(batch_size_str).isdigit() else 3
-        except Exception:
-            batch_size = 3
+        # 2. Phân chia đều linh động theo lượng token tối đa (tận dụng trần 65k, chia đều 2, 3, 4 đợt tùy số lỗi, không bị hẫng ở cuối)
+        from app.api.translation_router import add_system_log
+        import math
 
-        # Lấy danh sách ID các chương có lỗi
-        ch_ids_with_errors = [cid for cid in chapter_error_map.keys()]
+        total_errors = len(all_errors)
         
+        # Ước lượng token đầu ra thực tế cho toàn bộ lỗi (tiếng Việt có dấu + cú pháp JSON ~ 2.7 ký tự / token)
+        total_est_output_tokens = sum((len(e.get("sentence_context", "")) + 50) / 2.7 for e in all_errors)
+        
+        # Trần token an toàn cho mỗi request: nhắm mức ~48.000 tokens (đệm an toàn 17.500 token so với trần cứng 65.536 của Gemini Flash)
+        # Đồng thời giới hạn tối đa không quá 700 câu lỗi mỗi request để đảm bảo chất lượng phản hồi
+        MAX_SAFE_TOKENS_PER_REQ = 48000
+        MAX_SAFE_ITEMS_PER_REQ = 700
+        
+        batches_by_tokens = math.ceil(total_est_output_tokens / MAX_SAFE_TOKENS_PER_REQ)
+        batches_by_items = math.ceil(total_errors / MAX_SAFE_ITEMS_PER_REQ)
+        total_batches = max(1, batches_by_tokens, batches_by_items)
+        
+        # Chia đều tất cả các lỗi vào total_batches để các đợt cân bằng tải hoàn hảo, không bị hẫng ở đợt cuối
+        k, m = divmod(total_errors, total_batches)
+        batches = [
+            all_errors[i * k + min(i, m) : (i + 1) * k + min(i + 1, m)]
+            for i in range(total_batches)
+        ]
+
+        if total_batches == 1:
+            add_system_log(f"🔍 Gom toàn bộ {total_errors} câu lỗi (~{int(total_est_output_tokens):,} token) gửi AI xử lý 1 lượt duy nhất (tận dụng trần 65k token)...", "info")
+        else:
+            add_system_log(f"🔍 Tìm thấy {total_errors} câu lỗi (~{int(total_est_output_tokens):,} token). Tự động chia đều làm {total_batches} đợt (~{len(batches[0])} câu/đợt) để tối ưu trần 65k và tiết kiệm request...", "info")
+
         corrections_map = {}
-        error_logs = []
-        
-        # Chia các chương có lỗi thành các lô (mỗi lô chứa batch_size chương)
-        for i in range(0, len(ch_ids_with_errors), batch_size):
-            batch_cids = ch_ids_with_errors[i : i + batch_size]
-            batch_errors = []
-            for cid in batch_cids:
-                batch_errors.extend(chapter_error_map[cid])
-                
-            if not batch_errors:
-                continue
+
+        for b_idx, batch_errs in enumerate(batches):
+            if total_batches > 1:
+                add_system_log(f"⚡ Đang gửi AI xử lý đợt {b_idx + 1}/{total_batches} ({len(batch_errs)} câu lỗi)...", "info")
+
+            llm_input_items = [
+                {
+                    "error_id": err["error_id"],
+                    "raw_chinese": err["raw_chinese"],
+                    "faulty_term": err["faulty_term"],
+                    "sentence_context": err["sentence_context"]
+                }
+                for err in batch_errs
+            ]
 
             prompt = f"""Bạn là ĐẠI SƯ BIÊN TẬP VIÊN VĂN HỌC & TIỂU THUYẾT CAO CẤP (thể loại: {genre.upper()}).
-Dưới đây là danh sách CÁC CÂU VĂN ĐANG BỊ BẤT THƯỜNG / LỖI / THỪA TỪ / DỊCH NGÔ NGHÊ trong Lô {len(batch_cids)} chương.
+Dưới đây là danh sách TẤT CẢ CÁC CÂU VĂN ĐANG BỊ BẤT THƯỜNG / LỖI / THỪA TỪ / DỊCH NGÔ NGHÊ cần bạn biên tập lại.
 
 Mỗi mục lỗi chứa:
 - [error_id]: Mã định danh lỗi
@@ -350,7 +378,7 @@ Mỗi mục lỗi chứa:
 - [sentence_context]: NGUYÊN CẢ CÂU VĂN TIẾNG VIỆT HIỆN TẠI (đã đánh dấu vị trí lỗi là [LỖI: ...])
 
 === DANH SÁCH CÁC CÂU CẦN BIÊN TẬP LẠI ===
-{json.dumps(batch_errors, ensure_ascii=False, indent=2)}
+{json.dumps(llm_input_items, ensure_ascii=False, indent=2)}
 
 === QUY TẮC BẮT BUỘC: QUAN SÁT CẢ TỪ ĐỨNG TRƯỚC, ĐỨNG SAU & BIÊN TẬP NGUYÊN CÂU CHO TRƠN TRU 100% ===
 ⚠️ TUYỆT ĐỐI KHÔNG ĐƯỢC CHỈ CHĂM CHĂM SỬA 1 TỪ DUY NHẤT! 
@@ -393,12 +421,11 @@ Trong câu có từ lỗi tức là CÂU VĂN ĐÓ ĐANG BẤT THƯỜNG. Bạn 
 }}
 5. Chỉ trả về JSON thuần hợp lệ, không bọc thẻ markdown ```json.
 """
-            # 3. Gọi LLM cho từng lô chương
             llm_response, err_msg = await call_gemini_api(prompt, model=model, is_json=True)
             if not llm_response:
-                error_logs.append(err_msg or "Phản hồi rỗng")
+                add_system_log(f"⚠️ Đợt {b_idx + 1} gặp lỗi: {err_msg or 'Phản hồi rỗng'}", "warning")
                 continue
-                
+
             try:
                 res_data = safe_json_loads(llm_response)
                 corrections_list = res_data.get("corrections", []) if isinstance(res_data, dict) else []
@@ -406,10 +433,14 @@ Trong câu có từ lỗi tức là CÂU VĂN ĐÓ ĐANG BẤT THƯỜNG. Bạn 
                     if c.get("error_id"):
                         corrections_map[c["error_id"]] = c
             except Exception as e:
-                error_logs.append(f"Parse error: {e}")
+                add_system_log(f"⚠️ Đợt {b_idx + 1} lỗi parse JSON: {str(e)}", "warning")
+                continue
 
-        if not corrections_map and error_logs:
-            return {"status": "error", "message": f"LLM API thất bại: {error_logs[0]}"}
+            if b_idx < total_batches - 1:
+                await asyncio.sleep(0.5)
+
+        if not corrections_map:
+            return {"status": "error", "message": "Không nhận được phản hồi sửa lỗi hợp lệ nào từ LLM."}
         
         # 4. Áp dụng thay thế
         fixed_count = 0
@@ -421,7 +452,6 @@ Trong câu có từ lỗi tức là CÂU VĂN ĐÓ ĐANG BẤT THƯỜNG. Bạn 
             new_content = apply_swept_corrections(original_content, corrections_map, errs)
             
             if new_content != original_content:
-                # Update DB and File for all active translation version records
                 ver.content = new_content
                 stmt_all_v = select(ChapterVersion).where(
                     ChapterVersion.chapter_id == ch_id,
@@ -438,6 +468,41 @@ Trong câu có từ lỗi tức là CÂU VĂN ĐÓ ĐANG BẤT THƯỜNG. Bạn 
                             f.write(new_content)
                     except Exception as e:
                         print(f"Lỗi ghi file phiên bản: {e}")
+
+                # Tự động đồng bộ sang 04b_VanBanTTS và cập nhật TTS_TEXT sạch sẽ 100%
+                try:
+                    from app.services.tts.pipeline import sanitize_tts_text
+                    from app.core.config import OUTPUT_DIR
+                    novel_folder = novel.title_rough or novel.title_raw
+                    ch_obj = next((c for c in chapters if c.id == ch_id), None)
+                    c_no = ch_obj.chapter_no if ch_obj else 0
+                    tts_base_dir = str(OUTPUT_DIR / "04b_VanBanTTS")
+                    tts_out_dir = os.path.join(tts_base_dir, novel_folder, "chapters")
+                    os.makedirs(tts_out_dir, exist_ok=True)
+                    tts_file_path = os.path.join(tts_out_dir, f"{c_no:06d}.txt")
+                    cleaned_tts = sanitize_tts_text(new_content)
+                    with open(tts_file_path, "w", encoding="utf-8") as tf:
+                        tf.write(cleaned_tts + "\n")
+
+                    stmt_tts_ver = select(ChapterVersion).where(
+                        ChapterVersion.chapter_id == ch_id,
+                        ChapterVersion.version_type == "TTS_TEXT"
+                    )
+                    res_tts_ver = await session.execute(stmt_tts_ver)
+                    tts_ver = res_tts_ver.scalar_one_or_none()
+                    if tts_ver:
+                        tts_ver.content = cleaned_tts
+                        tts_ver.file_path = tts_file_path
+                    else:
+                        session.add(ChapterVersion(
+                            chapter_id=ch_id,
+                            version_type="TTS_TEXT",
+                            file_path=tts_file_path,
+                            content=cleaned_tts,
+                            status="COMPLETED"
+                        ))
+                except Exception as e:
+                    print(f"⚠️ Lỗi đồng bộ 04b_VanBanTTS: {e}")
                 
                 for e in errs:
                     if e["error_id"] in corrections_map:

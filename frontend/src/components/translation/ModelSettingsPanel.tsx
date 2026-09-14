@@ -470,6 +470,7 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
         icon="🔄"
       />
 
+
       {/* 2 Nút gạt độc lập thu nhỏ gọn */}
       <div className="grid grid-cols-2 gap-2">
         <ToggleSwitch

@@ -39,8 +39,9 @@ def normalize_chapter_title(text: str, chap_no: int, fallback_title: str = "") -
     first_line = lines[first_idx].strip()
     rest_body = '\n'.join(lines[first_idx + 1:]).strip()
     
-    # Dọn dẹp các ký tự trang trí hoặc ngoặc thừa ở đầu/cuối tiêu đề
+    # Dọn dẹp các ký tự trang trí hoặc ngoặc thừa ở đầu/cuối tiêu đề, bóc sạch HTML khỏi tiêu đề
     clean_first = re.sub(r'^[=\-_*#\s(\[{【（"“]+|[=\-_*#\s)\]}】）"”]+$', '', first_line).strip()
+    clean_first = re.sub(r'<[^>]+>', '', clean_first).strip()
     
     # Bắt các mẫu tiêu đề có sẵn: Chương X / Chapter X / Hồi X / Tiết X...
     m = re.match(r'^(?:Quyển\s*\d+\s*)?(?:Chương|Chapter|Hồi|Tiết|Chap|Vol|Volume)\s*(\d*)[\s:.-]*(.*)$', clean_first, re.IGNORECASE)
@@ -48,11 +49,12 @@ def normalize_chapter_title(text: str, chap_no: int, fallback_title: str = "") -
     if m:
         extracted_num = m.group(1).strip()
         raw_tail = m.group(2).strip()
+        raw_tail = re.sub(r'<[^>]+>', '', raw_tail).strip()
         
         # Gọt bỏ các thông tin rác trong ngoặc ở tiêu đề (VD: '(cầu hoa tươi)', '(1/3)')
         raw_tail = re.sub(r'[\(（](?:cầu|hết|chương|\d+/\d+).*?[\)）]', '', raw_tail, flags=re.IGNORECASE).strip()
         
-        # Nếu đuôi tiêu đề bị dính liền thân truyện (quá dài > 60 ký tự)
+        # Nếu đuôi tiêu đề bị dính liền thân truyện (chỉ tách khi có dấu kết câu rõ ràng)
         title_name = raw_tail
         body_lead = ""
         if len(raw_tail) > 60:
@@ -60,15 +62,13 @@ def normalize_chapter_title(text: str, chap_no: int, fallback_title: str = "") -
             if split_m and split_m.start() < 60:
                 title_name = raw_tail[:split_m.start() + 1].strip()
                 body_lead = raw_tail[split_m.end():].strip()
-            elif len(raw_tail) > 80:
-                title_name = raw_tail[:50].strip()
-                body_lead = raw_tail[50:].strip()
                 
         # Dọn dẹp title_name
         title_name = re.sub(r'^[.:,\s-]+|[.:,\s-]+$', '', title_name).strip()
         
         if not title_name and fallback_title:
             fb = re.sub(r'^(?:第?\s*\d+\s*章\s*[:.:-]?|Chương\s*\d+\s*[:.:-]?)', '', fallback_title, flags=re.IGNORECASE).strip()
+            fb = re.sub(r'<[^>]+>', '', fb).strip()
             title_name = fb
             
         full_title = f"Chương {chap_no}: {title_name}".strip() if title_name else f"Chương {chap_no}:"
@@ -127,6 +127,64 @@ def fix_broken_words(text: str, protected_names: list = None) -> str:
     TUYỆT ĐỐI KHÔNG can thiệp bất kỳ nội dung nào.
     """
     return text.strip() if text else ""
+
+
+async def realign_entity_names(text: str, novel_id: int, session = None) -> str:
+    """
+    Hậu kiểm và tự động nắn chuẩn tên nhân vật/thực thể cố định (Entity Consistency & Auto-Reanchoring):
+    1. Sửa nhanh các lỗi biến âm tai hại cố định (Diệp Khốt -> Diệp Thánh, Tạ Cận Hoan -> Tạ Tận Hoan, Dương Hoa Tiên -> Dương Hóa Tiên, Diệp Vân Kh迟 -> Diệp Vân Trì...).
+    2. Quét đối chiếu danh sách NovelEntity chuẩn của bộ truyện để nắn các lỗi lệch 1 chữ do AI hallucinate.
+    """
+    if not text:
+        return text
+
+    # 1. Các lỗi biến âm phổ biến cố định
+    fixed_pairs = [
+        (r'\bDiệp\s+Khốt\b', 'Diệp Thánh'),
+        (r'\bTạ\s+Cận\s+Hoan\b', 'Tạ Tận Hoan'),
+        (r'\bDương\s+Hoa\s+Tiên\b', 'Dương Hóa Tiên'),
+        (r'\bDiệp\s+Vân\s*(?:Kh迟|Lịch)\b', 'Diệp Vân Trì'),
+        (r'\bCấp\s+Nam\s+Cung\s+Tiên\s+Tử\b', 'Nam Cung Tiên Tử'),
+        (r'\bLâm\s+Âm\s+Nghi\b', 'Lâm Uyển Nghi')
+    ]
+    for pattern, replacement in fixed_pairs:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+
+    # 2. Đối chiếu với từ điển NovelEntity của tác phẩm
+    try:
+        from app.models.schema import NovelEntity
+        from sqlalchemy import select
+        
+        async def _query_entities(s):
+            stmt = select(NovelEntity.rough_translation).where(
+                NovelEntity.novel_id == novel_id,
+                NovelEntity.entity_type.in_(["NAME", "PERSON"]),
+                NovelEntity.frequency_count >= 2
+            ).order_by(NovelEntity.frequency_count.desc()).limit(100)
+            res = await s.execute(stmt)
+            return [r[0].strip() for r in res if r[0] and len(r[0].strip().split()) in [2, 3, 4]]
+
+        names = []
+        if session:
+            names = await _query_entities(session)
+        else:
+            async with AsyncSessionLocal() as s:
+                names = await _query_entities(s)
+
+        for canon_name in names:
+            words = canon_name.split()
+            if len(words) == 3:
+                w1, w2, w3 = words
+                # Tìm biến thể lệch chữ giữa: "Tạ X Hoan" -> "Tạ Tận Hoan"
+                variant_mid_pattern = rf'\b{re.escape(w1)}\s+[A-ZÀ-Ỹa-zà-ỹĐđ]{{2,10}}\s+{re.escape(w3)}\b'
+                for m in re.finditer(variant_mid_pattern, text):
+                    matched = m.group(0)
+                    if matched != canon_name:
+                        text = text.replace(matched, canon_name)
+    except Exception as e:
+        logger.warning(f"[POST-PROCESS] Lỗi realign_entity_names: {e}")
+
+    return text
 
 
 
@@ -246,6 +304,17 @@ async def sweep_chinese_characters(text: str) -> str:
 
             prefix_space = f"{pre} " if pre else ""
             suffix_space = f" {post}" if post else ""
+
+            # Nếu vị trí thay thế nằm trên dòng tiêu đề chương (Chương X / Chapter X):
+            # Chỉ thay thế bằng chữ thuần túy, tuyệt đối KHÔNG bọc thẻ span HTML làm hỏng tiêu đề
+            line_start = text.rfind('\n', 0, m.start())
+            line_start = 0 if line_start == -1 else line_start + 1
+            line_end = text.find('\n', m.end())
+            line_end = len(text) if line_end == -1 else line_end
+            current_line = text[line_start:line_end]
+            if re.match(r'^\s*(?:Quyển\s*\d+\s*)?(?:Chương|Chapter|Hồi|Tiết|Chap|Vol|Volume)\s*\d*', current_line, re.IGNORECASE):
+                return f"{prefix_space}{effective_trans}{suffix_space}"
+
             ph_key = f"__SWEPT_SPAN_{len(replacement_placeholders)}__"
             replacement_placeholders[ph_key] = f'{prefix_space}<span style="text-decoration: underline; text-decoration-color: #0284c7;" class="swept-chinese" data-raw="{c}">{effective_trans}</span>{suffix_space}'
             return ph_key
@@ -510,6 +579,8 @@ async def process_and_split_batch(
                     continue
 
                 # 1. Dọn rác thẻ phân chương kỹ thuật hoặc rác quảng cáo crawler
+                chap_text = re.sub(r'(?i)</?chapter(?:_\d+)?\b[^>]*>', '', chap_text)
+                chap_text = re.sub(r'(?i)\[/?chapter(?:_\d+)?\b[^\]]*\]', '', chap_text)
                 chap_text = re.sub(r'(?im)^\s*===+\s*(?:BEGIN|END)\s+CHAPTER\s*\d*.*?===+\s*\n?', '', chap_text)
                 chap_text = re.sub(r'(?im)^\s*===+\s*\[?(?:BẮT\s+ĐẦU|KẾT\s+THÚC)\s+CHƯƠNG\s*\d*.*?\]?\s*===+\s*\n?', '', chap_text)
                 chap_text = re.sub(r'(?im)^\s*(?:cổng game|casino|nhà cái|nổ hũ|game slot|pagcor|baccarat|uy tín hơn\. Cụ thể).*\n?', '', chap_text)
@@ -518,6 +589,8 @@ async def process_and_split_batch(
                 chap_text = fix_broken_words(chap_text)
                 # 3. Cứu Hán tự sót bằng Hán-Việt/HanLP hoặc Google Dịch (bọc thẻ xanh để Frontend và nút Sửa Đỏ bắt được)
                 chap_text = await sweep_chinese_characters(chap_text)
+                # 3b. Tự động nắn chuẩn tên nhân vật/thực thể cố định (Entity Consistency & Auto-Reanchoring)
+                chap_text = await realign_entity_names(chap_text, novel_id, session=session)
                 chap_text = chap_text.strip()
 
                 # Lấy thông tin chapter từ DB để có fallback title nếu cần
@@ -534,6 +607,7 @@ async def process_and_split_batch(
                     m_t = re.match(r'^(?:Chương|Chapter)\s*\d+[\s:.-]*(.*)$', first_l, re.IGNORECASE)
                     if m_t and m_t.group(1).strip():
                         extracted_t = m_t.group(1).strip()
+                        extracted_t = re.sub(r'<[^>]+>', '', extracted_t).strip()
                         if not any('\u4e00' <= c <= '\u9fff' for c in extracted_t):
                             chap.title_rough = extracted_t
                     chap.status = "FINAL_DONE"

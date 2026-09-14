@@ -122,6 +122,9 @@ async def _bg_translation_worker(payload: StartTranslationRequest):
             import os
             os.environ["AIREAD_MODEL"] = payload.model
 
+        key_masked = (payload.api_key[:8] + "..." + payload.api_key[-4:]) if (payload.api_key and len(payload.api_key) > 12) else "Đang dùng cấu hình máy"
+        add_system_log(f"🤖 [MÔ HÌNH AI ĐANG CHẠY]: {payload.model or 'Mặc định'} ({payload.provider or 'gemini'}) | API Key: {key_masked}", "info")
+
         flow = "rawt"
         start_ch = payload.start_chapter or 0
         end_ch = payload.end_chapter or 0

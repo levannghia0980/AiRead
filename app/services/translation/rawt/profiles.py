@@ -2,96 +2,97 @@
 app/services/translation/rawt/profiles.py
 Quản lý các Profiles dịch thuật đặc thù theo từng thể loại truyện (Context-Aware Profiles)
 và Bộ Quy Tắc Chuyển Ngữ Cốt Lõi Toàn Dự Án (Core Translation Philosophy).
+
+Đặc điểm kiến trúc:
+- Mỗi profile độc lập và đầy đủ: Khi dịch chỉ chọn 1 profile duy nhất, nên mỗi profile
+  chứa trọn vẹn Bảng thuật ngữ chuyên ngành + Bảng đối chiếu nhanh xưng hô Trung -> Việt.
+- Ưu tiên Cổ đại: Bắt buộc 2 âm tiết Hán-Việt/danh xưng cổ phong, cấm tự ý rút thành một chữ hiện đại.
+- Hiện đại tự nhiên: Linh hoạt theo quan hệ và tuổi tác, vẫn giữ được 'ta - ngươi' hay 'mày - tao' khi giao đấu/trào phúng.
+- Khóa chặt trật tự danh xưng: [Họ/Tên] + [Chức vụ/Thân phận] ở Cổ đại (Kiều trưởng lão, Lâm giáo đầu).
+- Phân định rõ Tự xưng vs Cách gọi đối phương (Khóa chặt xưng 'con').
 """
 import logging
 
 logger = logging.getLogger(__name__)
 
 # =====================================================================
-# 1. TIÊN HIỆP / HUYỀN HUYỄN / TU CHÂN / DỊ GIỚI
+# 1. TIÊN HIỆP / HUYỀN HUYỄN / TU CHÂN / DỊ GIỚI / CAO VÕ
 # =====================================================================
 XIANXIA_PROFILE = {
     "description": (
-        "【BẢN SẮC THỂ LOẠI: TU TIÊN / TIÊN HIỆP / HUYỀN HUYỄN / CỔ PHONG / DỊ GIỚI / CAO VÕ】\n"
+        "=== BẢN SẮC THỂ LOẠI: TU TIÊN / TIÊN HIỆP / HUYỀN HUYỄN / CỔ PHONG / DỊ GIỚI / CAO VÕ ===\n"
         "\n"
-        "1. BẢNG TRA CỨU THUẬT NGỮ & TỪ KHÓA BẢN SẮC (THEO PHÂN LOẠI):\n"
+        "1. BẢNG TRA CỨU THUẬT NGỮ & TỪ KHÓA BẢN SẮC:\n"
         "   - Cảnh giới tu vi:\n"
         "     * 炼灵十层 dịch thành Luyện Linh thập tầng / mười tầng (Luyện Linh tam tầng, tứ tầng...)\n"
         "     * 筑基 / 金丹 / 元婴 / 化神 / 炼虚 / 合体 / 大乘 / 渡劫 dịch thành Trúc Cơ / Kim Đan / Nguyên Anh / Hóa Thần / Luyện Hư / Hợp Thể / Đại Thừa / Độ Kiếp\n"
-        "     * 瓶颈 dịch thành bình cảnh / nút thắt cảnh giới\n"
-        "     * 突破 / 顿悟 dịch thành đột phá / đốn ngộ\n"
-        "     * 一层 / Sơ kỳ / Trung kỳ / Hậu kỳ / Đỉnh phong / Viên mãn / Đại viên mãn\n"
-        "     * 半步... dịch thành Bán bộ... (Bán bộ Trúc Cơ, Bán bộ Kim Đan)\n"
-        "   - Từ ngữ giang hồ & tu chân thông dụng:\n"
-        "     * 好汉 dịch thành hảo hán (TUYỆT ĐỐI CẤM dịch thành 'hảo hạng')\n"
-        "     * 结交好汉 dịch thành kết giao hảo hán\n"
+        "     * 瓶颈 dịch thành bình cảnh / nút thắt cảnh giới | 突破 / 顿悟 dịch thành đột phá / đốn ngộ\n"
+        "     * 一层 / Sơ kỳ / Trung kỳ / Hậu kỳ / Đỉnh phong / Viên mãn / Đại viên mãn | 半步... dịch thành Bán bộ... (Bán bộ Kim Đan)\n"
         "   - Khái niệm & Hiện tượng tu luyện:\n"
-        "     * 闭关 / 闭死关 dịch thành bế quan / bế tử quan\n"
-        "     * 渡劫 / 天劫 / 雷劫 dịch thành độ kiếp / thiên kiếp / lôi kiếp\n"
+        "     * 闭关 / 闭死关 dịch thành bế quan / bế tử quan | 渡劫 / 天劫 / 雷劫 dịch thành độ kiếp / thiên kiếp / lôi kiếp\n"
         "     * 心魔 / 走火入魔 / 夺舍 / 陨落 dịch thành tâm ma / tẩu hỏa nhập ma / đoạt xá / ngã xuống (vẫn lạc)\n"
         "     * 丹田 / 识海 / 神识 / 灵气 / 灵根 / 极品灵根 dịch thành đan điền / thức hải / thần thức / linh khí / linh căn / cực phẩm linh căn\n"
         "     * 真元 / 法力 / 道心 / 道韵 / 法则 dịch thành chân nguyên / pháp lực / đạo tâm / đạo vận / pháp tắc\n"
         "   - Tiền tệ & Tài nguyên tu tiên:\n"
-        "     * 灵钱 dịch thành linh tiền (Ví dụ: hai quan linh tiền, mấy trăm linh tiền)\n"
-        "     * 灵石 dịch thành linh thạch (Hạ phẩm, Trung phẩm, Thượng phẩm, Cực phẩm linh thạch)\n"
+        "     * 灵钱 dịch thành linh tiền (hai quan linh tiền) | 灵石 dịch thành linh thạch (Hạ phẩm, Trung phẩm, Thượng phẩm, Cực phẩm linh thạch)\n"
         "     * 丹药 / 灵草 / 符箓 / 法宝 / 灵宝 dịch thành đan dược / linh thảo / phù lục / pháp bảo / linh bảo\n"
         "   - Môn phái & Chức phận:\n"
         "     * 宗门 / 圣地 / 洞府 / 灵宫 dịch thành tông môn / thánh địa / động phủ / Linh Cung (Thiên Tang Linh Cung)\n"
         "     * 外门/内门弟子 / 真传弟子 dịch thành ngoại môn / nội môn đệ tử / chân truyền đệ tử\n"
         "     * 执事 / 长老 / 峰主 / 宗主 / 掌门 / 老祖 dịch thành chấp sự / trưởng lão / phong chủ / tông chủ / chưởng môn / lão tổ\n"
         "     * 藏经阁 / 药园 / 擂台 / 秘境 / 试炼之地 dịch thành Tàng Kinh Các / Dược Viên / lôi đài / bí cảnh / nơi thí luyện\n"
-        "   - Phân nhánh tu sĩ:\n"
-        "     * 散修 / 体修 / 剑修 / 丹修 / 符修 / 阵修 / 魔修 / 妖修 / 鬼修 / 道侣 dịch thành tán tu / thể tu / kiếm tu / đan tu / phù tu / trận tu / ma tu / yêu tu / quỷ tu / đạo lữ\n"
+        "   - Phân nhánh tu sĩ: 散修 (tán tu), 体修 (thể tu), 剑修 (kiếm tu), 丹修 (đan tu), 符修 (phù tu), 阵修 (trận tu), 魔修 (ma tu), 妖修 (yêu tu), 鬼修 (quỷ tu), 道侣 (đạo lữ)\n"
         "   - Tên ngoại tộc / Dị giới: Phiên âm Hán-Việt chuẩn mực (Đặc Lý, Thác Bạt, Thái Lạp...)\n"
         "\n"
-        "2. QUY TẮC XƯNG HÔ THỜI ĐẠI TU TIÊN / TIÊN HIỆP (RÕ RÀNG, ĐÚNG THỜI ĐẠI, CẤM LỆCH LẠC):\n"
-        "   - CẤM TUYỆT ĐỐI CÁC ĐẠI TỪ HIỆN ĐẠI / TEEN / PHỐ THỊ VƯỢT THỜI ĐẠI:\n"
-        "     * TUYỆT ĐỐI CẤM: 'tao - mày', 'anh - em', 'chú - cháu', 'chú mày', 'ông - bà', 'tôi - bạn', 'cậu - tớ', 'tụi em', 'bọn em', 'tụi mình'!\n"
-        "     * CẤM đệ tử gọi sư phụ là 'thầy', cấm xưng 'em' với sư phụ / sư huynh / sư tỷ.\n"
-        "     * CẤM độc thoại nội tâm xưng 'tôi' hay 'tao' (BẮT BUỘC dùng 'ta' hoặc 'mình').\n"
-        "   - BẮT BUỘC DÙNG CÁC CẶP XƯNG HÔ CHUẨN MỰC BẢN SẮC TU TIÊN:\n"
-        "     * Trật tự danh xưng: [Họ/Tên] + [Chức vụ/Thân phận] (Kiều trưởng lão, Từ sư thúc, Vương chưởng môn, Triệu sư huynh, Liễu sư tỷ, Bạch tiền bối)\n"
-        "     * Sư đồ: Đệ tử thưa 'Sư tôn / Sư phụ' — xưng 'Đồ nhi / Đệ tử'; Sư phụ gọi 'Đồ nhi / Ngươi / [Tên]' — xưng 'Vi sư / Ta'\n"
-        "     * Đồng môn môn phái: 'Sư huynh — Sư đệ / Sư muội', 'Sư tỷ — Sư đệ / Sư muội'\n"
-        "     * Bề dưới thưa Chưởng môn / Trưởng lão / Tiền bối: 'Bẩm Chưởng môn / Trưởng lão / Tiền bối' — xưng 'Đệ tử / Vãn bối / Thuộc hạ' (tập thể: 'Chúng đệ tử / Chúng thuộc hạ')\n"
-        "     * Bề trên gọi kẻ dưới: 'Ngươi / Tiểu tử / Vãn bối / Các ngươi' — xưng 'Bản tọa / Lão phu / Ta'\n"
-        "     * Giao tiếp ngang hàng / Người lạ / Giao chiến: 'Ta — Ngươi' (tập thể: 'chúng ta', 'các ngươi', 'bọn họ')\n"
-        "     * Khẩu ngữ ngông nghênh tu chân: 'Lão tử / Ông đây / Gia gia ngươi — Tên nhãi ranh / Mạng chó của ngươi / Nghiệt súc'\n"
-        "     * Tình cảm tu đạo lứa đôi: 'Chàng — Nàng / Phu quân — Nương tử / Đạo lữ', huynh muội tình thâm 'Huynh — Muội'\n"
-        "     * Trần thuật ngôi ba: Dùng tên nhân vật hoặc đại từ cổ phong 'hắn, nàng, y, gã, lão giả, thiếu niên'\n"
-        "     * Độc thoại nội tâm: BẮT BUỘC dùng 'ta' hoặc 'mình'\n"
-        "   - NGUYÊN TẮC KHÓA CHẶT CẶP ĐẠI TỪ & DANH TỪ TRUNG TÍNH:\n"
-        "     * Khóa chặt cặp đại từ: Đã chọn cặp đại từ nào trong phân đoạn thoại (ví dụ 'Ta — Ngươi' hay 'Huynh — Đệ') thì BẮT BUỘC giữ vững nhất quán 100%, TUYỆT ĐỐI CẤM nhảy đại từ lộn xộn giữa các câu thoại.\n"
-        "     * Dùng danh từ chung an toàn: Khi chưa rõ vai vế của người nghe, dùng danh từ chung trung tính ('Tiền bối', 'Người lớn', 'Vị đạo hữu này'...) thay vì đoán mò đại từ cá nhân.\n"
+        "2. QUY CHUẨN XƯNG HÔ: KHOANH VÙNG TỪ VỰNG CỔ ĐẠI (TRÁNH ÉP BUỘC MÁY MÓC, TRÁNH NHẦM SÓT):\n"
+        "   🔴 BỐI CẢNH NÀY LÀ CỔ ĐẠI — BẮT BUỘC DÙNG TẬP TỪ NGỮ CỔ PHONG, TUYỆT ĐỐI CẤM MỌI TỪ NGỮ HIỆN ĐẠI!\n"
+        "   ⚠️ LƯU Ý VỀ MẪU VÍ DỤ & NGUYÊN TẮC KHOANH VÙNG: Danh sách xưng hô dưới đây là các mẫu ví dụ phong cách tham khảo, TÔI KHÔNG ÉP BUỘC bạn phải dịch chuẩn cứng nhắc chỉ duy nhất các từ này, mà tùy theo từng trường hợp bạn hoàn toàn có thể linh hoạt dùng các xưng hô mang phong cách cổ đại phù hợp khác mà tôi chưa liệt kê hết được. NHƯNG các xưng hô hiện đại tôi đã cấm (và mọi từ ngữ hiện đại tương tự) thì CHẮC CHẮN TUYỆT ĐỐI KHÔNG ĐƯỢC ÁP DỤNG để tránh nhầm lẫn bối cảnh truyện!\n"
+        "\n"
+        "   🟢 VÙNG XƯNG HÔ CỔ ĐẠI (NÊN DÙNG — LINH HOẠT CHỌN THEO ĐÚNG NGỮ CẢNH & VAI VẾ):\n"
+        "   - Đại từ & Ngôi thứ: ta, ngươi, tại hạ, các hạ, chư vị, các vị, đạo hữu, hắn, nàng, y, gã, bọn họ, chúng ta, bọn ta...\n"
+        "   - Tự xưng theo thân phận: tại hạ, vãn bối, bỉ nhân, tiểu sinh, tiểu nữ, tiểu nhân, lão phu, lão hủ, bản tọa, bản tôn, vi sư, bản tông, bản tướng, mạt tướng, ty chức, thần, vi thần, hạ quan, thiếp thân, thần thiếp, nô tỳ, nô tài, bần đạo, bần tăng...\n"
+        "   - Thân tộc (Ưu tiên 2 âm tiết Hán-Việt cổ phong): phụ thân, mẫu thân, nương, bá phụ, bá mẫu, thúc phụ, thúc mẫu, cô mẫu, cô phụ, cô cô, di mẫu, cữu phụ, cữu mẫu, cữu cữu, tổ phụ, tổ mẫu, ngoại tổ phụ, ngoại tổ mẫu, huynh trưởng, ca ca, đại ca, tỷ tỷ, đệ đệ, muội muội, huynh đệ, tỷ muội, phu quân, trượng phu, tướng công, thê tử, nương tử, phu nhân, nhi tử, nữ nhi, hài tử, tôn tử, tôn nữ, chất tử, chất nữ, ngoại sinh... (⚠️ Riêng thiếp/vợ lẽ: bắt buộc dùng 'di nương', cấm dịch là dì!).\n"
+        "   - Sư môn & Đồng đạo: sư phụ, sư tôn, đồ nhi, đệ tử, sư huynh, sư đệ, sư tỷ, sư muội, sư thúc, sư bá, sư tổ, sư thúc tổ, chưởng môn, tông chủ, phong chủ, trưởng lão, chấp sự, tiền bối, vãn bối...\n"
+        "   - Bằng hữu & Tôn xưng xã hội: huynh đài, lão huynh, hiền đệ, hiền huynh, hiền muội, tiểu huynh đệ, công tử, cô nương, thiếu gia, lão trượng, lão bá, lão giả, tráng sĩ, đạo hữu...\n"
+        "   - Khẩu ngữ ngông nghênh cổ phong: Lão tử, ông đây, gia gia ngươi, tên nhãi ranh, nghiệt súc, mạng chó...\n"
+        "\n"
+        "   🔴 VÙNG TỪ HIỆN ĐẠI (TUYỆT ĐỐI CẤM DÙNG TRONG BỐI CẢNH CỔ ĐẠI NÀY):\n"
+        "   - CẤM đại từ hiện đại: tôi, bạn, cậu, tớ, mình, anh ấy, chị ấy, mấy người, các bạn, chúng mình, tụi mình, tụi em, bọn em, tụi tao, chú mày...\n"
+        "   - CẤM cách gọi thân tộc đời thường: bố, ba, mẹ, má, chú, bác, dì, cô, cậu, thím, mợ, dượng, ông nội, bà nội, ông ngoại, bà ngoại, anh, chị, em trai, em gái, chồng, vợ, con trai, con gái, cháu trai, cháu gái...\n"
+        "   - CẤM gọi sư phụ là 'thầy', cấm xưng 'em' với sư phụ / sư huynh / sư tỷ.\n"
+        "\n"
+        "   🔴 NGUYÊN TẮC RÀ SOÁT & CÁC LỖI KINH ĐIỂN CẦN TRÁNH TUYỆT ĐỐI:\n"
+        "   - TRẬT TỰ DANH XƯNG BẮT BUỘC: [Họ/Tên] + [Chức vụ/Thân phận] (Kiều trưởng lão, Lâm giáo đầu, Từ sư thúc, Vương chưởng môn). TUYỆT ĐỐI CẤM đảo ngược!\n"
+        "   - KHÓA CHẶT 'CON': Chỉ con ruột thưa cha mẹ mới xưng 'con'. Thưa sư phụ xưng 'đồ nhi / đệ tử', thưa tiền bối xưng 'vãn bối' (TUYỆT ĐỐI CẤM xưng 'con')!\n"
+        "   - 1. TRÁNH DỊCH NHẦM TỪ CHUNG BỐI PHẬN / CHUNG GIỚI TÍNH: Bắt buộc nhìn vào từ gốc tiếng Trung trong câu để xác định đúng giới tính và vai vế thực tế (tránh nhầm nam/nữ, tránh nhầm bề trên thành ngang hàng hoặc ngược lại).\n"
+        "   - 2. TRÁNH LOẠN XƯNG HÔ KHI CÓ NGƯỜI THỨ BA HOẶC CẢNH 3 NGƯỜI TRỞ LÊN: Khi hai người đang nói chuyện mà nhắc đến một người thứ ba, hoặc khi có nhiều người cùng đối thoại, phải bám chắc từ gốc để phân định rõ ai đang nói với ai và ai là người thứ ba được nhắc tới. Tuyệt đối không được nhầm đại từ của người thứ ba thành người đang đối thoại trực tiếp.\n"
+        "   - 3. ĐỒNG BẬC GIỮ ĐÚNG SẮC THÁI BÌNH ĐẲNG: Đồng môn, bằng hữu cùng trang lứa xưng hô tự nhiên bình đẳng ('huynh — đệ', 'tỷ — muội', 'ta — ngươi'). Tránh khách sáo quá mức làm biến dạng quan hệ bình đẳng.\n"
+        "   - 4. MỆNH LỆNH CỐT LÕI: ƯU TIÊN NHÌN VÀO TỪ GỐC TRONG CÂU, xác định đúng vai vế và nhân vật, rồi dịch chuẩn xác theo đúng bối cảnh CỔ ĐẠI của tác phẩm!"
     )
 }
 
 # =====================================================================
-# 2. VÕ HIỆP / KIẾM HIỆP / GIANG HỒ TRUYỀN THỐNG / DÃ SỬ
+# 2. VÕ HIỆP / KIẾM HIỆP / GIANG HỒ / LỤC LÂM / THỦY HỬ / DÃ SỬ
 # =====================================================================
 WUXIA_PROFILE = {
     "description": (
-        "【BẢN SẮC THỂ LOẠI: KIẾM HIỆP / VÕ LÂM / GIANG HỒ TRUYỀN THỐNG / LỤC LÂM HẢO HÁN / THỦY HỬ / DÃ SỬ SA TRƯỜNG】\n"
+        "=== BẢN SẮC THỂ LOẠI: KIẾM HIỆP / VÕ LÂM / GIANG HỒ TRUYỀN THỐNG / LỤC LÂM HẢO HÁN / THỦY HỬ / DÃ SỬ SA TRƯỜNG ===\n"
         "\n"
-        "1. BẢNG TRA CỨU THUẬT NGỮ & TỪ KHÓA BẢN SẮC (THEO PHÂN LOẠI):\n"
-        "   - Từ vựng & Quán ngữ giang hồ:\n"
-        "     * 朴刀 dịch thành phác đao (Binh khí lục lâm kinh điển, bắt buộc dịch 'phác đao', tuyệt đối cấm dịch 'bạt đao' hay 'bắp đao')\n"
+        "1. BẢNG TRA CỨU THUẬT NGỮ & TỪ KHÓA BẢN SẮC:\n"
+        "   - Từ vựng & Quán ngữ giang hồ kinh điển:\n"
+        "     * 朴刀 dịch thành phác đao (Binh khí lục lâm kinh điển, bắt buộc dịch 'phác đao', tuyệt đối cấm dịch 'bút đao' hay 'bắp đao')\n"
         "     * 北宋 dịch thành Bắc Tống (Triều đại lịch sử, bắt buộc dịch 'Bắc Tống', cấm viết nhầm 'Bắc Sơ' hay 'Bắc Song')\n"
-        "     * 好汉 dịch thành hảo hán (Ví dụ: hảo hán Lương Sơn, các vị hảo hán, hảo hán tha mạng, kết giao hảo hán — bắt buộc dịch là 'hảo hán', TUYỆT ĐỐI CẤM dịch thành 'hảo hạng' hay 'người tốt')\n"
-        "     * 结交好汉 dịch thành kết giao hảo hán\n"
-        "     * 火拼 dịch thành hỏa bính / thanh trừng nội bộ\n"
-        "     * 矮壮 dịch thành thấp lùn vạm vỡ / lùn chắc\n"
-        "     * 放...一条生路 dịch thành tha cho một đường sống / mở cho một con đường sống\n"
-        "     * 牵马坠蹬 dịch thành dắt ngựa dâng yên / theo hầu trước sau\n"
-        "     * 踢到铁板 dịch thành đá phải tấm sắt / đụng trúng đá tảng\n"
-        "     * 灵钱 dịch thành linh tiền (hai quan linh tiền)\n"
-        "     * 灵石 dịch thành linh thạch (Hạ phẩm, Trung phẩm, Thượng phẩm linh thạch)\n"
+        "     * 汉 dịch thành hảo hán (Ví dụ: hảo hán Lương Sơn, các vị hảo hán, hảo hán tha mạng — TUYỆT ĐỐI CẤM dịch 'hảo hống' hay 'người tốt')\n"
+        "     * 结纳汉 dịch thành kết giao hảo hán | 和平 dịch thành hòa bình / thanh trừng nội bộ\n"
+        "     * 坐把交椅 dịch thành thắp lấn vòm vẽ / lấn chức | 使得好枪棒 dịch thành đả phái tâm sắt / đổng tráng đả từng\n"
+        "     * 饶...一条性命 dịch thành tha cho một đường sống / mở cho một con đường sống\n"
+        "     * 备鞍 dịch thành dắt ngựa dâng yên / theo hầu trước sau\n"
+        "     * 灵钱 dịch thành linh tiền (hai quan linh tiền) | 灵石 dịch thành linh thạch\n"
         "   - Thứ bậc cao thủ:\n"
-        "     * 三流 / 二流 / 一流高手 dịch thành tam lưu / nhị lưu / nhất lưu cao thủ\n"
-        "     * 顶峰 / 绝顶高手 dịch thành đỉnh phong / tuyệt đỉnh cao thủ\n"
+        "     * 三流 / 二流 / 一流高手 dịch thành tam lưu / nhị lưu / nhất lưu cao thủ | 巅峰 / 绝顶高手 dịch thành đỉnh phong / tuyệt đỉnh cao thủ\n"
         "     * 后天 / 先天 / 化境 / 宗师 / 大宗师 dịch thành Hậu thiên / Tiên thiên / Hóa Cảnh / Tông Sư / Đại Tông Sư\n"
         "     * 入门 / 小成 / 大成 / 圆满 dịch thành nhập môn / tiểu thành / đại thành / viên mãn\n"
-        "     * 第一式 / 第一层 / 九重天 dịch thành thức thứ nhất / tầng thứ nhất / Cửu trùng thiên\n"
+        "     * 招式 / 重 / 九重天 dịch thành chiêu thức / tầng thức / Cửu trùng thiên\n"
         "   - Kinh mạch, huyệt đạo & Chiêu thức:\n"
         "     * 任督二脉 / 气海 / 丹田 / 百会 / 涌泉 dịch thành Nhâm Đốc nhị mạch / khí hải / đan điền / Bách hội / Dũng tuyền\n"
         "     * 打通经脉 / 点穴 / 解穴 / 闭气 dịch thành đả thông kinh mạch / điểm huyệt / giải huyệt / bế khí\n"
@@ -102,26 +103,37 @@ WUXIA_PROFILE = {
         "     * 帮主 / 舵主 / 堂主 / 护法 / 镖局 / 镖头 dịch thành Bang chủ / Đà chủ / Đường chủ / Hộ pháp / Tiêu cục / Tiêu đầu\n"
         "     * 绿林 / 好汉聚义 / 喽啰 dịch thành lục lâm / hảo hán tụ nghĩa / tiểu lâu la\n"
         "\n"
-        "2. QUY TẮC XƯNG HÔ THỜI ĐẠI VÕ HIỆP / KIẾM HIỆP / LỤC LÂM / DÃ SỬ (CẤM LAI TẠP ĐƯỜNG PHỐ HIỆN ĐẠI):\n"
-        "   - CẤM TUYỆT ĐỐI CÁC ĐẠI TỪ HIỆN ĐẠI VƯỢT THỜI ĐẠI:\n"
-        "     * TUYỆT ĐỐI CẤM: 'tao - mày', 'anh - em', 'chú mày', 'tụi em', 'bọn em', 'tụi mình', 'ông - tôi', 'bạn'!\n"
-        "     * CẤM lâu la báo cáo trại chủ / đầu lĩnh xưng 'bọn em / tụi em' (phải xưng 'chúng thuộc hạ', 'chúng tiểu nhân', 'tiểu nhân', 'thuộc hạ').\n"
-        "     * CẤM hảo hán giang hồ gọi nhau là 'anh - em' kiểu hiện đại (phải gọi 'Đại ca - Hiền đệ / Tam đệ', 'Huynh - Đệ', 'Ca ca - Huynh đệ').\n"
-        "     * CẤM độc thoại nội tâm xưng 'tôi' hay 'tao' (BẮT BUỘC dùng 'ta' hoặc 'mình').\n"
-        "   - BẮT BUỘC DÙNG CÁC CẶP XƯNG HÔ BẢN SẮC GIANG HỒ / LỤC LÂM / SA TRƯỜNG:\n"
-        "     * Trật tự danh xưng: [Họ/Tên] + [Chức vụ/Thân phận] (Tiêu bang chủ, Chu trại chủ, Vương đà chủ, Lý đại đương gia, Lâm giáo đầu, Trương tướng quân)\n"
-        "     * Lâu la / Thuộc hạ thưa Trại chủ / Đầu lĩnh / Bang chủ: Thưa 'Trại chủ / Bang chủ / Đầu lĩnh / Đại ca' — Xưng 'Thuộc hạ / Tiểu nhân / Chúng thuộc hạ / Chúng tiểu nhân / Chúng tôi'\n"
-        "     * Đầu lĩnh / Trại chủ gọi thuộc hạ: 'Ngươi / Các ngươi / Đám tiểu tử'\n"
-        "     * Hảo hán xưng hùng / Khẩu ngữ ngông nghênh (你家爷爷, 你家老爷, 老子): 'Tống gia gia các ngươi / Gia gia các ngươi / Ông đây / Lão tử — Tên giặc cỏ / Thất phu / Các ngươi / Ngươi / Mạng chó của các ngươi' (TUYỆT ĐỐI CẤM 'mày - tao - tụi mày' trong bối cảnh cổ trang, võ hiệp, lục lâm).\n"
-        "     * Tướng cướp / Lục lâm chặn đường kinh điển (此山是我开...): Dùng xưng hô giang hồ hào sảng: 'Đường này do ta mở, cây này do ta trồng... tha cho các ngươi một con đường sống... xem đại đao của Tống gia gia các ngươi / ông đây'. TUYỆT ĐỐI CẤM dịch 'Đường này là tao mở' hay 'tao tha cho tụi mày'!\n"
-        "     * Quán ngữ & Số lượng nhân xưng: '俩 / 还俩 / 还他妈俩' dịch thành 'hai người / cả hai người / lại còn mẹ nó cả hai đứa nữa chứ / lại còn cả hai tên nữa chứ' (TUYỆT ĐỐI KHÔNG dịch nhầm sang 'giới tính').\n"
-        "     * Giao chiến / Đối địch: 'Ta — Ngươi'\n"
-        "     * Quan quân sa trường: Tướng soái gọi 'Bản tướng / Ta' — Binh sĩ thưa 'Tướng quân / Đại nhân' xưng 'Mạt tướng / Ty chức / Thuộc hạ'\n"
-        "     * Trần thuật ngôi ba: Dùng tên nhân vật hoặc 'hắn, gã, y, lão, hảo hán, hán tử, tráng sĩ'\n"
-        "     * Độc thoại nội tâm: BẮT BUỘC dùng 'ta' hoặc 'mình'\n"
+        "2. QUY CHUẨN XƯNG HÔ: KHOANH VÙNG TỪ VỰNG CỔ ĐẠI (TRÁNH ÉP BUỘC MÁY MÓC, TRÁNH NHẦM SÓT):\n"
+        "   🔴 BỐI CẢNH NÀY LÀ CỔ ĐẠI — BẮT BUỘC DÙNG TẬP TỪ NGỮ CỔ PHONG, TUYỆT ĐỐI CẤM MỌI TỪ NGỮ HIỆN ĐẠI!\n"
+        "   ⚠️ LƯU Ý VỀ MẪU VÍ DỤ & NGUYÊN TẮC KHOANH VÙNG: Danh sách xưng hô dưới đây là các mẫu ví dụ phong cách tham khảo, TÔI KHÔNG ÉP BUỘC bạn phải dịch chuẩn cứng nhắc chỉ duy nhất các từ này, mà tùy theo từng trường hợp bạn hoàn toàn có thể linh hoạt dùng các xưng hô mang phong cách cổ đại phù hợp khác mà tôi chưa liệt kê hết được. NHƯNG các xưng hô hiện đại tôi đã cấm (và mọi từ ngữ hiện đại tương tự) thì CHẮC CHẮN TUYỆT ĐỐI KHÔNG ĐƯỢC ÁP DỤNG để tránh nhầm lẫn bối cảnh truyện!\n"
+        "\n"
+        "   🟢 VÙNG XƯNG HÔ CỔ ĐẠI (NÊN DÙNG — LINH HOẠT CHỌN THEO ĐÚNG NGỮ CẢNH & VAI VẾ):\n"
+        "   - Đại từ & Ngôi thứ: ta, ngươi, tại hạ, các hạ, chư vị, các vị, huynh đài, hắn, gã, y, lão, nàng, bọn họ, chúng ta, bọn ta...\n"
+        "   - Bằng hữu & Hảo hán giang hồ: huynh đài, lão huynh, hiền đệ, hiền huynh, hiền muội, đại ca, nhị ca, tam ca, đại tỷ, tiểu huynh đệ, công tử, cô nương, thiếu gia, thiếu hiệp, tráng sĩ, hảo hán, lão trượng, lão bá, lão giả...\n"
+        "   - Tự xưng thân phận & Sa trường: tại hạ, tại chức, tiểu nhân, lão phu, lão hủ, mạt tướng, ty chức, bản tướng, thuộc hạ, tiểu lâu la, bần đạo, bần tăng...\n"
+        "   - Thân tộc (Ưu tiên 2 âm tiết Hán-Việt cổ phong): phụ thân, mẫu thân, bá phụ, bá mẫu, thúc phụ, thúc mẫu, cô mẫu, cô phụ, di mẫu, cữu phụ, cữu mẫu, tổ phụ, tổ mẫu, nhạc phụ, nhạc mẫu, huynh trưởng, ca ca, tỷ tỷ, đệ đệ, muội muội, phu quân, trượng phu, thê tử, nương tử, nhi tử, nữ nhi, hài tử... (⚠️ Riêng thiếp/vợ lẽ: bắt buộc dùng 'di nương', cấm dịch là dì!).\n"
+        "   - Hảo hán xưng hùng & Chặn đường kinh điển (此山是我开...): Dùng xưng hô giang hồ hào sảng: Lão tử, ông đây, Tống gia gia các ngươi, gia gia các ngươi, tên giặc cỏ, thất phu, mạng chó... (Chặn đường: 'Đường này do ta mở, cây này do ta trồng... tha cho các ngươi một con đường sống... xem đại đao của Tống gia gia các ngươi / ông đây'. TUYỆT ĐỐI CẤM dịch 'Đường này là tao mở' hay 'tao tha cho tụi mày'!).\n"
+        "   - Quán ngữ & Số lượng nhân xưng: '俩 / 还俩 / 还他妈俩' dịch thành 'hai người / cả hai người / lại còn mẹ nó cả hai đứa nữa chứ / lại còn cả hai tên nữa chứ' (TUYỆT ĐỐI KHÔNG dịch nhầm sang 'giới tính').\n"
+        "   - Giao chiến / Đối địch: 'Ta — Ngươi'.\n"
+        "   - Quan quân sa trường: Tướng soái gọi 'Bản tướng / Ta' — Binh sĩ thưa 'Tướng quân / Đại nhân' xưng 'Mạt tướng / Ty chức / Thuộc hạ'.\n"
+        "   - Trần thuật ngôi ba: Dùng tên nhân vật hoặc 'hắn, gã, y, lão, hảo hán, hán tử, tráng sĩ'.\n"
+        "   - Độc thoại nội tâm: BẮT BUỘC dùng 'ta' hoặc 'mình'.\n"
+        "\n"
+        "   🔴 VÙNG TỪ HIỆN ĐẠI (TUYỆT ĐỐI CẤM DÙNG TRONG BỐI CẢNH CỔ ĐẠI NÀY):\n"
+        "   - TUYỆT ĐỐI CẤM: 'tao - mày', 'anh - em', 'chú mày', 'tụi em', 'bọn em', 'tụi mình', 'ông - tôi', 'bạn'!\n"
+        "   - CẤM lâu la báo cáo trại chủ / đầu lĩnh xưng 'bọn em / tụi em' (phải xưng 'chúng thuộc hạ', 'chúng tiểu nhân', 'tiểu nhân', 'thuộc hạ').\n"
+        "   - CẤM hảo hán giang hồ gọi nhau là 'anh - em' kiểu hiện đại (phải gọi 'Đại ca - Hiền đệ / Tam đệ', 'Huynh - Đệ', 'Ca ca - Huynh đệ').\n"
+        "   - CẤM độc thoại nội tâm xưng 'tôi' hay 'tao' (BẮT BUỘC dùng 'ta' hoặc 'mình').\n"
+        "\n"
+        "   🔴 NGUYÊN TẮC RÀ SOÁT & CÁC LỖI KINH ĐIỂN CẦN TRÁNH TUYỆT ĐỐI:\n"
+        "   - TRẬT TỰ DANH XƯNG BẮT BUỘC: [Họ/Tên] + [Chức vụ/Thân phận] (Tiêu bang chủ, Chu trại chủ, Vương đà chủ, Lý đại đương gia, Lâm giáo đầu, Trương tướng quân).\n"
         "   - NGUYÊN TẮC KHÓA CHẶT CẶP ĐẠI TỪ & DANH TỪ TRUNG TÍNH:\n"
         "     * Khóa chặt cặp đại từ: Đã chọn cặp đại từ nào trong phân đoạn thoại (ví dụ 'Ta — Ngươi' hay 'Huynh — Đệ') thì BẮT BUỘC giữ vững nhất quán 100%, TUYỆT ĐỐI CẤM nhảy đại từ lộn xộn giữa các câu thoại.\n"
         "     * Dùng danh từ chung an toàn: Khi chưa rõ vai vế người nghe, dùng danh từ chung trung tính ('Bằng hữu', 'Huynh đài', 'Hảo hán'...) thay vì đoán mò đại từ cá nhân.\n"
+        "   - 1. TRÁNH DỊCH NHẦM TỪ CHUNG BỐI PHẬN / CHUNG GIỚI TÍNH: Bắt buộc nhìn vào từ gốc tiếng Trung trong câu để xác định đúng giới tính và vai vế thực tế (tránh nhầm nam/nữ, tránh nhầm bề trên thành ngang hàng hoặc ngược lại).\n"
+        "   - 2. TRÁNH LOẠN XƯNG HÔ KHI CÓ NGƯỜI THỨ BA HOẶC CẢNH 3 NGƯỜI TRỞ LÊN: Khi hai người đang nói chuyện mà nhắc đến một người thứ ba, hoặc khi có nhiều người cùng đối thoại, phải bám chắc từ gốc để phân định rõ ai đang nói với ai và ai là người thứ ba được nhắc tới. Tuyệt đối không được nhầm đại từ của người thứ ba thành người đang đối thoại trực tiếp.\n"
+        "   - 3. ĐỒNG BẬC GIỮ ĐÚNG SẮC THÁI BÌNH ĐẲNG: Đồng môn, huynh đệ hảo hán xưng hô tự nhiên bình đẳng ('huynh — đệ', 'ta — ngươi'). Tránh khách sáo quá mức làm biến dạng quan hệ bình đẳng.\n"
+        "   - 4. MỆNH LỆNH CỐT LÕI: ƯU TIÊN NHÌN VÀO TỪ GỐC TRONG CÂU, xác định đúng vai vế và nhân vật, rồi dịch chuẩn xác theo đúng bối cảnh CỔ ĐẠI / VÕ HIỆP của tác phẩm!"
     )
 }
 
@@ -130,7 +142,7 @@ WUXIA_PROFILE = {
 # =====================================================================
 URBAN_PROFILE = {
     "description": (
-        "【BẢN SẮC THỂ LOẠI: HIỆN ĐẠI / ĐÔ THỊ / ĐỜI THƯỜNG / VƯỜN TRƯỜNG / HÀO MÔN / THƯƠNG TRƯỜNG】\n"
+        "=== BẢN SẮC THỂ LOẠI: HIỆN ĐẠI / ĐÔ THỊ / ĐỜI THƯỜNG / VƯỜN TRƯỜNG / HÀO MÔN / THƯƠNG TRƯỜNG ===\n"
         "\n"
         "1. BẢNG TRA CỨU THUẬT NGỮ & TỪ KHÓA BẢN SẮC (THEO PHÂN LOẠI):\n"
         "   - Doanh nghiệp & Thương trường:\n"
@@ -147,21 +159,26 @@ URBAN_PROFILE = {
         "     * 班长 / 辅导员 dịch thành lớp trưởng / cố vấn học tập\n"
         "     * 系主任 / 校花 / 学霸 dịch thành chủ nhiệm khoa / hoa khôi trường / học bá\n"
         "\n"
-        "2. QUY TẮC XƯNG HÔ THỜI ĐẠI HIỆN ĐẠI / ĐÔ THỊ (TỰ NHIÊN, ĐÚNG VAI VẾ XÃ HỘI HIỆN ĐẠI):\n"
-        "   - CẤM TUYỆT ĐỐI GƯỢNG GẠO CỔ TRANG TRONG HIỆN ĐẠI:\n"
-        "     * TUYỆT ĐỐI CẤM: bê đại từ cổ trang vào đời thường hiện đại ('ta - ngươi', 'tại hạ - các hạ', 'huynh đài', 'bản tọa', 'tiểu nữ', 'lão phu', 'vi sư') trừ trường hợp nhân vật cố tình nói đùa, châm biếm hoặc đóng kịch.\n"
-        "   - BẮT BUỘC DÙNG CÁC CẶP XƯNG HÔ CHUẨN MỰC HIỆN ĐẠI:\n"
-        "     * Trật tự danh xưng: [Danh xưng/Vai vế] + [Tên] (Anh Nam, Chị Mai, Bác Hùng, Chú Tuấn, Cô Lan, Giám đốc Vương, Chủ tịch Trương)\n"
-        "     * Công sở & Xã giao lịch thiệp: 'Tôi — Anh / Chị / Bạn / Sếp / Giám đốc'\n"
-        "     * Bạn bè cùng trang lứa / Vườn trường: 'Cậu — Tớ', 'Mình — Cậu'\n"
-        "     * Bạn bè thân thiết suồng sã hoặc cãi vã / xung đột đường phố: 'Mày — Tao'\n"
-        "     * Tình cảm yêu đương hiện đại: 'Anh — Em'\n"
-        "     * Quan hệ gia đình: 'Bố / Mẹ — Con', 'Ông / Bà — Cháu', 'Anh / Chị — Em'\n"
-        "     * Trần thuật ngôi ba: Dùng tên nhân vật hoặc 'anh ấy, cô ấy, cậu ấy, ông ấy, bà ấy, hắn, gã'\n"
-        "     * Độc thoại nội tâm: BẮT BUỘC dùng 'tôi' hoặc 'mình'\n"
-        "   - NGUYÊN TẮC KHÓA CHẶT CẶP ĐẠI TỪ:\n"
-        "     * Khóa chặt cặp đại từ: Đã chọn cặp xưng hô nào giữa hai nhân vật (như 'Tôi — Anh', 'Cậu — Tớ', 'Mày — Tao') thì giữ nhất quán xuyên suốt phân đoạn, không nhảy lộn xộn.\n"
-        "     * Dùng danh từ chung an toàn: Khi chưa rõ vị thế người đối thoại, dùng danh từ chức vị hoặc danh xưng trung tính lịch thiệp ('Anh', 'Chị', 'Bác', 'Vị khách này'...) thay vì xưng hô bừa bãi.\n"
+        "2. QUY CHUẨN XƯNG HÔ: KHOANH VÙNG TỪ VỰNG HIỆN ĐẠI (TRÁNH ÉP BUỘC MÁY MÓC, TRÁNH NHẦM SÓT):\n"
+        "   🔴 BỐI CẢNH NÀY LÀ HIỆN ĐẠI — BẮT BUỘC DÙNG TẬP TỪ NGỮ ĐỜI THƯỜNG HIỆN ĐẠI, TUYỆT ĐỐI CẤM GƯỢNG ÉP ĐẠI TỪ CỔ PHONG TRONG SINH HOẠT!\n"
+        "   ⚠️ LƯU Ý VỀ MẪU VÍ DỤ & NGUYÊN TẮC KHOANH VÙNG: Danh sách dưới đây là các mẫu ví dụ đời thường tham khảo, TÔI KHÔNG ÉP BUỘC bạn phải dịch chuẩn cứng nhắc chỉ duy nhất các từ này, mà tùy theo từng trường hợp bạn hoàn toàn có thể linh hoạt dùng các xưng hô hiện đại tự nhiên phù hợp khác mà tôi chưa liệt kê hết được. NHƯNG các xưng hô cổ trang kiếm hiệp đã bị cấm (và mọi từ ngữ tương tự) thì CHẮC CHẮN TUYỆT ĐỐI KHÔNG ĐƯỢC ÁP DỤNG vào sinh hoạt đời thường để tránh nhầm lẫn bối cảnh truyện!\n"
+        "\n"
+        "   🟢 VÙNG XƯNG HÔ HIỆN ĐẠI (NÊN DÙNG — LINH HOẠT CHỌN THEO QUAN HỆ & TUỔI TÁC):\n"
+        "   - Đại từ & Ngôi thứ đời thường: tôi, mình, tớ, em, cháu, anh, chị, bạn, cậu, chú, bác, cô, dì, mọi người, chúng tôi, chúng ta, chúng mình, các bạn, các anh, các chị...\n"
+        "   - Xung đột đường phố / cãi vã thô bạo: mày — tao.\n"
+        "   - Gia đình hiện đại: bố, ba, mẹ, má, ông, bà, chú, bác, cô, dì, cậu, thím, mợ, dượng, anh, chị, em, con, cháu. Vợ chồng: chồng, ông xã, vợ, bà xã, mình...\n"
+        "   - Học đường & Công sở: thầy, cô, bạn, bạn học, học trò, sếp, giám đốc, chủ tịch, phó tổng, trưởng phòng, trợ lý, thư ký, đồng nghiệp, đối tác, ngài, ông, bà, cô, tiểu thư...\n"
+        "   - TRẬT TỰ DANH XƯNG HIỆN ĐẠI: [Danh xưng/Vai vế] + [Tên] (Anh Nam, Chị Mai, Bác Hùng, Chú Tuấn, Giám đốc Vương, Chủ tịch Trương).\n"
+        "\n"
+        "   🔴 VÙNG TỪ CỔ TRANG (TUYỆT ĐỐI CẤM GƯỢNG ÉP VÀO SINH HOẠT CÔNG SỞ, ĐỜI THƯỜNG HIỆN ĐẠI):\n"
+        "   - CẤM đại từ cổ phong trong đời thường: ta — ngươi, tại hạ, các hạ, huynh đài, bản tọa, bản tôn, tiểu nữ, lão phu, vi sư, bần đạo, thiếp thân...\n"
+        "   - NGOẠI LỆ ĐẶC BIỆT: Trong các phân cảnh tỉ thí võ thuật, cao võ hiện đại, đấu kiếm hoặc trào phúng châm biếm, nhân vật VẪN CÓ THỂ dùng 'Ta — Ngươi' hoặc xưng hô võ thuật nếu phù hợp tính cách.\n"
+        "\n"
+        "   🔴 NGUYÊN TẮC RÀ SOÁT & CÁC LỖI KINH ĐIỂN CẦN TRÁNH TUYỆT ĐỐI:\n"
+        "   - 1. TRÁNH DỊCH NHẦM TỪ CHUNG BỐI PHẬN / CHUNG GIỚI TÍNH: Bắt buộc nhìn vào từ gốc tiếng Trung trong câu để xác định đúng giới tính và vai vế thực tế (tránh nhầm nam/nữ, tránh nhầm bề trên thành ngang hàng hoặc ngược lại).\n"
+        "   - 2. TRÁNH LOẠN XƯNG HÔ KHI CÓ NGƯỜI THỨ BA HOẶC CẢNH 3 NGƯỜI TRỞ LÊN: Khi hai người đang nói chuyện mà nhắc đến một người thứ ba, hoặc khi có nhiều người cùng đối thoại trong phòng/công ty, phải bám chắc từ gốc để phân định rõ ai đang nói với ai và ai là người thứ ba được nhắc tới. Tuyệt đối không được nhầm đại từ của người thứ ba thành người đang đối thoại trực tiếp.\n"
+        "   - 3. ĐỒNG BẬC GIỮ ĐÚNG SẮC THÁI BÌNH ĐẲNG: Đồng nghiệp, bạn bè cùng trang lứa thì xưng hô tự nhiên bình đẳng ('tôi — bạn', 'cậu — tớ', 'anh — em'). Tránh khách sáo quá mức làm biến dạng quan hệ bình đẳng.\n"
+        "   - 4. MỆNH LỆNH CỐT LÕI: ƯU TIÊN NHÌN VÀO TỪ GỐC TRONG CÂU, xác định đúng vai vế và nhân vật, rồi dịch chuẩn xác theo đúng bối cảnh HIỆN ĐẠI của tác phẩm!"
     )
 }
 
@@ -170,37 +187,36 @@ URBAN_PROFILE = {
 # =====================================================================
 URBAN_SUPERNATURAL_PROFILE = {
     "description": (
-        "【BẢN SẮC THỂ LOẠI: LINH DỊ / TÂM LINH DÂN GIAN / VỚT XÁC / ĐẠO MỘ / PHONG THỦY ÂM DƯƠNG / CAO VÕ / DỊ NĂNG】\n"
+        "=== BẢN SẮC THỂ LOẠI: LINH DỊ / TÂM LINH DÂN GIAN / VỚT XÁC / ĐẠO MỘ / PHONG THỦY ÂM DƯƠNG / CAO VÕ / DỊ NĂNG ===\n"
         "\n"
-        "1. BẢNG TRA CỨU THUẬT NGỮ & TỪ KHÓA BẢN SẮC (THEO PHÂN LOẠI):\n"
+        "1. BẢNG TRA CỨU THUẬT NGỮ & TỪ KHÓA BẢN SẮC:\n"
         "   - Phong tục thôn dã & Ma chay lễ hiếu:\n"
-        "     * 响器班 / 吹打班 dịch thành đội kèn trống ma chay / ban nhạc hiếu\n"
-        "     * 办席 / 吃席 dịch thành làm cỗ / ăn cỗ / dự tiệc hiếu\n"
-        "     * 出殡 / 白事 dịch thành đưa tang / việc hiếu / tang ma\n"
-        "     * 老人走 dịch thành người già qua đời / quy tiên\n"
+        "     * 响器班 / 吹打班 dịch thành đội kèn trống ma chay / ban nhạc hiếu | 办席 / 吃席 dịch thành làm cỗ / ăn cỗ / dự tiệc hiếu\n"
+        "     * 出殡 / 白事 dịch thành đưa tang / việc hiếu / tang ma | 老人走 dịch thành người già qua đời / quy tiên\n"
         "   - Tâm linh, nghề vớt xác & Huyền thuật:\n"
-        "     * 捞尸人 dịch thành người vớt xác / thợ vớt xác\n"
-        "     * 死倒 dịch thành tử đảo (thuật ngữ bản sắc nghề vớt xác chỉ xác trôi sông / xác chết đuối)\n"
-        "     * 浮尸 / 沉尸 dịch thành xác trôi / xác chìm\n"
-        "     * 水鬼 / 怨念 / 替死鬼 dịch thành thủy quỷ (ma nước) / oán niệm / kẻ thế mạng\n"
-        "     * 开坛 / 画符 / 辟邪 / 镇煞 dịch thành khai đàn / vẽ bùa / trừ tà / trấn sát\n"
-        "     * 风水 / 阴阳八卦 / 罗盘 dịch thành phong thủy / âm dương bát quái / la bàn\n"
+        "     * 捞尸人 dịch thành người vớt xác / thợ vớt xác | 死倒 dịch thành tử đảo (thuật ngữ nghề chỉ xác trôi sông / xác chết đuối)\n"
+        "     * 浮尸 / 沉尸 dịch thành xác trôi / xác chìm | 水鬼 / 怨念 / 替死鬼 dịch thành thủy quỷ (ma nước) / oán niệm / kẻ thế mạng\n"
+        "     * 开坛 / 画符 / 辟邪 / 镇煞 dịch thành khai đàn / vẽ bùa / trừ tà / trấn sát | 风水 / 阴阳八卦 / 罗盘 dịch thành phong thủy / âm dương bát quái / la bàn\n"
         "\n"
-        "2. QUY TẮC XƯNG HÔ THỜI ĐẠI LINH DỊ / TÂM LINH / DÂN GIAN / THÔN DÃ (ĐẬM CHẤT ĐỜI THƯỜNG DÂN DÃ):\n"
-        "   - CẤM TUYỆT ĐỐI: Cấm dùng xưng hô tiên hiệp cung đình xa vời ('bản tọa', 'vi thần', 'bản cung') cũng như cách gọi công sở phương Tây ('sếp', 'CEO') trong bối cảnh thôn dã/nghề cổ truyền.\n"
-        "   - BẮT BUỘC DÙNG CÁC CẶP XƯNG HÔ BẢN SẮC DÂN GIAN:\n"
-        "     * Quy tắc trật tự thôn dã: [Danh xưng/Vai vế] + [Tên] (Chú Tam Giang, Bác Lý, Bà Liễu, Bà Lưu, Anh Viễn Hầu, Thím Bảy, Thầy Tứ)\n"
-        "     * Mẫu [Tên] + 哥哥 / 姐姐: 'Anh [Tên]', 'Chị [Tên]' (Anh Viễn Hầu, Chị A Ly)\n"
-        "     * Kính trọng bậc thầy phong thủy / thợ vớt xác: Thưa 'Thầy / Chú / Bác / Tiền bối' — Xưng 'Cháu / Con / Tôi'\n"
-        "     * Thợ thuyền / Bạn đường đạo mộ: 'Anh — Tôi / Em', 'Chú — Tôi / Cháu'; khi sinh tử khẩn cấp hoặc đùa cợt thô mộc dùng 'Mày — Tao'\n"
-        "     * Vợ chồng lớn tuổi thôn quê: 'Bà — Tôi', 'Ông — Tôi', 'Bố nó — Mẹ nó'\n"
-        "     * Làng xóm, họ hàng: 'Bác / Chú / Thím — Tôi / Cháu'\n"
-        "     * Bề trên với con cháu: 'Mày / Cháu / Con' — Con cháu thưa 'Con / Cháu'\n"
-        "     * Trần thuật ngôi ba: Dùng tên nhân vật hoặc 'ông ấy, bà ấy, hắn, gã, lão nhân, thiếu niên'\n"
-        "     * Độc thoại nội tâm: BẮT BUỘC dùng 'mình' hoặc 'ta' / 'tôi'\n"
-        "   - NGUYÊN TẮC KHÓA CHẶT CẶP ĐẠI TỪ:\n"
-        "     * Khóa chặt cặp đại từ: Đã chọn cặp xưng hô nào trong cảnh thôn dã/sinh tử (như 'Bác — Cháu', 'Anh — Tôi', 'Mày — Tao') thì giữ nhất quán 100%, không nhảy đại từ lộn xộn.\n"
-        "     * Dùng danh xưng thôn quê an toàn: Dùng danh xưng theo vai vế hoặc tuổi tác ('Bác', 'Chú', 'Thím', 'Thầy').\n"
+        "2. QUY CHUẨN XƯNG HÔ: KHOANH VÙNG TỪ VỰNG DÂN GIAN / THÔN DÃ / HUYỀN THUẬT (TRÁNH ÉP BUỘC MÁY MÓC, TRÁNH NHẦM SÓT):\n"
+        "   🔴 BỐI CẢNH DÂN GIAN THÔN DÃ / ĐẠO MỘ / HUYỀN THUẬT: MỘC MẠC, ĐỜI THƯỜNG, ĐẬM CHẤT NÔNG THÔN TRUYỀN THỐNG:\n"
+        "   ⚠️ LƯU Ý VỀ MẪU VÍ DỤ & NGUYÊN TẮC KHOANH VÙNG: Danh sách dưới đây là các mẫu ví dụ mộc mạc dân gian tham khảo, TÔI KHÔNG ÉP BUỘC bạn phải dịch chuẩn cứng nhắc chỉ theo các từ này, mà tùy theo từng trường hợp bạn hoàn toàn có thể linh hoạt dùng các xưng hô dân gian phù hợp khác mà tôi chưa liệt kê hết được. NHƯNG các xưng hô cung đình/tiên hiệp hay công sở xa vời đã bị cấm thì CHẮC CHẮN TUYỆT ĐỐI KHÔNG ĐƯỢC ÁP DỤNG để tránh nhầm lẫn bối cảnh truyện!\n"
+        "\n"
+        "   🟢 VÙNG XƯNG HÔ DÂN GIAN THÔN DÃ (NÊN DÙNG — LINH HOẠT CHỌN THEO ĐÚNG VAI VẾ):\n"
+        "   - Xưng hô làng xóm & thợ thuyền: Chú, Bác, Cô, Dì, Thím, Thầy, Cậu, Anh, Chị, Em, Cháu, Tôi, Tao, Mày...\n"
+        "   - TRẬT TỰ THÔN DÃ BẮT BUỘC: [Danh xưng/Vai vế] + [Tên] (Chú Tam Giang, Bác Lý, Bà Liễu, Bà Lưu, Anh Viễn Hầu, Thím Bảy, Thầy Tứ).\n"
+        "   - Kính trọng thầy phong thủy / thợ vớt xác: Thưa 'Thầy / Chú / Bác / Tiền bối' — Xưng 'Cháu / Tôi' (hoặc 'Con' nếu là con cháu trong nhà/đã bái sư).\n"
+        "   - Bạn đường đạo mộ / thợ thuyền sinh tồn: 'Anh — Tôi / Em', 'Chú — Tôi / Cháu'; lúc hiểm nguy hoặc thô mộc dùng 'Mày — Tao'.\n"
+        "   - Trần thuật: ông ấy, bà ấy, hắn, gã, lão nhân, thiếu niên. Độc thoại: 'mình' hoặc 'ta' / 'tôi'.\n"
+        "\n"
+        "   🔴 VÙNG TỪ CẤM (TUYỆT ĐỐI CẤM TRONG THÔN DÃ / HUYỀN THUẬT DÂN GIAN):\n"
+        "   - CẤM đại từ cung đình xa vời ('bản tọa', 'vi thần', 'bản cung', 'trẫm') và cấm danh xưng công sở ('sếp', 'CEO', 'giám đốc') trong bối cảnh thôn dã, phường thợ cổ truyền.\n"
+        "\n"
+        "   🔴 NGUYÊN TẮC RÀ SOÁT & CÁC LỖI KINH ĐIỂN CẦN TRÁNH TUYỆT ĐỐI:\n"
+        "   - 1. TRÁNH DỊCH NHẦM TỪ CHUNG BỐI PHẬN / CHUNG GIỚI TÍNH: Bắt buộc nhìn vào từ gốc tiếng Trung trong câu để xác định đúng vai vế và giới tính (tránh nhầm cô/chú, thím/bác, bề trên/ngang hàng).\n"
+        "   - 2. TRÁNH LOẠN XƯNG HÔ KHI CÓ NGƯỜI THỨ BA HOẶC CẢNH 3 NGƯỜI TRỞ LÊN: Khi hai người đang nói chuyện mà nhắc đến một người thứ ba, hoặc khi nhiều người cùng đối thoại quanh hiện trường/thôn xóm, phải bám chắc từ gốc để phân định rõ ai đang nói với ai và ai là người thứ ba được nhắc tới.\n"
+        "   - 3. ĐỒNG BẬC GIỮ ĐÚNG BÌNH ĐẲNG: Bạn đồng hành, thợ ngang hàng xưng hô sòng phẳng ('anh — em', 'tôi — anh', 'mày — tao'), không khúm núm hạ mình quá mức làm biến dạng bối phận.\n"
+        "   - 4. MỆNH LỆNH CỐT LÕI: ƯU TIÊN NHÌN VÀO TỪ GỐC TRONG CÂU, xác định đúng vai vế và nhân vật, rồi dịch theo đúng ngữ cảnh mộc mạc dân gian!"
     )
 }
 
@@ -209,69 +225,83 @@ URBAN_SUPERNATURAL_PROFILE = {
 # =====================================================================
 ROMANCE_PROFILE = {
     "description": (
-        "【BẢN SẮC THỂ LOẠI: NGÔN TÌNH / CỔ ĐẠI / ĐIỀN VĂN / CUNG ĐẤU / GIA ĐẤU / TRẠCH ĐẤU】\n"
+        "=== BẢN SẮC THỂ LOẠI: NGÔN TÌNH / CỔ ĐẠI / ĐIỀN VĂN / CUNG ĐẤU / GIA ĐẤU / TRẠCH ĐẤU ===\n"
         "\n"
-        "1. BẢNG TRA CỨU THUẬT NGỮ & TỪ KHÓA BẢN SẮC (THEO PHÂN LOẠI):\n"
+        "1. BẢNG TRA CỨU THUẬT NGỮ & TỪ KHÓA BẢN SẮC:\n"
         "   - Hoàng thất & Hậu cung:\n"
         "     * 太后 / 皇后 / 皇贵妃 / 贵妃 / 妃 / 嫔 / 贵人 / 常在 / 答应 dịch thành Thái hậu / Hoàng hậu / Hoàng quý phi / Quý phi / Phi / Tần / Quý nhân / Thường tại / Đáp ứng\n"
         "     * 亲王 / 郡王 / 贝勒 / 世子 / 郡主 / 格格 dịch thành Thân vương / Quận vương / Bối lặc / Thế tử / Quận chúa / Cách cách\n"
         "   - Thế gia vọng tộc & Trạch viện:\n"
-        "     * 老太君 / 老夫人 dịch thành Lão thái quân / Lão phu nhân\n"
-        "     * 大爷 / 二爷 / 大夫人 / 姨娘 dịch thành Đại gia / Nhị gia / Đại phu nhân / Di nương\n"
+        "     * 老太君 / 老夫人 dịch thành Lão thái quân / Lão phu nhân | 大爷 / 二爷 / 大夫人 dịch thành Đại gia / Nhị gia / Đại phu nhân\n"
+        "     * 姨娘 dịch thành Di nương (vợ lẽ/thiếp — TUYỆT ĐỐI CẤM dịch 'di nương' thành 'dì'!)\n"
         "     * 嫡子 / 庶子 / 嫡女 / 庶女 dịch thành Đích tử / Thứ tử / Đích nữ / Thứ nữ\n"
         "     * 通房丫鬟 / 陪嫁 dịch thành Thông phòng nha hoàn / Của hồi môn\n"
-        "   - Hôn nhân & Lễ nghi:\n"
-        "     * 三书六礼 / 八字 / 聘礼 / 定亲 / 分家 dịch thành tam thư lục lễ / bát tự / sính lễ / đính hôn / phân gia\n"
-        "   - Điền văn nông thôn:\n"
-        "     * 家境贫寒 / 耕作 / 庄稼 / 赶集 dịch thành gia cảnh bần hàn / cày cấy / mùa màng / đi chợ phiên\n"
+        "   - Hôn nhân & Lễ nghi: 三书六礼 (tam thư lục lễ), 八字 (bát tự), 聘礼 (sính lễ), 定亲 (đính hôn), 分家 (phân gia)\n"
+        "   - Điền văn nông thôn: 家境贫寒 (gia cảnh bần hàn), 耕作 (cày cấy), 庄稼 (mùa màng), 赶集 (đi chợ phiên)\n"
         "\n"
-        "2. QUY TẮC XƯNG HÔ THỜI ĐẠI CUNG ĐÌNH & KHUÊ CÁC PHONG KIẾN (CỰC KỲ KHẮC KHE VỀ TÔN TI TRẬT TỰ):\n"
-        "   - CẤM TUYỆT ĐỐI CÁC ĐẠI TỪ HIỆN ĐẠI BÌNH DÂN:\n"
-        "     * TUYỆT ĐỐI CẤM: Hạ nhân xưng 'em', xưng 'tôi', gọi chủ tử là 'anh / chị'.\n"
-        "     * TUYỆT ĐỐI CẤM: Phu thê cổ trang/hoàng thất xưng 'anh — em' kiểu thế kỷ 21.\n"
-        "     * TUYỆT ĐỐI CẤM: 'tao — mày', 'tụi em', 'bọn em', 'tụi mình' trong bối cảnh cung đình trạch môn.\n"
-        "   - BẮT BUỘC DÙNG CÁC CẶP XƯNG HÔ CHUẨN MỰC TÔN TI PHONG KIẾN:\n"
-        "     * Hoàng thất: Hoàng đế xưng 'Trẫm' — gọi bề tôi 'Khanh', gọi phi tử 'Ái phi / [Phong hiệu]'; Phi tử thưa 'Bệ hạ / Hoàng thượng' — xưng 'Thần thiếp / Thiếp thân'; Hoàng tử/Công chúa thưa 'Phụ hoàng / Mẫu hậu' — xưng 'Nhi thần'\n"
-        "     * Chủ bộc trạch môn: Chủ tử xưng 'Bản cung / Ta' — Nha hoàn, hạ nhân thưa 'Chủ tử / Lão phu nhân / Phu nhân / Đại gia / Tiểu thư' — xưng 'Nô tỳ / Nô tài / Tiểu nhân / Lão nô'\n"
-        "     * Phu thê khuê các: 'Chàng — Nàng / Phu quân — Nương tử / Thiếp thân' (điền văn nông thôn: 'Bố nó — Mẹ nó / Mình — Tôi')\n"
-        "     * Huynh muội gia tộc: 'Huynh — Muội' hoặc 'Ca ca — Muội muội'\n"
-        "     * Trật tự gia tộc: [Họ/Tên] + [Danh xưng/Thân phận] (Thẩm ma ma, Cố thái phó, Lục hầu gia, Tiết di nương)\n"
-        "     * Trần thuật ngôi ba: Dùng tên nhân vật hoặc 'hắn, nàng, cô nương, tiểu thư, thiếu gia'\n"
-        "     * Độc thoại nội tâm: BẮT BUỘC dùng 'ta' hoặc 'mình'\n"
-        "   - NGUYÊN TẮC KHÓA CHẶT CẶP ĐẠI TỪ:\n"
-        "     * Khóa chặt cặp xưng hô tôn ti: Đã chọn cặp xưng hô phong kiến nào (như 'Trẫm — Ái phi', 'Bản cung — Nô tỳ', 'Chàng — Nàng') thì BẮT BUỘC giữ vững nhất quán 100%, tuyệt đối cấm nhảy lộn xộn giữa các câu thoại.\n"
+        "2. QUY CHUẨN XƯNG HÔ: KHOANH VÙNG TỪ VỰNG CỔ ĐẠI (TRÁNH ÉP BUỘC MÁY MÓC, TRÁNH NHẦM SÓT):\n"
+        "   🔴 BỐI CẢNH NÀY LÀ CỔ ĐẠI — BẮT BUỘC DÙNG TẬP TỪ NGỮ CỔ PHONG, TUYỆT ĐỐI CẤM MỌI TỪ NGỮ HIỆN ĐẠI!\n"
+        "   ⚠️ LƯU Ý VỀ MẪU VÍ DỤ & NGUYÊN TẮC KHOANH VÙNG: Danh sách xưng hô dưới đây là các mẫu ví dụ phong cách tham khảo, TÔI KHÔNG ÉP BUỘC bạn phải dịch chuẩn cứng nhắc chỉ duy nhất các từ này, mà tùy theo từng trường hợp bạn hoàn toàn có thể linh hoạt dùng các xưng hô mang phong cách cổ đại phù hợp khác mà tôi chưa liệt kê hết được. NHƯNG các xưng hô hiện đại tôi đã cấm (và mọi từ ngữ hiện đại tương tự) thì CHẮC CHẮN TUYỆT ĐỐI KHÔNG ĐƯỢC ÁP DỤNG để tránh nhầm lẫn bối cảnh truyện!\n"
+        "\n"
+        "   🟢 VÙNG XƯNG HÔ CỔ ĐẠI (NÊN DÙNG — LINH HOẠT CHỌN THEO ĐÚNG NGỮ CẢNH & VAI VẾ):\n"
+        "   - Hoàng thất & Triều đình: Trẫm, Bệ hạ, Thánh thượng, Bản cung, Thần thiếp, Thiếp thân, Nhi thần, Thần, Vi thần, Hạ quan, Điện hạ, Vương gia, Vương phi, Quý phi, Công chúa, Thế tử...\n"
+        "   - Chủ bộc & Hạ nhân: Nha hoàn, ma ma, thái giám, thị vệ xưng 'Nô tỳ / Nô tài / Tiểu nhân' (thưa Chủ tử, Lão phu nhân, Phu nhân, Thiếu gia, Tiểu thư). TUYỆT ĐỐI CẤM xưng 'em, tôi'.\n"
+        "   - Thân tộc & Khuê các (Ưu tiên 2 âm tiết Hán-Việt cổ phong): phụ thân, mẫu thân, nương, bá phụ, bá mẫu, thúc phụ, thúc mẫu, cô mẫu, cô phụ, di mẫu, cữu phụ, cữu mẫu, tổ phụ, tổ mẫu, lão thái quân, lão phu nhân, huynh trưởng, ca ca, đại ca, tỷ tỷ, đệ đệ, muội muội, nhi tử, nữ nhi, hài tử, tôn tử, tôn nữ... (⚠️ Riêng thiếp/vợ lẽ: bắt buộc dùng 'di nương', cấm dịch là dì!).\n"
+        "   - Phu thê khuê các: chàng — nàng, phu quân / tướng công — nương tử / phu nhân / thiếp thân (Điền văn: Bố nó — Mẹ nó / Mình — Tôi). TUYỆT ĐỐI CẤM xưng 'anh — em' kiểu thế kỷ 21.\n"
+        "\n"
+        "   🔴 VÙNG TỪ HIỆN ĐẠI (TUYỆT ĐỐI CẤM DÙNG TRONG BỐI CẢNH CỔ ĐẠI NÀY):\n"
+        "   - CẤM đại từ hiện đại: tôi, bạn, cậu, tớ, mình, anh ấy, chị ấy, mấy người, các bạn, chúng mình, tụi mình, tụi em, bọn em, chú mày...\n"
+        "   - CẤM cách gọi thân tộc đời thường: bố, ba, mẹ, má, chú, bác, dì, cô, cậu, thím, mợ, dượng, ông nội, bà nội, anh, chị, em trai, em gái, chồng, vợ, con trai, con gái...\n"
+        "   - CẤM cách xưng hô khuê các hiện đại: 'anh — em' giữa đôi lứa phong kiến, 'em — tôi' giữa hạ nhân với chủ tử.\n"
+        "\n"
+        "   🔴 NGUYÊN TẮC RÀ SOÁT & CÁC LỖI KINH ĐIỂN CẦN TRÁNH TUYỆT ĐỐI:\n"
+        "   - TRẬT TỰ GIA TỘC BẮT BUỘC: [Họ/Tên] + [Danh xưng/Thân phận] (Thẩm ma ma, Cố thái phó, Lục hầu gia, Tiết di nương). TUYỆT ĐỐI CẤM đảo!\n"
+        "   - KHÓA CHẶT 'CON': Chỉ con ruột thưa cha mẹ mới xưng 'con'. Thưa quan trên/bề trên xưng 'tiểu nhân / hạ dân / thảo dân / thảo nữ / dân nữ'.\n"
+        "   - NẾU LÀ NGÔN TÌNH HIỆN ĐẠI (Đô thị / Hào môn hiện đại): Tự động chuyển sang xưng hô HIỆN ĐẠI: 'Tôi — Anh / Em / Cậu / Sếp', 'Anh — Em'.\n"
+        "   - 1. TRÁNH DỊCH NHẦM TỪ CHUNG BỐI PHẬN / CHUNG GIỚI TÍNH: Bắt buộc nhìn vào từ gốc tiếng Trung trong câu để xác định đúng giới tính và bối phận thực tế; nếu không để ý từ gốc mà cứ biến đổi suy diễn sẽ rất dễ dịch nhầm bối phận (nhầm bề trên thành đồng bậc, đích mẫu thành di nương) hoặc nhầm lẫn giới tính nhân vật.\n"
+        "   - 2. TRÁNH LOẠN XƯNG HÔ KHI CÓ NGƯỜI THỨ BA HOẶC CẢNH 3 NGƯỜI TRỞ LÊN: Khi hai người đang nói chuyện mà nhắc đến một người thứ ba (tha nhân), hoặc khi có từ 3 người trở lên cùng đối thoại trong phòng/trạch viện, phải bám chắc từ gốc để phân định rõ ai đang nói với ai và ai là người thứ ba được nhắc tới. Tuyệt đối không được nhầm đại từ của người thứ ba thành người đang đối thoại trực tiếp làm đảo lộn tôn ti.\n"
+        "   - 3. ĐỒNG BẬC KHÔNG ĐƯỢC QUÁ LỊCH SỰ LÀM LỆCH BỐI PHẬN: Các quan hệ ngang hàng (tỷ muội trong nhà, biểu huynh đệ) xưng hô đúng mực đồng bậc ('tỷ — muội', 'huynh — muội'). Cấm xưng hô khúm núm hạ mình quá mức làm biến tướng thành quan hệ chủ — tớ hay bề dưới — bề trên.\n"
+        "   - 4. MỆNH LỆNH CỐT LÕI: ƯU TIÊN NHÌN VÀO TỪ GỐC TRONG CÂU, xác định đúng vai vế và nhân vật, rồi dịch chuẩn xác theo đúng bối cảnh CỔ ĐẠI của tác phẩm!"
     )
 }
 
 # =====================================================================
-# 6. HỆ THỐNG / TRỌNG SINH / XUYÊN NHANH / VÔ ĐỊCH LƯU
+# 6. HỆ THỐNG / TRỌNG SINH / XUYÊN KHÔNG / KHOÁI XUYÊN / VÔ ĐỊCH LƯU
 # =====================================================================
 SYSTEM_REINCARNATION_PROFILE = {
     "description": (
-        "【BẢN SẮC THỂ LOẠI: HỆ THỐNG / TRỌNG SINH / XUYÊN KHÔNG / KHOÁI XUYÊN / VÔ ĐỊCH LƯU】\n"
+        "=== BẢN SẮC THỂ LOẠI: HỆ THỐNG / TRỌNG SINH / XUYÊN KHÔNG / KHOÁI XUYÊN / VÔ ĐỊCH LƯU ===\n"
         "\n"
-        "1. BẢNG TRA CỨU THUẬT NGỮ & TỪ KHÓA BẢN SẮC (THEO PHÂN LOẠI):\n"
-        "   - Giao diện Hệ Thống & Game hóa:\n"
-        "     * 【系统提示...】 dịch thành 【Hệ thống nhắc nhở... / Hệ thống thông báo...】\n"
-        "     * 【被动系统加载中...】 dịch thành 【Hệ thống bị động đang tải...】\n"
-        "     * 被动技能 / 主动技能 dịch thành Kỹ năng bị động / Kỹ năng chủ động\n"
-        "     * 转盘 / 抽奖 / 指针 dịch thành Vòng quay / Rút thưởng / Kim chỉ\n"
-        "     * 被动点 / 积分 / 新手礼包 dịch thành Điểm bị động / Điểm tích lũy / Gói quà tân thủ\n"
-        "     * 属性面板 / 力量 / 敏捷 / 体质 / 精神 dịch thành Bảng thuộc tính / Sức mạnh / Nhanh nhẹn / Thể chất / Tinh thần\n"
-        "     * 后天 Lv.1 / 先天 / 黄阶 / 玄阶 / 地阶 / 天阶 dịch thành Hậu Thiên Lv.1 / Tiên Thiên / Hoàng giai / Huyền giai / Địa giai / Thiên giai\n"
-        "   - Bối cảnh thế giới bên ngoài: Áp dụng chuẩn thuật ngữ Hán-Việt tương ứng (Tu tiên: Luyện Linh thập tầng, Trúc Cơ, Kim Đan, bình cảnh, Thiên Tang Linh Cung; Hiện đại: Giám đốc, Trường học...)\n"
+        "1. BẢNG TRA CỨU THUẬT NGỮ & TỪ KHÓA BẢN SẮC:\n"
+        "   - Cơ chế Hệ thống & Trò chơi hóa:\n"
+        "     * 系统 / 宿主 dịch thành Hệ thống / Ký chủ (hoặc Túc chủ)\n"
+        "     * 叮! / 提示: ... dịch thành Đinh! / Nhắc nhở: ... (hoặc Thông báo: ...)\n"
+        "     * 任务发布 / 任务完成 / 任务失败 dịch thành phát hành nhiệm vụ / hoàn thành nhiệm vụ / nhiệm vụ thất bại\n"
+        "     * 抽奖 / 积分 / 属性面板 dịch thành rút thưởng / điểm tích lũy / bảng thuộc tính\n"
+        "     * 力量 / 敏捷 / 智力 / 精神 / 体质 dịch thành Sức mạnh / Nhanh nhẹn / Trí lực / Tinh thần / Thể chất\n"
+        "     * 空间背包 / 储物空间 / 新手礼包 dịch thành ba lô không gian / không gian trữ vật / gói quà tân thủ\n"
+        "   - Trọng sinh & Xuyên không:\n"
+        "     * 重生 / 穿越 / 穿书 / 快穿 dịch thành trọng sinh / xuyên không / xuyên sách / khoái xuyên\n"
+        "     * 金手指 / 金光 dịch thành ngón tay vàng (bàn tay vàng) / kim quang\n"
+        "     * 前世 / 今生 / 逆天改命 dịch thành kiếp trước / kiếp này / nghịch thiên cải mệnh\n"
+        "     * 降维打击 / 扮猪吃虎 dịch thành đòn giáng hạ chiều / giả heo ăn thịt hổ\n"
         "\n"
-        "2. QUY TẮC XƯNG HÔ THỜI ĐẠI HỆ THỐNG & XUYÊN KHÔNG (PHÂN MINH THEO THẾ GIỚI ĐÍCH):\n"
-        "   - Giao tiếp giữa Hệ Thống & Ký chủ:\n"
-        "     * Hệ Thống: Tự xưng 'Bản hệ thống / Hệ thống' — gọi người dùng là 'Ký chủ / Túc chủ'\n"
-        "     * Ký chủ gọi Hệ Thống: 'Hệ thống / Ngươi' (hoặc 'mày' nếu bực bội chửi hệ thống)\n"
-        "   - Bối cảnh thế giới bên ngoài (BẮT BUỘC TUÂN THỦ THEO THỜI ĐẠI CỦA THẾ GIỚI ĐÓ):\n"
-        "     * NẾU XUYÊN VÀO CỔ ĐẠI / TU TIÊN / KIẾM HIỆP: Áp dụng 100% quy tắc CỔ ĐẠI ('Ta — Ngươi', 'Sư huynh — Sư đệ', 'Tiền bối — Vãn bối'). CẤM mang xưng hô 'anh - em', 'tao - mày', 'tụi em' vào giao tiếp với nhân vật bản địa cổ đại.\n"
-        "     * NẾU BỐI CẢNH HIỆN ĐẠI: Áp dụng 100% quy tắc HIỆN ĐẠI ('Tôi — Cậu', 'Anh — Em', 'Mày — Tao').\n"
-        "   - Trần thuật nhân vật chính: Dùng tên nhân vật hoặc 'hắn, gã'\n"
-        "   - Độc thoại nội tâm: Dùng 'ta' (nếu ở cổ đại) hoặc 'mình / tôi' (nếu ở hiện đại)\n"
-        "   - NGUYÊN TẮC KHÓA CHẶT CẶP ĐẠI TỪ:\n"
-        "     * Khóa chặt cặp đại từ: Giữ nhất quán 100% cặp xưng hô đã chọn xuyên suốt phân đoạn, không nhảy lộn xộn đại từ giữa các câu thoại.\n"
+        "2. QUY CHUẨN XƯNG HÔ: KHOANH VÙNG TỪ VỰNG THEO THỜI ĐẠI THẾ GIỚI XUYÊN VÀO (TRÁNH ÉP BUỘC MÁY MÓC, TRÁNH NHẦM SÓT):\n"
+        "   ⚠️ LƯU Ý VỀ MẪU VÍ DỤ & NGUYÊN TẮC KHOANH VÙNG: Mẫu xưng hô dưới đây chỉ là ví dụ phong cách tham khảo, TÔI KHÔNG ÉP BUỘC bạn phải dịch chuẩn cứng nhắc chỉ duy nhất các từ này, mà tùy theo từng trường hợp bạn hoàn toàn có thể linh hoạt dùng các xưng hô phù hợp khác chưa được liệt kê. NHƯNG khi thế giới xuyên vào là Cổ đại thì các xưng hô hiện đại tôi cấm (và mọi từ ngữ tương tự) CHẮC CHẮN TUYỆT ĐỐI KHÔNG ĐƯỢC ÁP DỤNG để tránh nhầm bối cảnh truyện; ngược lại khi ở Hiện đại thì tuyệt đối không dùng đại từ cổ phong gượng ép vào đời thường!\n"
+        "   - Giao tiếp Hệ thống: Hệ thống tự xưng 'Bản hệ thống / Hệ thống' — gọi người dùng là 'Ký chủ / Túc chủ'. Ký chủ gọi 'Hệ thống / Ngươi' (bực tức dùng 'mày').\n"
+        "   - THẾ GIỚI BÊN NGOÀI (TUÂN THỦ 100% THEO THỜI ĐẠI CỦA THẾ GIỚI ĐÓ):\n"
+        "     * 🔴 NẾU XUYÊN VÀO CỔ ĐẠI / TU TIÊN / KIẾM HIỆP: Áp dụng 100% QUY CHUẨN CỔ PHONG:\n"
+        "       + Đại từ: 'Ta — Ngươi', 'Tại hạ — Các hạ', 'Bọn ta — Các ngươi'.\n"
+        "       + Thân tộc 2 âm tiết: 'Phụ thân — Mẫu thân', 'Bá phụ — Bá mẫu', 'Thúc phụ — Thúc mẫu', 'Cô mẫu — Cô phụ', 'Di mẫu' (⚠️ '姨娘' là di nương, cấm dịch là dì!), 'Cữu phụ — Cữu mẫu', 'Huynh trưởng — Tỷ tỷ — Đệ đệ — Muội muội'.\n"
+        "       + Trật tự danh xưng: [Họ/Tên] + [Chức vụ] (Kiều trưởng lão, Lâm giáo đầu). CẤM dịch ngược!\n"
+        "       + Khóa chặt 'con': Chỉ con ruột thưa cha mẹ mới xưng 'con'. Thưa sư phụ xưng 'đồ đệ', thưa tiền bối xưng 'vãn bối' (TUYỆT ĐỐI CẤM xưng 'con')!\n"
+        "       + CẤM đại từ hiện đại: CẤM 'tôi-bạn', 'cậu-tớ', 'anh-em', 'chú mày', 'tụi em'!\n"
+        "     * 🔵 NẾU BỐI CẢNH HIỆN ĐẠI: Áp dụng 100% quy tắc HIỆN ĐẠI ('Tôi — Cậu / Anh / Sếp', 'Mày — Tao').\n"
+        "   🔴 CÁC LỖI KINH ĐIỂN CẦN TRÁNH TUYỆT ĐỐI KHI DỊCH XƯNG HÔ:\n"
+        "   - 1. BẮT BUỘC NHÌN VÀO TỪ GỐC để xác định đúng giới tính và bối phận; cấm tự ý biến đổi làm nhầm lẫn vai vế hoặc giới tính.\n"
+        "   - 2. TRÁNH LOẠN XƯNG HÔ KHI CÓ NGƯỜI THỨ BA: Tuyệt đối không nhầm đại từ của người thứ ba thành người đang đối thoại trực tiếp.\n"
+        "   - 3. ĐỒNG BẬC GIỮ ĐÚNG BÌNH ĐẲNG: Không khách sáo khúm núm làm biến dạng quan hệ ngang hàng.\n"
+        "   - 4. MỆNH LỆNH CỐT LÕI: ƯU TIÊN NHÌN VÀO TỪ GỐC TRONG CÂU, xác định đúng vai vế và nhân vật, rồi dịch theo đúng bối cảnh thế giới xuyên vào!"
     )
 }
 
@@ -280,9 +310,9 @@ SYSTEM_REINCARNATION_PROFILE = {
 # =====================================================================
 SCI_FI_APOCALYPSE_PROFILE = {
     "description": (
-        "【BẢN SẮC THỂ LOẠI: MẠT THẾ / TẬN THẾ ZOMBIE / KHOA HUYỄN / TINH TẾ / CƠ GIÁP / VIỄN TƯỞNG】\n"
+        "=== BẢN SẮC THỂ LOẠI: MẠT THẾ / TẬN THẾ ZOMBIE / KHOA HUYỄN / TINH TẾ / CƠ GIÁP / VIỄN TƯỞNG ===\n"
         "\n"
-        "1. BẢNG TRA CỨU THUẬT NGỮ & TỪ KHÓA BẢN SẮC (THEO PHÂN LOẠI):\n"
+        "1. BẢNG TRA CỨU THUẬT NGỮ & TỪ KHÓA BẢN SẮC:\n"
         "   - Tận thế Zombie & Biến dị sinh học:\n"
         "     * 丧尸 / 丧尸潮 / 丧尸王 dịch thành Tang thi / Zombie (triều tang thi / đợt sóng zombie, Tang thi vương)\n"
         "     * 变异兽 / 晶核 / 能量晶核 dịch thành thú biến dị / tinh hạch / tinh hạch năng lượng\n"
@@ -296,56 +326,75 @@ SCI_FI_APOCALYPSE_PROFILE = {
         "     * 光脑 / 终端 / 能量护盾 dịch thành quang não / thiết bị đầu cuối / khiên năng lượng\n"
         "     * 离子炮 / 等离子武器 dịch thành pháo ion / vũ khí plasma\n"
         "\n"
-        "2. QUY TẮC XƯNG HÔ THỜI ĐẠI MẠT THẾ / KHOA HUYỄN (DỨT KHOÁT, QUÂN PHONG, SINH TỒN):\n"
-        "   - CẤM: Cấm ủy mị, cấm lạm dụng đại từ cổ trang kiếm hiệp ('tại hạ', 'các hạ', 'bản tọa') trong quân đội hoặc căn cứ khoa học viễn tưởng.\n"
-        "   - BẮT BUỘC DÙNG CÁC CẶP XƯNG HÔ QUÂN SỰ & SINH TỒN:\n"
-        "     * Chỉ huy / Đội trưởng: Xưng 'Tôi / Ta' — gọi cấp dưới 'Cậu / Chiến sĩ / [Tên] / Các đồng chí'\n"
-        "     * Cấp dưới thưa cấp trên: 'Báo cáo Chỉ huy / Đội trưởng' — xưng 'Tôi / Thuộc cấp'; Mệnh lệnh dứt khoát: 'Rõ!', 'Tuân lệnh!'\n"
-        "     * Đồng đội sinh tồn ngang hàng: 'Đội trưởng — Tôi', 'Anh — Em / Tôi', 'Cậu — Tớ'\n"
-        "     * Xung đột khốc liệt / Băng nhóm cướp bóc: 'Mày — Tao'\n"
-        "     * Trần thuật ngôi ba: Dùng tên nhân vật hoặc 'hắn, gã, anh ta, cô ta'\n"
-        "     * Độc thoại nội tâm: BẮT BUỘC dùng 'tôi' hoặc 'mình'\n"
-        "   - NGUYÊN TẮC KHÓA CHẶT CẶP ĐẠI TỪ:\n"
-        "     * Khóa chặt cặp đại từ quân sự/sinh tồn: Giữ nhất quán 100% cặp xưng hô đã chọn ('Chỉ huy — Tôi', 'Đội trưởng — Thuộc cấp', 'Cậu — Tớ', 'Mày — Tao'), không nhảy lộn xộn đại từ giữa các câu thoại.\n"
+        "2. QUY CHUẨN XƯNG HÔ: KHOANH VÙNG TỪ VỰNG MẠT THẾ / KHOA HUYỄN (DỨT KHOÁT, QUÂN PHONG, SINH TỒN):\n"
+        "   🔴 BỐI CẢNH NÀY LÀ MẠT THẾ / KHOA HUYỄN — TÍNH CHẤT SINH TỒN, KỶ LUẬT QUÂN ĐỘI HOẶC BĂNG ĐẢNG ĐƯỜNG PHỐ:\n"
+        "   ⚠️ LƯU Ý VỀ MẪU VÍ DỤ & NGUYÊN TẮC KHOANH VÙNG: Danh sách xưng hô dưới đây là các mẫu ví dụ tham khảo, TÔI KHÔNG ÉP BUỘC bạn phải dịch chuẩn cứng nhắc chỉ duy nhất các từ này, mà tùy theo từng trường hợp bạn hoàn toàn có thể dùng các xưng hô dứt khoát phù hợp khác mà tôi chưa liệt kê hết được. NHƯNG các xưng hô cổ trang kiếm hiệp đã bị cấm (và mọi từ ngữ tương tự) thì CHẮC CHẮN TUYỆT ĐỐI KHÔNG ĐƯỢC ÁP DỤNG vào bối cảnh khoa huyễn súng đạn chiến hạm để tránh nhầm lẫn bối cảnh truyện!\n"
+        "\n"
+        "   🟢 VÙNG XƯNG HÔ NÊN DÙNG (DỨT KHOÁT, TỰ NHIÊN, SINH TỒN):\n"
+        "   - Quân đội / Căn cứ / Chỉ huy: Chỉ huy, Đội trưởng, Thuyền trưởng, Quân đoàn trưởng, Binh sĩ, Chiến sĩ, Đồng chí, Thuộc cấp... (Xưng 'Tôi', thưa 'Báo cáo Chỉ huy / Đội trưởng'). Mệnh lệnh: 'Rõ!', 'Tuân lệnh!'.\n"
+        "   - Đồng đội sinh tồn ngang hàng: Tôi, Cậu, Tớ, Anh, Em, Chúng ta, Mọi người, Đồng đội...\n"
+        "   - Băng nhóm cướp bóc / Sinh tử đối đầu: Mày — Tao, Thằng khốn, Lũ chúng mày...\n"
+        "\n"
+        "   🔴 VÙNG TỪ CẤM (TUYỆT ĐỐI CẤM TRONG MẠT THẾ / KHOA HUYỄN):\n"
+        "   - CẤM lạm dụng đại từ cổ trang kiếm hiệp ('tại hạ', 'các hạ', 'huynh đài', 'bản tọa', 'tiểu nữ', 'lão phu', 'vi sư') vào bối cảnh tàu không gian, chiến hạm hay sinh tồn súng đạn.\n"
+        "\n"
+        "   🔴 NGUYÊN TẮC RÀ SOÁT & CÁC LỖI KINH ĐIỂN CẦN TRÁNH TUYỆT ĐỐI:\n"
+        "   - 1. TRÁNH DỊCH NHẦM TỪ CHUNG BỐI PHẬN / CHUNG GIỚI TÍNH: Bắt buộc nhìn vào từ gốc tiếng Trung trong câu để xác định đúng chức vụ, cấp bậc và giới tính nhân vật.\n"
+        "   - 2. TRÁNH LOẠN XƯNG HÔ KHI CÓ NGƯỜI THỨ BA HOẶC CHIẾN ĐẤU NHIỀU NGƯỜI: Khi hội đàm bộ đàm, chỉ huy chiến thuật hay nhắc tới mục tiêu/đồng đội thứ ba, phải bám chắc từ gốc để phân định rõ người phát ngôn, người nhận lệnh và đối tượng được nhắc đến.\n"
+        "   - 3. ĐỒNG BẬC GIỮ ĐÚNG TÁC PHONG: Đồng cấp, đồng đội sinh tồn giữ đúng quan hệ ngang hàng, không khúm núm xưng hô hạ mình.\n"
+        "   - 4. MỆNH LỆNH CỐT LÕI: ƯU TIÊN NHÌN VÀO TỪ GỐC TRONG CÂU, xác định đúng vai vế và nhân vật, rồi dịch dứt khoát theo đúng bối cảnh mạt thế / khoa huyễn!"
     )
 }
 
 # =====================================================================
 # BỘ QUY TẮC CỐT LÕI TOÀN DỰ ÁN (COMMON RULES - ÁP DỤNG CHO MỌI THỂ LOẠI)
-# (LƯU Ý: QUY TẮC XƯNG HÔ ĐÃ ĐƯỢC TÁCH BIỆT & QUY ĐỊNH RIÊNG Ở TỪNG THỂ LOẠI
-#  PHÍA TRÊN. YÊU CẦU CHUNG TUYỆT ĐỐI KHÔNG QUY ĐỊNH LẠI XƯNG HÔ)
 # =====================================================================
 COMMON_RULES = (
     "=== BỘ QUY TẮC DỊCH THUẬT CỐT LÕI & TIÊU CHUẨN AUDIOBOOK ===\n"
     "(Các quy tắc được sắp xếp theo đúng thứ tự ưu tiên từ cao xuống thấp. Mô hình tuân thủ nghiêm ngặt theo phân cấp ưu tiên này):\n"
     "\n"
     "1. CẤP ĐỘ 1 (ƯU TIÊN CAO NHẤT) — BẢO VỆ TÊN RIÊNG & DỊCH THẲNG MỘT CHIỀU:\n"
-    "   - KHÓA 100% TÊN RIÊNG THEO BẢNG THỰC THỂ: Dùng thẳng duy nhất tên tiếng Việt trong Bảng thực thể ngay từ lần đầu tiên xuất hiện (ví dụ: 'Giang Hồng Phi', 'Đỗ Thiên', 'Vương Luân'). TUYỆT ĐỐI CẤM viết tên kèm ngoặc đơn đối chiếu hay để sót chữ Hán (cấm viết dạng 'Giang鸿飞 (Giang Hồng Phi)' hay 'Đỗ迁 (Đỗ Thiên)').\n"
-    "   - THỰC THỂ MỚI CHƯA CÓ TRONG BẢNG: Giữ đúng âm Hán-Việt văn học quen thuộc; tuyệt đối không bẻ nghĩa đen ngô nghê.\n"
-    "   - NGUYÊN TẮC CHUYỂN NGỮ THẲNG MỘT CHIỀU — KHÔNG MỞ NGOẶC ĐỐI CHIẾU:\n"
-    "     * Mỗi cụm từ và tên riêng chỉ chuyển sang duy nhất một bản dịch tiếng Việt hoàn chỉnh, hòa nhập tự nhiên vào dòng chảy câu văn.\n"
-    "     * Tuyệt đối không mở ngoặc đơn để chú thích nghĩa, phiên âm hay đối chiếu chữ Hán trong thân bài dịch.\n"
+    "   - KHÓA 100% TÊN RIÊNG THEO BẢNG THỰC THỂ: Toàn bộ danh từ riêng, ngoại hiệu, tên nhân vật, địa danh, thuật ngữ đã có trong Bảng thực thể BẮT BUỘC dùng đúng 100% bản dịch tiếng Việt tương ứng ngay từ lần đầu xuất hiện. TUYỆT ĐỐI KHÔNG tự ý dịch lại, không suy đoán thay đổi làm sai lệch tên hoặc sót chữ Hán. TUYỆT ĐỐI CẤM viết tên kèm ngoặc đơn đối chiếu song ngữ hay để sót chữ Hán gốc.\n"
+    "   - THỰC THỂ MỚI CHƯA CÓ TRONG BẢNG: Giữ đúng âm Hán-Việt quen thuộc; tuyệt đối không dịch bẻ nghĩa đen ngô nghê.\n"
+    "   - NGUYÊN TẮC CHUYỂN NGỮ THẲNG MỘT CHIỀU: Mỗi cụm từ và tên riêng chỉ chuyển sang duy nhất một bản dịch tiếng Việt hoàn chỉnh, hòa nhập tự nhiên vào dòng chảy câu văn. Tuyệt đối cấm mở ngoặc đơn để chú thích nghĩa, phiên âm hay đối chiếu chữ Hán trong thân bài.\n"
     "\n"
-    "2. CẤP ĐỘ 2 (ƯU TIÊN VĂN PHONG) — NGUYÊN TẮC CHUYỂN NGỮ CỐT LÕI (VĂN PHONG & VIỆT HÓA CHUẨN MỰC):\n"
-    "   - Ưu tiên cách diễn đạt tiếng Việt tự nhiên và đúng ngữ cảnh theo vốn từ, cách Việt hóa và lối hành văn thực tế đang được sử dụng trong phim Trung lồng tiếng, truyện Trung dịch sang tiếng Việt và văn học mạng Việt Nam; không chỉ giới hạn ở từ ngữ đời thường hay từ phổ biến, mà phải nhận diện và Việt hóa cả các từ/cụm từ ít phổ biến, thuật ngữ đặc thù thể loại và những cách diễn đạt tiếng Trung mà người Việt cần chuyển ngữ theo lối văn học mới hiểu đúng, tránh bỏ sót hoặc giữ nguyên kiểu Convert chỉ vì chúng không thuộc vốn từ thông dụng.\n"
-    "   - Câu văn gãy gọn, mạch lạc, xuôi tai, trung thực với ngữ cảnh và tinh thần tác phẩm của tác giả, không tự ý phóng tác hay bịa đặt thêm bớt làm sai lệch câu chuyện.\n"
+    "2. CẤP ĐỘ 2 (ƯU TIÊN VĂN PHONG) — NGUYÊN TẮC CHUYỂN NGỮ CỐT LÕI: DÙNG TIẾNG VIỆT THUẦN VIỆT & PHỔ THÔNG DỄ HIỂU:\n"
+    "   - TIÊU CHÍ BẮT BUỘC LÀ DỄ HIỂU BẰNG TIẾNG VIỆT PHỔ THÔNG: Toàn bộ câu văn phải được diễn đạt bằng từ ngữ tiếng Việt phổ thông, thuần Việt, thông dụng, gãy gọn, tự nhiên và dễ hiểu nhất để bất kỳ ai nghe hoặc đọc cũng hiểu ngay tức thì. Dịch đúng nghĩa, rõ ràng bằng tiếng Việt phổ thông của thể loại truyện là đạt chuẩn.\n"
+    "   - 🔴 TỪ NGỮ ĐỜI THƯỜNG, ẨM THỰC & SINH HOẠT THƯỜNG BỊ DỊCH MÁY MÓC SANG HÁN-VIỆT: BẮT BUỘC DÙNG TỪ THUẦN VIỆT GẦN GŨI VỚI ĐỘC GIẢ VIỆT NAM:\n"
+    "     * Các từ ngữ chỉ cuộc sống thường ngày, món ăn, thức uống, cây cỏ, đồ dùng gia đình thông thường, nguyên liệu nấu nướng... vốn là từ đời thường nhưng hay bị dịch cơ học sang âm Hán-Việt khô cứng, tối nghĩa: BẮT BUỘC KHÔNG ĐƯỢC DỊCH HÁN-VIỆT mà phải chuyển ngữ bằng từ ngữ thuần Việt gần gũi, quen thuộc với người đọc Việt Nam theo phong cách phổ thông của thể loại truyện Trung dịch Việt (ví dụ: '蘑菇炖鸡' -> 'nấm hầm thịt gà', cấm dịch 'Ma Cô Độn Kê').\n"
+    "     * ⚠️ PHÂN BIỆT RÕ VỚI TÊN RIÊNG & TÊN CHỦNG LOÀI BẢN SẮC CỦA CON VẬT, YÊU THÚ, DỊ THÚ, LINH THÚ, BẢO VẬT: Tuyệt đối CẤM dịch nôm na thuần Việt các tên riêng của con vật cưng, tên riêng của đồ vật hay tên chủng loài yêu thú mang bản sắc truyện Trung! Dù là tên riêng (tiểu hắc, đại hoàng, bạch vũ...) hay tên chủng loài bản sắc (ví dụ: Hắc Sí Đại Bàng, Cửu Vĩ Thiên Hồ, Bích Nhãn Kim Tinh Thú, Hỏa Diễm Tước...) thì ĐÂY LÀ TÊN BẢN SẮC CỦA TRUYỆN, BẮT BUỘC GIỮ ĐÚNG ÂM HÁN-VIỆT VĂN HỌC BẢN SẮC, TUYỆT ĐỐI CẤM dịch thuần Việt nôm na (CẤM dịch Hắc Sí Đại Bàng thành 'đại bàng cánh đen'!).\n"
+    "     * Tuyệt đối cấm để các từ đời thường biến thành tên chiêu thức võ công hay danh từ Hán-Việt quái dị làm người đọc không hiểu được nhân vật đang ăn gì, dùng gì hay làm việc gì.\n"
+    "   - 🔴 LINH HOẠT CHUYỂN NGỮ THEO ĐỐI TƯỢNG THỰC TẾ TRONG NGỮ CẢNH: Tiếng Trung hay dùng chung từ ngữ mang nghĩa dành cho con người để áp lên đối tượng khác bản chất (động vật, linh thú, đồ vật, hiện tượng, thế lực trừu tượng...). Khi chuyển ngữ, BẮT BUỘC nhận diện đúng bản chất đối tượng đang được nói đến rồi chọn cách diễn đạt tiếng Việt phù hợp — KHÔNG áp khuôn dịch cứng. Nguyên tắc này áp dụng toàn diện cho mọi trường hợp lệch bản chất, không chỉ giới hạn giữa người và vật.\n"
+    "   - TUYỆT ĐỐI KHÔNG CỐ GẮNG 'DỊCH CHO HAY' HOẶC GƯỢNG ÉP HÁN-VIỆT: Cấm cố gượng ép dùng từ Hán-Việt lạ lẫm hoặc câu cú bóng bẩy để ra vẻ hoa mỹ. Việc lạm dụng Hán-Việt khi không nắm vững sẽ biến câu văn thành văn convert thô cứng, tối nghĩa và sai lệch hoàn toàn so với tiếng Việt thực tế. Cứ có cách diễn đạt bằng từ ngữ thuần Việt hoặc tiếng Việt phổ thông, dễ hiểu thì BẮT BUỘC DÙNG TIẾNG VIỆT PHỔ THÔNG.\n"
+    "   - TUYỆT ĐỐI CẤM DỊCH CONVERT THEO TỪNG CHỮ HÁN: Cấm dịch cơ học bám theo cấu tạo từng chữ Hán hay từ điển Hán-Việt. Phải nắm bắt trọn vẹn ý nghĩa của câu trong ngữ cảnh rồi diễn đạt lại bằng câu văn tiếng Việt tự nhiên, thuần Việt, dễ hiểu, tránh nhầm lẫn mức độ hoặc hiểu sai ý của tác giả.\n"
+    "   - XỬ LÝ CÂU NGẮN & TRÁNH CỤT CÂU (NHẤN MẠNH: CHỈ MỘT TÝ, TRÁNH LAN MAN, TRÁNH SUY NGHĨ NHIỀU):\n"
+    "     * Đối với những câu ngắn hoặc cách diễn đạt vắn tắt của tiếng Trung, nếu dịch sát từng chữ khiến câu tiếng Việt bị cụt ngủn, hụt hơi, cộc lốc hoặc thiếu liên kết tự nhiên: ĐƯỢC PHÉP thêm chút liên từ, trợ từ hoặc từ đệm tiếng Việt để câu văn tròn trịa, xuôi tai, liền mạch.\n"
+    "     * NHẤN MẠNH ĐẶC BIỆT LÀ CHỈ THÊM MỘT TÝ ĐỦ ĐỂ TRÁNH CỤT CÂU: TUYỆT ĐỐI CẤM LAN MAN, TRÁNH SUY NGHĨ NHIỀU, TUYỆT ĐỐI KHÔNG PHÓNG TÁC KÉO DÀI DÒNG DÃ, KHÔNG TỰ Ý BỊA ĐẶT THÊM TÌNH TIẾT HOẶC Ý NGHĨA NGOÀI NGUYÊN TÁC.\n"
+    "   - CÂU VĂN MẠCH LẠC, XUÔI TAI, TRUNG THỰC: Câu văn gãy gọn, xuôi tai, trung thực với ngữ cảnh và tinh thần tác phẩm của tác giả; không tự ý phóng tác, bịa đặt thêm bớt hoặc làm sai lệch nội dung.\n"
+    "   - NGUYÊN LÝ ĐỊNH VỊ THỜI ĐẠI & CÁC LỖI KINH ĐIỂN VỀ XƯNG HÔ:\n"
+    "     * Trước khi dịch mỗi đoạn thoại, mô hình tự định vị: Đây là thời đại nào? (Cổ đại hay Hiện đại?). Sắc thái xưng hô của thời đại đó là gì? (Cổ phong trang nghiêm, tôn ti trật tự hay Hiện đại tự nhiên đời thường?).\n"
+    "     * LƯU Ý VỀ MẪU VÍ DỤ THAM KHẢO & KHÔNG ÉP BUỘC CỨNG NHẮC: Danh sách các từ xưng hô trong từng profile chỉ mang tính chất định hình phong cách bối cảnh, TÔI KHÔNG ÉP BUỘC bạn phải dịch chuẩn cứng nhắc chỉ duy nhất các từ mẫu đó, mà tùy từng trường hợp bạn hoàn toàn có thể linh hoạt dùng các xưng hô mang phong cách cổ đại phù hợp khác chưa được liệt kê. NHƯNG CÁC XƯNG HÔ HIỆN ĐẠI ĐÃ BỊ CẤM (và mọi từ ngữ hiện đại tương tự) thì CHẮC CHẮN TUYỆT ĐỐI KHÔNG ĐƯỢC ÁP DỤNG khi ở bối cảnh Cổ đại để tránh nhầm lẫn thời đại tác phẩm!\n"
+    "     * ƯU TIÊN NHÌN VÀO TỪ GỐC TRONG NGUYÊN TÁC: Bắt buộc nhìn vào từ gốc tiếng Trung để xác định đúng đối tượng, giới tính và bối phận thực tế; nếu không để ý từ gốc mà tự ý suy diễn biến đổi sẽ rất dễ dịch nhầm bối phận (nhầm bề trên thành ngang hàng hoặc ngược lại) hoặc nhầm lẫn giới tính nhân vật.\n"
+    "     * TRÁNH LOẠN XƯNG HÔ KHI CÓ NGƯỜI THỨ BA: Khi hai người đang nói chuyện mà nhắc đến một người thứ ba (tha nhân), hoặc phân cảnh có từ 3 người trở lên, phải bám chắc từ gốc để phân định rõ ai đang nói với ai và ai là người thứ ba được nhắc tới, tuyệt đối không nhầm đại từ của người thứ ba thành người đang đối thoại trực tiếp làm đảo lộn mạch truyện.\n"
+    "     * ĐỒNG BẬC KHÔNG QUÁ LỊCH SỰ: Các quan hệ ngang hàng (đồng môn, bằng hữu, đồng nghiệp) phải giữ đúng mực xưng hô đồng bậc; cấm khúm núm hạ mình quá mức làm biến tướng thành quan hệ bề dưới — bề trên.\n"
+    "     * KHÓA CHẶT 'CON': Tôn kính gọi người khác bằng danh xưng cao quý KHÔNG CÓ NGHĨA tự xưng là 'con' (chỉ con ruột thưa cha mẹ mới xưng 'con').\n"
     "\n"
-    "3. CẤP ĐỘ 3 — THÀNH NGỮ, TỤC NGỮ, QUÁN NGỮ & KHẨU NGỮ:\n"
-    "   - THÀNH NGỮ & TỤC NGỮ PHẢI DÙNG NGUỒN TỪ DỊCH THUẬT QUEN THUỘC: Tuyệt đối không dịch convert cơ học từng chữ. Bắt buộc dùng đúng các cụm thành ngữ, tục ngữ đã được cộng đồng đọc truyện và xem phim dịch tại Việt Nam tiếp nhận quen thuộc từ trước đến nay, hoặc dịch thoát ý bằng từ ngữ thuần Việt phổ thông dễ hiểu nhất cho người đọc.\n"
-    "   - THÀNH NGỮ LẠ HOẶC KHÓ HIỂU -> DỊCH THUẦN VIỆT THEO NGHĨA BÓNG: Khi gặp thành ngữ, quán ngữ, câu ví von Hán tự lạ hoắc hoặc khó hiểu, TUYỆT ĐỐI CẤM DỊCH CƠ HỌC TỪNG CHỮ TRẦN TRỤI (như các nghĩa đen trần trụi: trâu, ngựa, chó, đá...). Bắt buộc dịch thoát ý bằng từ ngữ thuần Việt thông dụng, dễ hiểu theo đúng ngữ cảnh câu chuyện để câu văn xuôi tai, đúng sắc thái nhân vật.\n"
-    "   - KHẨU NGỮ, CÂU CHỬI & CÀ KHỊA HÀI HƯỚC: Đối với các câu khẩu ngữ giang hồ, câu chửi tục, chửi thề, xưng hùng xưng bá hài hước mang bản sắc truyện (như 'mẹ kiếp', 'bà nội nó', 'mẹ nó chứ', 'Tống gia gia các ngươi', 'mạng chó', 'lão tử', 'ông đây'...): Cứ dịch tự nhiên, sống động, đúng khẩu khí và sắc thái thể loại. TUYỆT ĐỐI CẤM dùng 'tao - mày - tụi mày' trong bối cảnh cổ trang / kiếm hiệp / tiên hiệp.\n"
-    "   - TỪ LÓNG MẠNG (ví dụ: '装逼' = làm màu / ra oai / lên hương; '抱大腿' = bám người quyền thế / tìm chỗ dựa): Bắt buộc dịch thoát ý tự nhiên theo ngữ cảnh, tuyệt đối không để nguyên chữ Hán.\n"
+    "3. CẤP ĐỘ 3 — THÀNH NGỮ, TỤC NGỮ, QUÁN NGỮ & KHẨU NGỮ: DỊCH THOÁT Ý DỄ HIỂU, KHÔNG CỐ DỊCH HAY:\n"
+    "   - THÀNH NGỮ, TỤC NGỮ, QUÁN NGỮ: Không cần cố tìm thành ngữ hoa mỹ hay đối chữ cho hay. Nắm bắt trọn vẹn đại ý rồi diễn đạt thẳng bằng lời lẽ tiếng Việt phổ thông, mộc mạc, dễ hiểu nhất theo đúng ngữ cảnh. Tuyệt đối cấm dịch cơ học bám sát nghĩa đen từng chữ Hán ngô nghê.\n"
+    "   - KHẨU NGỮ, CÂU CHỬI, CẢM THÁN: Dịch bằng khẩu ngữ tiếng Việt phổ thông, tự nhiên, đúng sắc thái nhân vật. Trong bối cảnh cổ trang, kiếm hiệp, tiên hiệp, tuyệt đối cấm dùng các đại từ đường phố hiện đại lai tạp.\n"
+    "   - TỪ LÓNG & BỐI CẢNH MẠNG: Dịch thoát ý thẳng nghĩa bằng từ ngữ tiếng Việt phổ thông, dễ hiểu theo ngữ cảnh. Tuyệt đối không để sót chữ Hán.\n"
+    "   - THÀNH NGỮ VĂN HÓA ĐẶC THÙ: Khi nguyên tác sử dụng thành ngữ, tục ngữ, ca dao mang đậm nét văn hóa đặc thù Trung Quốc mà nếu dịch thoát ý thuần túy vẫn còn xa lạ hoặc khó cảm nhận đối với người Việt, NÊN tìm thành ngữ, tục ngữ, cách nói dân gian tương đương trong tiếng Việt có cùng hàm ý để thay thế, giúp người đọc/nghe Việt Nam cảm nhận được ngay thần thái và ý nghĩa mà tác giả muốn truyền tải. Nếu không tìm được tương đương phù hợp tự nhiên, thì diễn đạt thẳng nghĩa bằng lời lẽ tiếng Việt dễ hiểu theo ngữ cảnh — KHÔNG cố ép đối chữ cho hay.\n"
     "\n"
     "4. CẤP ĐỘ 4 — TIÊU CHUẨN CON SỐ & TIỀN TỆ CHO AUDIOBOOK (TTS):\n"
-    "   - QUY TẮC VIẾT BẰNG CHỮ CHO CON SỐ TRONG VĂN BẢN ĐỌC: Các con số trong câu trần thuật, đối thoại, suy nghĩ, ước tính, số tiền tệ, thời gian BẮT BUỘC VIẾT HẲN BẰNG CHỮ TIẾNG VIỆT (ví dụ: 'chín trăm đến một nghìn tám trăm', 'hai quan tiền', 'ba vạn sáu nghìn', 'vài ba người'). Điều này giúp đầu đọc TTS phát âm chuẩn ngữ điệu tiếng Việt tự nhiên.\n"
-    "   - TUYỆT ĐỐI CẤM VIẾT NỬA CHỮ NỬA SỐ LAI TẠP: Nghiêm cấm các dạng lai tạp cẩu thả như 'một,800', '2 trăm'... Dạng này đầu đọc TTS sẽ phát âm sai hoặc ngắt quãng.\n"
-    "   - SỐ THỨ TỰ & NĂM THÁNG: Tiêu đề chương số hoặc năm tháng cụ thể có thể dùng số Ả Rập nguyên vẹn (ví dụ: 'Chương 1', 'năm 1800').\n"
-    "   - TÍNH TOÁN CHUẨN XÁC: 1 vạn = 10.000, 100 vạn = 1.000.000, không dịch nhầm bậc số lượng.\n"
+    "   - VIẾT BẰNG CHỮ CHO CON SỐ TRONG VĂN BẢN ĐỌC: Các con số trong câu trần thuật, đối thoại, suy nghĩ, ước tính, số lượng, tiền tệ, thời gian BẮT BUỘC VIẾT HOÀN TOÀN BẰNG CHỮ TIẾNG VIỆT để đầu đọc TTS phát âm chuẩn ngữ điệu tự nhiên.\n"
+    "   - TUYỆT ĐỐI CẤM VIẾT NỬA CHỮ NỬA SỐ LAI TẠP: Nghiêm cấm các dạng viết lai tạp cẩu thả giữa số và chữ làm hỏng nhịp đọc TTS.\n"
+    "   - SỐ THỨ TỰ & NĂM THÁNG: Tiêu đề số chương hoặc mốc năm tháng cụ thể có thể giữ nguyên số Ả Rập.\n"
+    "   - TÍNH TOÁN BẬC SỐ LƯỢNG CHUẨN XÁC: Quy đổi chính xác các cấp bậc số lượng trong tiếng Trung sang tiếng Việt, không dịch nhầm hàng vạn, hàng triệu.\n"
     "\n"
     "5. CẤP ĐỘ 5 — TIÊU CHUẨN CHÍNH TẢ, VIẾT HOA & DẤU CÂU CHO AUDIOBOOK (TTS):\n"
     "   - CHUẨN CHÍNH TẢ TIẾNG VIỆT 100%: Viết đúng chính tả tiếng Việt, chuẩn ngữ pháp, câu văn gãy gọn mạch lạc, không có lỗi gõ phím.\n"
-    "   - KHOẢNG CÁCH TỪ & VIẾT HOA CHUẨN MỰC: Mỗi từ phân cách bằng đúng MỘT dấu cách chuẩn mực. Viết hoa đúng chuẩn tên riêng nhân vật, địa danh và chữ cái đầu câu. Không chèn chữ hoa tùy tiện ở giữa từ làm hỏng từ.\n"
-    "   - DẤU CÂU CHUẨN MỰC TẠO NHỊP NGẮT NGHỈ TỰ NHIÊN: Đặt dấu câu (chấm, phẩy, hai chấm, hỏi, than) sát ngay sau từ phía trước và cách từ tiếp theo đúng 1 dấu cách. Không lạm dụng dấu phẩy vụn vặt làm giọng đọc TTS bị giật cục.\n"
+    "   - KHOẢNG CÁCH TỪ & VIẾT HOA CHUẨN MỰC: Mỗi từ phân cách bằng đúng một dấu cách. Viết hoa đúng chuẩn tên riêng nhân vật, địa danh và đầu câu. Không chèn chữ hoa tùy tiện ở giữa từ.\n"
+    "   - DẤU CÂU TẠO NHỊP NGẮT NGHỈ TỰ NHIÊN: Đặt dấu câu sát ngay sau từ phía trước và cách từ tiếp theo đúng một dấu cách. Không lạm dụng dấu phẩy vụn vặt làm giọng đọc TTS bị giật cục.\n"
     "   - SẠCH 100% CHỮ HÁN GỐC & PINYIN: Toàn bộ văn bản phải sạch hoàn toàn chữ Hán và Pinyin, bản dịch phải là 100% tiếng Việt hoàn chỉnh để đầu đọc TTS phát âm trôi chảy.\n"
 )
 
@@ -422,28 +471,21 @@ def normalize_profile_key(profile_key: str) -> str:
         return "urban"
 
     # 7. Tiên Hiệp / Tu Chân / Huyền Huyễn / Cổ Phong / Dị Giới / Cao Võ Cổ Đại
-    if any(k in pk for k in [
-        "cao võ", "cao vo", "tu võ", "tu vo", "xianxia", "tu tiên", "tu tien",
-        "tiên hiệp", "tien hiep", "huyền huyễn", "huyen huyen", "cổ phong", "co phong",
-        "dị giới", "di gioi", "tu chân", "tu chan",
-        "修真", "仙侠", "玄幻", "修仙", "古风", "异界", "高武"
-    ]):
-        return "xianxia"
-
-    logger.warning(f"[CANH BAO] profile_key '{profile_key}' khong khop the loai nao, dang dung mac dinh 'xianxia'.")
     return "xianxia"
 
-def get_context_profile_prompt(profile_key: str) -> str:
-    normalized_key = normalize_profile_key(profile_key)
-    profile = CONTEXT_PROFILES.get(normalized_key)
-    if not profile:
-        profile = CONTEXT_PROFILES["xianxia"]
-        normalized_key = "xianxia"
 
-    return (
-        f"=== THỂ LOẠI ĐANG DỊCH: {normalized_key.upper()} ===\n"
-        f"{profile['description']}\n\n{COMMON_RULES}"
-    )
+def get_context_profile_prompt(profile_key: str) -> str:
+    """
+    Lấy nội dung Profile đặc thù thể loại kết hợp với Bộ quy tắc cốt lõi toàn dự án.
+    """
+    normalized_key = normalize_profile_key(profile_key)
+    profile_data = CONTEXT_PROFILES.get(normalized_key, XIANXIA_PROFILE)
+    description = profile_data.get("description", "")
+
+    return f"""{description}
+
+{COMMON_RULES}"""
+
 
 def get_era_pronoun_guard_prompt(profile_key: str) -> str:
     """
@@ -463,33 +505,27 @@ def get_era_pronoun_guard_prompt(profile_key: str) -> str:
     elif normalized_key in ["sci_fi_apocalypse"]:
         return (
             "=== QUY CHUẨN XƯNG HÔ: CẤM TUYỆT ĐỐI LỆCH SANG CỔ TRANG (BỐI CẢNH KHOA HUYỄN / MẠT THẾ) ===\n"
-            "- TUYỆT ĐỐI CẤM đại từ cổ trang kiếm hiệp: Cấm 'tại hạ - các hạ', 'huynh đài', 'bản tọa', 'tiểu nữ'.\n"
-            "- Dùng xưng hô dứt khoát quân phong & sinh tồn: 'Chỉ huy / Đội trưởng — Tôi', 'Tôi — Cậu / Chiến sĩ', xung đột dùng 'Mày — Tao'."
+            "- TUYỆT ĐỐI CẤM đại từ cổ trang: Cấm 'ta - ngươi', 'tại hạ', 'các hạ', 'bản tọa', 'vi sư' trong sinh tồn công nghệ cao/súng đạn.\n"
+            "- Dùng xưng hô dứt khoát quân phong hoặc sinh tồn: 'Tôi — Đồng chí / Chỉ huy / Đội trưởng', 'Tôi — Cậu / Anh', xung đột dùng 'Mày — Tao'."
         )
     elif normalized_key in ["urban_supernatural"]:
         return (
-            "=== QUY CHUẨN XƯNG HÔ: BẢN SẮC DÂN GIAN / THÔN DÃ (CẤM CÔNG SỞ & CỔ TRANG CUNG ĐÌNH) ===\n"
-            "- CẤM đại từ cung đình xa vời ('bản tọa', 'vi thần') và cấm cách gọi công sở hiện đại ('sếp', 'CEO').\n"
-            "- Dùng xưng hô mộc mạc dân dã: [Danh xưng/Vai vế] + [Tên] (Chú Tam, Bác Lý, Anh Viễn, Thím Bảy), 'Anh — Tôi', 'Bác — Cháu', suồng sã dùng 'Mày — Tao'."
+            "=== QUY CHUẨN XƯNG HÔ: ĐỜI THƯỜNG DÂN GIAN (BỐI CẢNH LINH DỊ / THÔN DÃ) ===\n"
+            "- TUYỆT ĐỐI CẤM: Không dùng đại từ tiên hiệp cung đình ('bản tọa', 'vi thần') và không dùng danh xưng công sở ('sếp', 'CEO').\n"
+            "- Dùng xưng hô mộc mạc làng xóm/thợ thuyền: [Danh xưng] + [Tên] ('Bác Lý', 'Chú Tam Giang', 'Thầy Tứ'), 'Anh — Em', 'Chú — Cháu', 'Mày — Tao'."
         )
-    elif normalized_key in ["system_reincarnation"]:
+    else:
+        # Xianxia, Wuxia, Romance (Cổ trang/Cung đấu), System (mặc định cổ phong)
         return (
-            "=== QUY CHUẨN XƯNG HÔ: HỆ THỐNG & ĐÚNG BỐI CẢNH THẾ GIỚI ===\n"
-            "- Hệ thống tự xưng 'Bản hệ thống / Hệ thống' — gọi người dùng là 'Ký chủ / Túc chủ'.\n"
-            "- Bối cảnh thế giới bên ngoài: Nếu là thế giới cổ đại/tu chân ➔ Áp dụng nghiêm ngặt xưng hô CỔ ĐẠI (cấm 'anh - em', 'tao - mày', 'tụi em'). Nếu là hiện đại ➔ Áp dụng xưng hô HIỆN ĐẠI (cấm 'ta - ngươi')."
-        )
-    else:  # xianxia, wuxia, romance (cổ đại / cung đình), etc.
-        return (
-            "=== QUY CHUẨN XƯNG HÔ: CẤM TUYỆT ĐỐI LỆCH THỜI ĐẠI SANG HIỆN ĐẠI (BỐI CẢNH CỔ PHONG) ===\n"
-            "- TUYỆT ĐỐI CẤM các đại từ hiện đại / teen / bình dân thế kỷ 21: Cấm 'tao - mày', cấm 'anh - em' (kiểu hiện đại), cấm 'chú mày', 'tụi em', 'bọn em', 'tụi mình', 'ông - tôi'!\n"
-            "- Giữ xưng hô cổ phong đúng vai vế: Huynh đệ ('Đại ca — Hiền đệ / Huynh — Đệ'), môn phái/sư đồ ('Sư tôn — Đồ nhi', 'Sư huynh — Sư đệ'), kẻ dưới thưa 'Thuộc hạ / Tiểu nhân', đối thoại 'Ta — Ngươi'."
+            "=== QUY CHUẨN XƯNG HÔ: CẤM TUYỆT ĐỐI LỆCH SANG HIỆN ĐẠI (BỐI CẢNH CỔ ĐẠI) ===\n"
+            "- TUYỆT ĐỐI CẤM đại từ hiện đại: Cấm 'tôi - bạn', 'cậu - tớ', 'anh - em' (trừ phu thê), 'chú - cháu', 'ông - tôi', 'chú mày', 'tụi em', 'bọn em', 'tụi mình'.\n"
+            "- BẮT BUỘC dùng đại từ cổ phong: 'Ta — Ngươi', 'Huynh — Đệ / Muội', 'Tại hạ — Các hạ'. Thân tộc 2 âm tiết ('Phụ thân', 'Mẫu thân', 'Huynh trưởng'). Trật tự: [Tên] + [Chức vụ] (Kiều trưởng lão, Lâm giáo đầu). Khóa chặt 'con' (chỉ con ruột thưa cha mẹ mới xưng 'con')."
         )
 
 
 # =====================================================================
 # HỆ THỐNG XÂY DỰNG PROMPT TẬP TRUNG (CENTRALIZED PROMPT BUILDERS)
 # ĐẢM BẢO THỐNG NHẤT MỘT NGUỒN CHUẨN DUY NHẤT (SINGLE SOURCE OF TRUTH)
-# CẢ DỊCH THƯỜNG & DỊCH SIÊU CẤP ĐỀU DÙNG CHUNG BỘ QUY TẮC NÀY
 # =====================================================================
 
 def build_standard_system_prompt(
@@ -534,9 +570,13 @@ Quy tắc phân chương:
 
 === MỆNH LỆNH TỰ KIỂM TRA BẮT BUỘC TRƯỚC KHI TRẢ KẾT QUẢ (SELF-VERIFICATION) ===
 Trước khi trả kết quả và đóng thẻ </chapter_X>, tự kiểm tra toàn bộ bản dịch theo đúng thứ tự ưu tiên:
-- Không được sót chữ hoặc cụm tiếng Trung;
-- Tên riêng tuân thủ chính xác theo Bảng thực thể;
-- Câu văn tự nhiên, thuần Việt, đúng văn phong thể loại, không giữ nguyên từ convert tối nghĩa;
+- Tên riêng và thuật ngữ BẮT BUỘC tuân thủ chính xác 100% theo Bảng thực thể đã cung cấp (đối chiếu chuẩn xác các cụm tên 【...】 đối ứng, TUYỆT ĐỐI KHÔNG để lệch âm, không sót chữ Hán lai tạp);
+- Kiểm tra xưng hô đúng bối cảnh (Tra cứu Bảng xưng hô; ưu tiên nhìn từ gốc tiếng Trung để không nhầm bối phận hay giới tính; suy luận theo đúng tôn ti thời đại; mẫu ví dụ chỉ để định hình phong cách và không ép buộc máy móc chỉ dùng duy nhất các từ đó, có thể linh hoạt dùng các xưng hô cổ đại khác phù hợp, nhưng các xưng hô hiện đại đã cấm và tương tự là CHẮC CHẮN TUYỆT ĐỐI KHÔNG ĐƯỢC ÁP DỤNG tránh nhầm bối cảnh):
+  * Nếu CỔ ĐẠI: Giữ đúng trật tự [Họ/Tên] + [Chức vụ] (Kiều trưởng lão, Lâm giáo đầu); Giữ đúng 2 âm tiết Hán-Việt ('phụ thân', 'mẫu thân', 'bá phụ', 'thúc phụ', 'di mẫu', 'huynh trưởng'); CẤM rút thành 'chú, bác, dì, cô, cậu, cha, mẹ'; CẤM xưng 'con' với sư phụ/tiền bối (chỉ con ruột với cha mẹ mới xưng 'con'); CẤM đại từ hiện đại ('tôi - bạn', 'cậu - tớ', 'chú mày', 'tụi em').
+  * Nếu HIỆN ĐẠI: Tiếng Việt tự nhiên theo tuổi tác & quan hệ ('Tôi — Anh / Chị / Bạn', 'Cậu — Tớ', 'Mày — Tao'); CẤM gượng ép cổ trang trong sinh hoạt thường nhật.
+  * Phân biệt rõ người đang đối thoại trực tiếp vs người thứ ba được nhắc tới; Đồng bậc giữ đúng mực xưng hô ngang hàng, không quá khách sáo làm lệch bối phận.
+- Không được sót chữ hoặc cụm tiếng Trung nào trong bản dịch;
+- Câu văn tự nhiên, diễn đạt phổ thông dễ hiểu theo đúng thể loại truyện, không giữ nguyên từ convert tối nghĩa;
 - Không được bỏ ý, không được tự thêm ý;
 - Giữ nguyên nghĩa tác giả, câu văn trôi chảy cho Audiobook.
 """

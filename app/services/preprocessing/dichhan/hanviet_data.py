@@ -26,6 +26,7 @@ STANDARDIZED_OVERRIDES = {
     "伦": "luân", "摸": "mạc", "着": "trước", "迁": "thiên", "进": "tiến", "纲": "cương", "刚": "cương",
     "晁": "triều", "盖": "cái", "宋": "tống", "江": "giang", "泊": "bạc", "掉": "điệu", "朴": "phác",
     "儿": "nhi", "旋": "toàn", "蓼": "liêu", "洼": "oa", "梅": "mai", "拼": "bính", "忽": "hốt", "律": "luật",
+    "圣": "thánh", "化": "hóa", "参": "tham", "迟": "trì", "尽": "tận", "行": "hành", "单": "đơn", "重": "trọng", "仇": "cừu", "少": "thiếu", "区": "khu", "降": "hàng",
     # Chuẩn hóa âm Hán-Việt cho Võ học, Chiêu thức, Trận pháp, Binh khí, Cảnh giới & Thời kỳ
     "圈": "quyển", "拳": "quyền", "掌": "chưởng", "爪": "trảo", "腿": "cước",
     "指": "chỉ", "阵": "trận", "诀": "quyết", "经": "kinh", "籍": "tịch", "谱": "phổ",
@@ -34,16 +35,20 @@ STANDARDIZED_OVERRIDES = {
 
 # Bảng ánh xạ cụm từ / ngoại hiệu / tác phẩm kinh điển / thời kỳ bắt buộc (O(1) lookup)
 SPECIAL_ENTITIES_MAP = {
-    "摸着天": "Mạc Già Thiên",
+    "摸着天": "Mạc Trước Thiên",
     "金瓶梅": "Kim Bình Mai",
     "巨灵神": "Cự Linh Thần",
+    "叶圣": "Diệp Thánh",
+    "杨化仙": "Dương Hóa Tiên",
+    "谢尽欢": "Tạ Tận Hoan",
+    "叶云迟": "Diệp Vân Trì",
     "白衣秀士": "Bạch Y Tú Sĩ",
     "云里金刚": "Vân Lý Kim Cương",
     "水泊梁山": "Thủy Bạc Lương Sơn",
     "法天象地": "Pháp Thiên Tượng Địa",
     "潘金莲": "Phan Kim Liên",
     "小金莲": "Tiểu Kim Liên",
-    "晁盖": "Triều Cái",
+    "晁盖": "Tiều Cái",
     "杜迁": "Đỗ Thiên",
     "宋万": "Tống Vạn",
     "王伦": "Vương Luân",
@@ -73,7 +78,15 @@ SPECIAL_ENTITIES_MAP = {
     "青面兽": "Thanh Diện Thú",
     "插翅虎": "Sáp Sí Hổ",
     "装逼": "làm màu",
+    "带我装逼带我飞": "dẫn ta tung hoành dẫn ta bay",
     "抱大腿": "tìm chỗ dựa",
+    "火并": "thanh trừng nội bộ",
+    "武力值": "thực lực võ công",
+    "战斗力": "chiến lực",
+    "大冤种": "đại oan gia",
+    "张弓": "Trương Cung",
+    "阎罗王": "Diêm La Vương",
+    "华子": "Hoa Tử",
     # Các thời kỳ lịch sử & bối cảnh thế giới quan
     "上古时期": "thời kỳ Thượng Cổ",
     "太古时期": "thời kỳ Thái Cổ",
@@ -247,7 +260,8 @@ def build_hanviet_name(text: str, context: Optional[HanVietContext] = None) -> s
 def sanitize_entity_vietnamese(vn_name: str, ch_name: str = "") -> str:
     """
     Chuẩn hóa và khử sạch 100% Hán tự sót và các ký tự lai tạp trong tên thực thể.
-    - Nếu chuỗi đã là tiếng Việt thuần sạch của LLM: Giữ nguyên 100% bản dịch tinh hoa của LLM.
+    - Tự động sửa các lỗi biến âm tai hại phổ biến (Khốt -> Thánh, Hoa Tiên -> Hóa Tiên, Cận Hoan -> Tận Hoan).
+    - Cắt bỏ tiền tố động từ/hư từ tiếng Việt bị dính vào tên (Cấp Nam Cung -> Nam Cung).
     - Chỉ can thiệp khi tên còn dính Hán tự chưa dịch (như 'Tô T浅浅', 'Linh Pháp C阁', 'L岚').
     """
     if ch_name:
@@ -261,6 +275,23 @@ def sanitize_entity_vietnamese(vn_name: str, ch_name: str = "") -> str:
         return ""
 
     clean_str = vn_name.strip()
+
+    # Sửa các âm sai tai hại phổ biến do từ điển máy trước đây
+    if "Khốt" in clean_str:
+        clean_str = clean_str.replace("Khốt", "Thánh")
+    if "Hoa Tiên" in clean_str and ch_name and "化" in ch_name:
+        clean_str = clean_str.replace("Hoa Tiên", "Hóa Tiên")
+    if "Cận Hoan" in clean_str and ch_name and "尽" in ch_name:
+        clean_str = clean_str.replace("Cận Hoan", "Tận Hoan")
+    if ("Kh迟" in clean_str or "Lịch" in clean_str) and ch_name and "迟" in ch_name:
+        clean_str = re.sub(r'Kh迟|Lịch', 'Trì', clean_str)
+
+    # Gọt bỏ tiền tố hư từ/động từ dính vào đầu tên tiếng Việt (ví dụ: 'Cấp Nam Cung Tiên Tử' -> 'Nam Cung Tiên Tử')
+    VN_JUNK_PREFIXES = ("Cấp ", "Cho ", "Giết ", "Thấy ", "Đương ", "Làm ", "Bị ", "Đứng ", "Bày ", "Ra ", "Biết ", "Cha ")
+    for v_pref in VN_JUNK_PREFIXES:
+        if clean_str.startswith(v_pref) and len(clean_str) > len(v_pref) + 2:
+            clean_str = clean_str[len(v_pref):].strip()
+
     # Nếu còn chứa chữ Hán trong tên tiếng Việt -> Khử sạch chữ Hán sang âm Hán-Việt chuẩn
     if re.search(r'[\u4e00-\u9fff]', clean_str):
         def _fix_han_chunk(m):

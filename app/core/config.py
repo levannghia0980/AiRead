@@ -22,8 +22,8 @@ class Settings(BaseSettings):
     AIREAD_TOP_K: Optional[str] = ""
     TTS_MAX_WORKERS: int = 1  # Số lượng worker TTS (1 luồng duy nhất đảm bảo độ ổn định và tránh rate-limit)
     TTS_RATE: str = "-4%"      # Tốc độ đọc Neural (phát âm rõ chữ, nhẹ nhàng, tự nhiên)
-    TTS_PITCH: str = "+0Hz"    # Cao độ mặc định từ mô hình Neural Microsoft
-    TTS_SILENCE_MS: int = 400  # Khoảng nghỉ (milliseconds) ngắt câu giữa các phân đoạn (tối ưu khi nghe x2, x3)
+    TTS_PITCH: str = "+0Hz"    # Độ cao giọng đọc
+    TTS_SILENCE_MS: int = 0  # Khoảng lặng nhân tạo giữa các chunk (mặc định 0ms để đồng bộ hoàn hảo với nhịp ngắt tự nhiên của Edge-TTS)
     TTS_MAX_CHUNK_SIZE: int = 600  # 600 ký tự mỗi chunk theo đúng tính toán tối ưu
     TTS_PACING_SECONDS: float = 0.5  # 0.5s nghỉ giữa các chunk trong cùng 1 ống (worker)
     TTS_PARALLEL_WORKERS: int = 8    # 8 luồng song song mặc định, mỗi luồng giữ 1 proxy riêng biệt
@@ -86,9 +86,12 @@ async def get_all_active_settings() -> dict:
         "AIREAD_BATCH_SIZE": str(settings.AIREAD_BATCH_SIZE),
         "AIREAD_TRANSLATION_STYLE": settings.AIREAD_TRANSLATION_STYLE,
         "AIREAD_CUSTOM_PROMPT": settings.AIREAD_CUSTOM_PROMPT or "",
+        "AIREAD_TEMPERATURE": settings.AIREAD_TEMPERATURE or "",
+        "AIREAD_TOP_P": settings.AIREAD_TOP_P or "",
+        "AIREAD_TOP_K": settings.AIREAD_TOP_K or "",
         "TTS_MAX_WORKERS": str(settings.TTS_MAX_WORKERS),
         "TTS_RATE": str(settings.TTS_RATE),
-        "TTS_PITCH": str(settings.TTS_PITCH),
+        "TTS_PITCH": str(getattr(settings, "TTS_PITCH", "+0Hz")),
         "TTS_SILENCE_MS": str(settings.TTS_SILENCE_MS),
         "TTS_MAX_CHUNK_SIZE": str(settings.TTS_MAX_CHUNK_SIZE),
         "TTS_PACING_SECONDS": str(settings.TTS_PACING_SECONDS),

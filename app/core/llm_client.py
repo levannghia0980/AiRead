@@ -91,8 +91,13 @@ async def post_gemini_with_retry(
             except Exception:
                 pass
                 
-            log_429 = f"⚠️ [LLM 429 Rate Limit] Chạm giới hạn 15 RPM Gemini Free Tier. Đang thử lại (Lần {attempt}/{max_retries})..."
-            print(log_429)
+            m_match = re.search(r"/models/([^:]+):", url)
+            model_name = m_match.group(1) if m_match else "Gemini"
+            log_429 = f"⚠️ [LLM 429 Rate Limit] Google API báo chạm hạn mức request/token ({model_name}). Đang tự động thử lại sau {wait_seconds:.1f}s (Lần {attempt}/{max_retries})..."
+            try:
+                print(log_429)
+            except Exception:
+                pass
             _safe_add_log(log_429, "warning")
             if attempt < max_retries:
                 await asyncio.sleep(wait_seconds)
@@ -100,8 +105,13 @@ async def post_gemini_with_retry(
                 return resp
         elif resp.status_code == 503:
             wait_s = min(4.0 * attempt + 3.0, 25.0)
-            log_503 = f"⚠️ [LLM 503 Server Busy] Google AI Studio đang quá tải tạm thời (High Demand). Đang chờ {wait_s:.0f}s để thử lại ({attempt}/{max_retries})..."
-            print(log_503)
+            m_match = re.search(r"/models/([^:]+):", url)
+            model_name = m_match.group(1) if m_match else "Gemini"
+            log_503 = f"⚠️ [LLM 503 Server Busy] Google AI Studio đang quá tải ({model_name} High Demand). Đang chờ {wait_s:.0f}s để thử lại ({attempt}/{max_retries})..."
+            try:
+                print(log_503)
+            except Exception:
+                pass
             _safe_add_log(log_503, "warning")
             if attempt < max_retries:
                 await asyncio.sleep(wait_s)
@@ -240,6 +250,70 @@ async def post_grok_local_with_retry(
     raise Exception(f"Grok Local request thất bại: {last_err}")
 
 
+def try_repair_truncated_json(text: str) -> Any:
+    """
+    Tự động khôi phục JSON bị cắt cụt do LLM chạm giới hạn output token hoặc gián đoạn mạng:
+    Quét ngược từ các dấu ngoặc đóng '}' hoặc ']' cuối cùng về trước,
+    tự động cân bằng và đóng các ngoặc mở còn thiếu, parse cấu trúc hợp lệ lớn nhất có thể.
+    """
+    if not text:
+        return None
+    close_indices = [i for i, ch in enumerate(text) if ch in ('}', ']')]
+    if not close_indices:
+        return None
+
+    # Thử từ vị trí đóng ngoặc cuối cùng lùi dần về trước (tối đa 40 vị trí gần nhất)
+    for pos in reversed(close_indices[-40:]):
+        sub = text[:pos + 1].rstrip().rstrip(',')
+        stack = []
+        in_str = False
+        esc = False
+        valid_syntax = True
+        
+        for c in sub:
+            if esc:
+                esc = False
+                continue
+            if c == '\\':
+                if in_str:
+                    esc = True
+                continue
+            if c == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if c in ('{', '['):
+                stack.append(c)
+            elif c == '}':
+                if stack and stack[-1] == '{':
+                    stack.pop()
+                else:
+                    valid_syntax = False
+                    break
+            elif c == ']':
+                if stack and stack[-1] == '[':
+                    stack.pop()
+                else:
+                    valid_syntax = False
+                    break
+
+        if not valid_syntax or in_str:
+            continue
+
+        closers = {'{': '}', '[': ']'}
+        closing_str = ''.join(closers[b] for b in reversed(stack))
+        repaired = sub + "\n" + closing_str
+        try:
+            parsed = json.loads(repaired)
+            if parsed is not None:
+                return parsed
+        except Exception:
+            continue
+
+    return None
+
+
 def safe_json_loads(text: str) -> Any:
     """
     Phân tích JSON an toàn và thông minh từ phản hồi của LLM (Gemini, ChatGPT...):
@@ -247,6 +321,7 @@ def safe_json_loads(text: str) -> Any:
     - Tự động cắt bỏ text thừa / rác ở đầu và đuôi
     - Khôi phục từ lỗi 'Extra data' do LLM lặp ngoặc đóng (vd: }\\n})
     - Tự động sửa lỗi ngoặc thừa hoặc phẩy thừa (trailing comma)
+    - Tự động khôi phục dữ liệu khi JSON bị cắt cụt do chạm giới hạn token (Unterminated string...)
     """
     if not text:
         raise ValueError("Văn bản phản hồi từ LLM rỗng.")
@@ -294,12 +369,19 @@ def safe_json_loads(text: str) -> Any:
         except Exception:
             pass
 
+        # Lần 5: Cứu vớt JSON bị cắt cụt (Truncated JSON Auto-Recovery) do tràn token / đứt chuỗi
+        repaired = try_repair_truncated_json(candidate)
+        if repaired is not None:
+            return repaired
+
         # Nâng cao: Thử parse toàn bộ cleaned text nếu candidate cắt bị thiếu
         if candidate != cleaned:
             try:
                 return json.loads(cleaned)
             except Exception:
                 pass
-
+            repaired_cleaned = try_repair_truncated_json(cleaned)
+            if repaired_cleaned is not None:
+                return repaired_cleaned
         raise e
 

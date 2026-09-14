@@ -9,56 +9,46 @@ from app.services.unblock.rawt.rawt_decoder import RawtDecoder, ZH_TO_EROTIC_VN_
 
 logger = logging.getLogger(__name__)
 
-_RAW_TRIE = None
+_RAW_TRIE_EROTIC = None
+_RAW_TRIE_SOFT = None
 
-async def get_rawt_trie() -> LongestMatchTrie:
+async def get_rawt_trie(enable_erotic: bool = False) -> LongestMatchTrie:
     """
-    Tải cây Trie cho Luồng RAWT:
-    Sử dụng ZH_TO_EROTIC_VN_MAP trong rawt_decoder.py làm Single Source of Truth (Nguồn gốc duy nhất).
-    Tự động đồng bộ vào DB UnblockDictionary nếu chưa có.
+    Tải cây Trie cho Luồng RAWT tách biệt theo nút Phong Cách:
+    - Khi Phong Cách BẬT (enable_erotic=True): Dùng danh sách từ nặng/sắc văn (zh_erotic_dictionary.json).
+    - Khi Phong Cách TẮT (enable_erotic=False): CHỈ dùng danh sách từ nhẹ/thoát nghĩa (zh_soft_dictionary.json).
     """
-    global _RAW_TRIE
-    if _RAW_TRIE is None:
-        _RAW_TRIE = LongestMatchTrie()
-        async with AsyncSessionLocal() as session:
-            stmt = select(UnblockDictionary)
-            res = await session.execute(stmt)
-            rows = res.scalars().all()
-            existing_words = {r.word for r in rows}
+    global _RAW_TRIE_EROTIC, _RAW_TRIE_SOFT
+    if enable_erotic:
+        if _RAW_TRIE_EROTIC is None:
+            _RAW_TRIE_EROTIC = LongestMatchTrie()
+            from app.services.unblock.common.dictionary_loader import load_zh_erotic_map
+            erotic_words = [w.strip() for w in load_zh_erotic_map().keys() if w.strip()]
+            _RAW_TRIE_EROTIC.load_dictionary(erotic_words, "sensitive_context")
+            logger.info(f"Loaded {len(_RAW_TRIE_EROTIC.words)} terms into RAWT Erotic Trie.")
+        return _RAW_TRIE_EROTIC
+    else:
+        if _RAW_TRIE_SOFT is None:
+            _RAW_TRIE_SOFT = LongestMatchTrie()
+            from app.services.unblock.common.dictionary_loader import load_zh_soft_map
+            soft_words = [w.strip() for w in load_zh_soft_map().keys() if w.strip()]
+            _RAW_TRIE_SOFT.load_dictionary(soft_words, "sensitive_context")
+            logger.info(f"Loaded {len(_RAW_TRIE_SOFT.words)} terms into RAWT Soft Trie.")
+        return _RAW_TRIE_SOFT
 
-            new_words = []
-            # Lấy trực tiếp toàn bộ danh sách từ tiếng Trung từ ZH_TO_EROTIC_VN_MAP
-            all_zh_words = list(dict.fromkeys([w.strip() for w in ZH_TO_EROTIC_VN_MAP.keys() if w.strip()]))
-            
-            for w in all_zh_words:
-                if w not in existing_words:
-                    session.add(UnblockDictionary(word=w, category="sensitive_context"))
-                    new_words.append(w)
-            if new_words:
-                await session.commit()
-                stmt = select(UnblockDictionary)
-                res = await session.execute(stmt)
-                rows = res.scalars().all()
-
-            for r in rows:
-                if any('\u4e00' <= c <= '\u9fff' for c in r.word):
-                    _RAW_TRIE.load_dictionary([r.word], r.category or "sensitive_context")
-                    
-        logger.info(f"Loaded {len(_RAW_TRIE.words)} Chinese terms into RAWT Trie from ZH_TO_EROTIC_VN_MAP.")
-    return _RAW_TRIE
-
-async def mask_rawt_text(text: str, mask_level: str = "word") -> Tuple[str, Dict[str, Dict[str, str]], bool]:
+async def mask_rawt_text(text: str, mask_level: str = "word", enable_erotic: bool = False) -> Tuple[str, Dict[str, Dict[str, str]], bool]:
     if not text:
         return text, {}, False
-    trie = await get_rawt_trie()
+    trie = await get_rawt_trie(enable_erotic=enable_erotic)
     encoder = RawtEncoder(trie)
     masked_text, mapping_table = encoder.encode(text, mask_level=mask_level)
     is_sensitive = len(mapping_table) > 0
     return masked_text, mapping_table, is_sensitive
 
 def clear_rawt_trie_cache():
-    global _RAW_TRIE
-    _RAW_TRIE = None
+    global _RAW_TRIE_EROTIC, _RAW_TRIE_SOFT
+    _RAW_TRIE_EROTIC = None
+    _RAW_TRIE_SOFT = None
     from app.services.unblock.common.dictionary_loader import clear_dictionary_cache
     clear_dictionary_cache()
 

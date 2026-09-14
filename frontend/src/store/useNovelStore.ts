@@ -27,6 +27,9 @@ export interface Chapter {
   error_msg: string | null
   token_count: number
   updated_at: string
+  has_fallback_words?: boolean
+  has_fixed_words?: boolean
+  has_swept_errors?: boolean
 }
 
 export interface Glossary {

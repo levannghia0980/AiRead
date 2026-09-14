@@ -89,8 +89,8 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
   chapterSearch,
   setChapterSearch,
   saveResult,
-  handleQuickFixAll,
-  isFixingAll,
+  handleQuickFixAll: _handleQuickFixAll,
+  isFixingAll: _isFixingAll,
   handleBatchFixRed,
   isFixingRed,
   handleReadChapter,
@@ -117,13 +117,6 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
   }, [selectedNovel?.novel.id])
 
   const deferredSearch = useDeferredValue(chapterSearch)
-
-  const yellowChaptersCount = useMemo(() => {
-    if (!selectedNovel?.chapters) return 0
-    return selectedNovel.chapters.filter((ch: any) => 
-      (ch.status === 'COMPLETED' || ch.status === 'RESCUED') && (ch.has_fallback_words || (ch.translated_text && (ch.translated_text.includes('class="fallback-word"') || ch.translated_text.includes('class="fixed-word"') || ch.translated_text.includes('class="fixed-sentence"'))))
-    ).length
-  }, [selectedNovel?.chapters])
 
   const redChaptersCount = useMemo(() => {
     if (!selectedNovel?.chapters) return 0
@@ -519,24 +512,11 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
           </div>
 
           <div className="flex gap-1.5 sm:gap-2 flex-wrap items-center justify-start sm:justify-end w-full sm:w-auto">
-            {/* Quick Fix All Yellow Sentences Button */}
-            {yellowChaptersCount > 0 && (
-              <button
-                onClick={() => handleQuickFixAll(selectedNovel.novel.id)}
-                disabled={isFixingAll || isFixingRed}
-                className="bg-amber-500/20 border border-amber-500/50 hover:bg-amber-500/30 text-amber-300 font-bold px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg disabled:opacity-40 animate-pulse"
-                title="Gom tất cả các câu chứa chữ vàng gửi AI biên tập mượt mà 1 lượt duy nhất"
-              >
-                {isFixingAll ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
-                <span>Sửa Vàng ({yellowChaptersCount})</span>
-              </button>
-            )}
-
             {/* Quick Fix All Red Sentences Button */}
             {redChaptersCount > 0 && (
               <button
                 onClick={() => handleBatchFixRed(selectedNovel.novel.id)}
-                disabled={isFixingAll || isFixingRed}
+                disabled={isFixingRed}
                 className="bg-rose-500/20 border border-rose-500/50 hover:bg-rose-500/30 text-rose-300 font-bold px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-lg disabled:opacity-40 animate-pulse"
                 title="Gom tất cả lỗi Hán tự dịch sai gửi AI sửa mượt mà 1 lượt duy nhất"
               >
@@ -636,8 +616,8 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
               const isRescued = ch.status === 'RESCUED'
               const isCompleted = ch.status === 'COMPLETED' || isRescued
               const isFailed = ch.status === 'FAILED'
-              const hasYellowText = isCompleted && Boolean(ch.has_fallback_words || (ch.translated_text && (ch.translated_text.includes('class="fallback-word"') || ch.translated_text.includes('class="fixed-word"') || ch.translated_text.includes('class="fixed-sentence"'))))
               const hasRedText = isCompleted && Boolean(ch.has_swept_errors || (ch.translated_text && (ch.translated_text.includes('class="swept-error"') || ch.translated_text.includes('class="swept-chinese"'))))
+              const hasFixedText = isCompleted && Boolean(ch.has_fixed_words || (ch.translated_text && (ch.translated_text.includes('class="fixed-word"') || ch.translated_text.includes('class="fixed-sentence"') || ch.translated_text.includes('class="fallback-word"'))))
 
               return (
                 <div
@@ -656,8 +636,8 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
                     className={`w-full h-full flex items-center justify-between px-4 py-1.5 rounded-xl text-xs border transition-all duration-150 group ${
                       hasRedText
                         ? 'border-rose-500/50 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 font-medium'
-                        : hasYellowText
-                          ? 'border-amber-500/50 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 font-medium'
+                        : hasFixedText
+                          ? 'border-amber-500/25 bg-amber-950/20 hover:bg-amber-950/35 text-slate-200'
                           : isFailed
                           ? 'border-cyber-danger/40 bg-cyber-danger/10 hover:bg-cyber-danger/20 text-cyber-danger'
                           : isRescued
@@ -675,24 +655,54 @@ export const LibraryTab: React.FC<LibraryTabProps> = React.memo(({
                       <span className={`w-7 h-7 rounded-lg flex items-center justify-center text-[10px] font-bold flex-shrink-0 ${
                         hasRedText
                           ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
-                          : hasYellowText
-                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                          : isFailed
-                            ? 'bg-cyber-danger/15 text-cyber-danger border border-cyber-danger/30'
-                            : isRescued
-                              ? 'bg-purple-500/15 text-purple-400 border border-purple-500/30'
-                              : isCompleted
-                                ? 'bg-cyber-success/15 text-cyber-success border border-cyber-success/30'
-                                : 'bg-slate-900/60 text-slate-500 border border-cyber-border/30'
+                          : hasFixedText
+                            ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                            : isFailed
+                              ? 'bg-cyber-danger/15 text-cyber-danger border border-cyber-danger/30'
+                              : isRescued
+                                ? 'bg-purple-500/15 text-purple-400 border border-purple-500/30'
+                                : isCompleted
+                                  ? 'bg-cyber-success/15 text-cyber-success border border-cyber-success/30'
+                                  : 'bg-slate-900/60 text-slate-500 border border-cyber-border/30'
                       }`}>
                         {ch.chapter_no}
                       </span>
                       <div className="min-w-0">
                         <p className={`font-medium truncate ${
-                          hasRedText ? 'text-rose-300 font-bold' : hasYellowText ? 'text-amber-300 font-bold' : isFailed ? 'text-cyber-danger font-bold' : isRescued ? 'text-purple-300 font-bold' : isCompleted ? 'text-slate-200' : 'text-slate-500'
+                          hasRedText
+                            ? 'text-rose-300 font-bold'
+                            : hasFixedText
+                              ? 'text-amber-200/90 font-medium'
+                              : isFailed
+                                ? 'text-cyber-danger font-bold'
+                                : isRescued
+                                  ? 'text-purple-300 font-bold'
+                                  : isCompleted
+                                    ? 'text-slate-200'
+                                    : 'text-slate-500'
                         }`}>{ch.title}</p>
-                        <p className={`text-[10px] mt-0.5 ${hasRedText ? 'text-rose-400 font-bold' : hasYellowText ? 'text-amber-400 font-bold' : isFailed ? 'text-cyber-danger/80' : isRescued ? 'text-purple-400' : 'text-cyber-muted'}`}>
-                          {hasRedText ? '🔴 Cần sửa Hán tự' : hasYellowText ? '🟡 Cần sửa chữ vàng' : isFailed ? '❌ Lỗi dịch' : isRescued ? '💜 Dịch cứu hộ' : isCompleted ? '✅ Đã dịch' : '⏳ Chờ dịch'}
+                        <p className={`text-[10px] mt-0.5 ${
+                          hasRedText
+                            ? 'text-rose-400 font-bold'
+                            : hasFixedText
+                              ? 'text-amber-300/80 font-medium'
+                              : isFailed
+                                ? 'text-cyber-danger/80'
+                                : isRescued
+                                  ? 'text-purple-400'
+                                  : 'text-cyber-muted'
+                        }`}>
+                          {hasRedText
+                            ? '🔴 Cần sửa Hán tự'
+                            : hasFixedText
+                              ? '🟡 Đã sửa chữ'
+                              : isFailed
+                                ? '❌ Lỗi dịch'
+                                : isRescued
+                                  ? '💜 Dịch cứu hộ'
+                                  : isCompleted
+                                    ? '✅ Đã dịch'
+                                    : '⏳ Chờ dịch'}
                         </p>
                       </div>
                     </button>

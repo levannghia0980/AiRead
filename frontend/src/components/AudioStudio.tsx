@@ -25,7 +25,8 @@ import {
   Sliders,
   Radio,
   Trash2,
-  FileText
+  FileText,
+  Edit3
 } from 'lucide-react'
 
 interface ChapterPlaylistItem {
@@ -37,6 +38,7 @@ interface ChapterPlaylistItem {
   json_url?: string | null
   file_size?: string | null
   size_bytes?: number
+  duration?: string
 }
 
 export default function AudioStudio() {
@@ -101,15 +103,43 @@ export default function AudioStudio() {
     localStorage.setItem('tts_export_speed', String(spd))
   }
 
+  // Export Metadata & Smart Partitioning (<12h)
+  const [exportMeta, setExportMeta] = useState<any>(null)
+  const [partitionMode, setPartitionMode] = useState<'remaining' | 'all'>('remaining')
+  const [isEditingLastExport, setIsEditingLastExport] = useState(false)
+  const [customLastExportInput, setCustomLastExportInput] = useState<number>(0)
+
   // Auto Partition Bundles (10h - <12h)
   const [autoBundles, setAutoBundles] = useState<any[]>([])
   const [loadingBundles, setLoadingBundles] = useState(false)
 
-  const fetchAutoBundles = useCallback(async (novelId: number, speed: number = 1.5) => {
+  const fetchExportMeta = useCallback(async (novelId: number, speed: number = 1.5) => {
+    if (!novelId) return null
+    try {
+      const res = await fetch(`/api/novels/${novelId}/audio/export_meta?speed=${speed}`)
+      if (res.ok) {
+        const data = await res.json()
+        setExportMeta(data)
+        if (data.next_start_chapter) {
+          setExportRangeStart(data.next_start_chapter)
+        }
+        if (data.suggested_end_chapter) {
+          setExportRangeEnd(data.suggested_end_chapter)
+        }
+        return data
+      }
+    } catch (e) {
+      console.error('Failed to fetch export meta:', e)
+    }
+    return null
+  }, [])
+
+  const fetchAutoBundles = useCallback(async (novelId: number, speed: number = 1.5, fromChapter?: number) => {
     if (!novelId) return
     setLoadingBundles(true)
     try {
-      const res = await fetch(`/api/novels/${novelId}/audio/auto_partition_bundles?speed=${speed}&min_hours=10.0&max_hours=11.95`)
+      const fromQuery = fromChapter !== undefined ? `&from_chapter=${fromChapter}` : ''
+      const res = await fetch(`/api/novels/${novelId}/audio/auto_partition_bundles?speed=${speed}&min_hours=10.0&max_hours=11.8${fromQuery}`)
       if (res.ok) {
         const data = await res.json()
         setAutoBundles(data.bundles || [])
@@ -120,6 +150,25 @@ export default function AudioStudio() {
       setLoadingBundles(false)
     }
   }, [])
+
+  const handleUpdateLastExport = async (chNo: number) => {
+    if (!selectedNovelId) return
+    try {
+      const res = await fetch(`/api/novels/${selectedNovelId}/audio/set_last_exported_chapter`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ last_chapter: chNo })
+      })
+      if (res.ok) {
+        setIsEditingLastExport(false)
+        await fetchExportMeta(selectedNovelId, exportSpeed)
+        const nextStart = chNo > 0 ? chNo + 1 : 1
+        fetchAutoBundles(selectedNovelId, exportSpeed, partitionMode === 'all' ? 1 : nextStart)
+      }
+    } catch (e) {
+      console.error('Failed to update last export chapter:', e)
+    }
+  }
 
   // TTS Job Progress & Status
   const [jobStatus, setJobStatus] = useState<any>(null)
@@ -147,16 +196,6 @@ export default function AudioStudio() {
           }
           const lastCh = items[items.length - 1].chapter_no
           setTtsRangeEnd(lastCh)
-
-          // 2. Khoảng Xuất / Tải File: Tự động tìm khoảng các chương ĐÃ CÓ AUDIO
-          const readyItems = items.filter((it: ChapterPlaylistItem) => it.has_audio)
-          if (readyItems.length > 0) {
-            setExportRangeStart(readyItems[0].chapter_no)
-            setExportRangeEnd(readyItems[readyItems.length - 1].chapter_no)
-          } else {
-            setExportRangeStart(items[0].chapter_no)
-            setExportRangeEnd(lastCh)
-          }
         }
       }
     } catch (e) {
@@ -166,13 +205,16 @@ export default function AudioStudio() {
     }
   }, [])
 
-  // Auto fetch playlist & auto bundles when selected novel or speed changes
+  // Auto fetch playlist, export meta & auto bundles when selected novel or speed changes
   useEffect(() => {
     if (selectedNovelId) {
       fetchPlaylist(selectedNovelId)
-      fetchAutoBundles(selectedNovelId, exportSpeed)
+      fetchExportMeta(selectedNovelId, exportSpeed).then((meta) => {
+        const fromCh = (partitionMode === 'remaining' && meta && meta.next_start_chapter) ? meta.next_start_chapter : undefined
+        fetchAutoBundles(selectedNovelId, exportSpeed, fromCh)
+      })
     }
-  }, [selectedNovelId, fetchPlaylist, fetchAutoBundles, exportSpeed])
+  }, [selectedNovelId, fetchPlaylist, fetchExportMeta, fetchAutoBundles, exportSpeed, partitionMode])
 
   const [savedHistory, setSavedHistory] = useState<any>(null)
 
@@ -493,6 +535,37 @@ export default function AudioStudio() {
     }
   }
 
+  // Tính tổng thời lượng ước lượng của các chương đã chọn trong Export Range (Cắt chay)
+  const selectedRangeDuration = useMemo(() => {
+    if (!playlist || playlist.length === 0) return ''
+    const inRange = playlist.filter(
+      (it: ChapterPlaylistItem) => it.has_audio && it.chapter_no >= exportRangeStart && it.chapter_no <= exportRangeEnd
+    )
+    if (inRange.length === 0) return ''
+    let totalSec = 0
+    let hasExact = false
+    for (const it of inRange) {
+      if (it.duration) {
+        const parts = it.duration.split(':').map(Number)
+        if (parts.length === 3) {
+          totalSec += parts[0] * 3600 + parts[1] * 60 + parts[2]
+          hasExact = true
+          continue
+        }
+      }
+      if (it.size_bytes && it.size_bytes > 0) {
+        totalSec += it.size_bytes / 16000
+        hasExact = true
+      }
+    }
+    if (!hasExact || totalSec <= 0) return ''
+    const scaledSec = totalSec / (exportSpeed || 1.5)
+    const h = Math.floor(scaledSec / 3600)
+    const m = Math.floor((scaledSec % 3600) / 60)
+    const s = Math.floor(scaledSec % 60)
+    return `${h}h ${m}m ${s}s`
+  }, [playlist, exportRangeStart, exportRangeEnd, exportSpeed])
+
   // Fast Merge with FFmpeg (kèm hỗ trợ tùy chọn tốc độ speed)
   const handleFastMerge = async () => {
     if (!selectedNovelId) return
@@ -506,7 +579,11 @@ export default function AudioStudio() {
       const data = await res.json()
       if (res.ok) {
         setMergeResult(data)
-        fetchAutoBundles(selectedNovelId, exportSpeed)
+        // Cập nhật lại mốc chương đã xuất và tính toán lại khoảng tiếp theo
+        const meta = await fetchExportMeta(selectedNovelId, exportSpeed)
+        const fromCh = (partitionMode === 'remaining' && meta && meta.next_start_chapter) ? meta.next_start_chapter : undefined
+        fetchAutoBundles(selectedNovelId, exportSpeed, fromCh)
+
         // Tự động tải cả 2 file (MP3 + JSON) ngay khi ghép xong
         if (data.download_url) {
           const jsonUrl = data.json_download_url || `/api/novels/${selectedNovelId}/audio/export_timeline_json?start_chapter=${exportRangeStart}&end_chapter=${exportRangeEnd}&speed=${exportSpeed}`
@@ -538,7 +615,11 @@ export default function AudioStudio() {
       const data = await res.json()
       if (res.ok) {
         setMergeResult(data)
-        fetchAutoBundles(selectedNovelId, exportSpeed)
+        // Cập nhật lại mốc chương đã xuất và tính toán lại khoảng tiếp theo
+        const meta = await fetchExportMeta(selectedNovelId, exportSpeed)
+        const fromCh = (partitionMode === 'remaining' && meta && meta.next_start_chapter) ? meta.next_start_chapter : undefined
+        fetchAutoBundles(selectedNovelId, exportSpeed, fromCh)
+
         // Tự động tải cả 2 file (MP3 + JSON) ngay khi ghép xong
         if (data.download_url) {
           const jsonUrl = data.json_download_url || bundle.json_download_url || `/api/novels/${selectedNovelId}/audio/export_timeline_json?start_chapter=${bundle.start_chapter}&end_chapter=${bundle.end_chapter}&speed=${exportSpeed}`
@@ -1325,16 +1406,108 @@ export default function AudioStudio() {
               )}
             </div>
 
-            {/* 🎯 TỰ ĐỘNG CHIA TẬP 10h - <12h @ SPEED */}
+            {/* 📌 BANNER GHI NHỚ CHƯƠNG ĐÃ CẮT & GỢI Ý ĐỢT TIẾP THEO (<12H) */}
+            <div className="p-2.5 rounded-xl bg-gradient-to-r from-purple-950/40 via-indigo-950/30 to-slate-900/60 border border-cyber-purple/40 text-xs flex flex-col gap-2 shadow-inner">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="px-2 py-0.5 rounded-lg bg-cyber-purple/25 text-cyber-purple font-bold text-[11px] flex items-center gap-1 border border-cyber-purple/30">
+                    📌 Đã cắt đến:
+                  </span>
+                  <span className="font-extrabold text-slate-100 text-[12px]">
+                    {exportMeta?.last_exported_chapter > 0 
+                      ? `Chương ${exportMeta.last_exported_chapter}` 
+                      : 'Chưa xuất đợt nào'}
+                  </span>
+                  {exportMeta?.last_exported_chapter > 0 && (
+                    <span className="text-[10px] text-emerald-400 font-medium">
+                      (Đã xong {exportMeta.last_exported_chapter} chương)
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1">
+                  {isEditingLastExport ? (
+                    <div className="flex items-center gap-1 bg-slate-950/90 p-1 rounded-lg border border-cyber-border">
+                      <input
+                        type="number"
+                        min={0}
+                        value={customLastExportInput}
+                        onChange={(e) => setCustomLastExportInput(parseInt(e.target.value) || 0)}
+                        className="w-16 px-1.5 py-0.5 text-xs bg-slate-900 border border-slate-700 rounded text-center text-white font-bold"
+                        placeholder="Số ch"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateLastExport(customLastExportInput)}
+                        className="px-2 py-0.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded text-[10px] font-bold"
+                      >
+                        Lưu
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsEditingLastExport(false)}
+                        className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[10px]"
+                      >
+                        Hủy
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCustomLastExportInput(exportMeta?.last_exported_chapter || 0)
+                        setIsEditingLastExport(true)
+                      }}
+                      className="text-[10px] px-2 py-1 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition-all flex items-center gap-1 border border-slate-700"
+                      title="Sửa hoặc đặt lại mốc chương đã cắt để tính từ chương khác"
+                    >
+                      <Edit3 className="w-3 h-3" />
+                      <span>Đổi mốc</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {exportMeta && exportMeta.remaining_chapters_count > 0 && (
+                <div className="flex items-center justify-between text-[11px] bg-slate-900/70 px-2 py-1.5 rounded-lg border border-slate-800 flex-wrap gap-1">
+                  <span className="text-slate-300 flex items-center gap-1">
+                    🎯 <strong className="text-cyber-accent">Gợi ý đợt tiếp theo:</strong> Chương {exportMeta.next_start_chapter} → {exportMeta.suggested_end_chapter}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-cyber-accent/20 text-cyber-accent font-mono font-bold">
+                      ⏱️ ~{exportMeta.suggested_duration_formatted} (@{exportSpeed}x)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setExportRangeStart(exportMeta.next_start_chapter)
+                        setExportRangeEnd(exportMeta.suggested_end_chapter)
+                      }}
+                      className="px-2 py-0.5 bg-cyber-purple/30 hover:bg-cyber-purple/60 text-cyber-purple hover:text-white rounded text-[10px] font-bold transition-all border border-cyber-purple/40"
+                      title="Tự động điền khoảng này vào khung tự chọn bên dưới"
+                    >
+                      Áp dụng
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 🎯 TỰ ĐỘNG CHIA TẬP CÂN BẰNG <12h @ SPEED */}
             <div className="p-3 rounded-xl bg-cyber-purple/10 border border-cyber-purple/30 flex flex-col gap-2">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between flex-wrap gap-1">
                 <span className="text-xs font-bold text-cyber-purple flex items-center gap-1.5">
                   <Sparkles className="w-3.5 h-3.5 text-cyber-purple" />
-                  Chia Tập Chuẩn 10h - 12h (Tốc độ {exportSpeed}x)
+                  Chia Tập Cân Bằng &lt;12h (Tốc độ {exportSpeed}x)
                 </span>
                 <button
                   type="button"
-                  onClick={() => selectedNovelId && fetchAutoBundles(selectedNovelId, exportSpeed)}
+                  onClick={() => {
+                    if (selectedNovelId) {
+                      const fromCh = partitionMode === 'remaining' ? (exportMeta?.next_start_chapter || 1) : 1
+                      fetchAutoBundles(selectedNovelId, exportSpeed, fromCh)
+                    }
+                  }}
                   disabled={loadingBundles}
                   className="text-[10px] px-2 py-0.5 rounded-lg bg-cyber-purple/20 text-cyber-purple hover:bg-cyber-purple/30 font-medium transition-all flex items-center gap-1"
                 >
@@ -1342,8 +1515,45 @@ export default function AudioStudio() {
                   <span>Tính lại</span>
                 </button>
               </div>
+
+              {/* Chuyển đổi: Chỉ tính tiếp hay Toàn bộ */}
+              <div className="flex items-center gap-1.5 pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPartitionMode('remaining')
+                    if (selectedNovelId) {
+                      fetchAutoBundles(selectedNovelId, exportSpeed, exportMeta?.next_start_chapter || 1)
+                    }
+                  }}
+                  className={`px-2 py-0.5 rounded-lg text-[10px] font-bold transition-all ${
+                    partitionMode === 'remaining'
+                      ? 'bg-cyber-purple text-white shadow-sm'
+                      : 'bg-slate-800/80 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  ⚡ Tính tiếp từ Ch {exportMeta?.next_start_chapter || 1} (Bỏ qua đã xuất)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPartitionMode('all')
+                    if (selectedNovelId) {
+                      fetchAutoBundles(selectedNovelId, exportSpeed, 1)
+                    }
+                  }}
+                  className={`px-2 py-0.5 rounded-lg text-[10px] font-bold transition-all ${
+                    partitionMode === 'all'
+                      ? 'bg-cyber-purple text-white shadow-sm'
+                      : 'bg-slate-800/80 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Toàn bộ từ Chương 1
+                </button>
+              </div>
+
               <p className="text-[10px] text-slate-400">
-                Hệ thống tự động gom các chương thành từng tập dài 10h đến dưới 12h (chuẩn YouTube/nghe trọn gói).
+                Thuật toán cân bằng thời lượng đều nhau cho các tập, tuyệt đối không bị tập cuối 30 phút cụt lủn!
               </p>
 
               {autoBundles.length > 0 ? (
@@ -1433,14 +1643,19 @@ export default function AudioStudio() {
                 </div>
               ) : (
                 <div className="text-[10px] text-slate-500 py-1 text-center">
-                  {loadingBundles ? 'Đang tính toán các tập...' : 'Chưa có đủ audio để gom tập 10-12 tiếng.'}
+                  {loadingBundles ? 'Đang tính toán các tập...' : 'Chưa có đủ audio để gom tập <12 tiếng.'}
                 </div>
               )}
             </div>
 
-            {/* Export Range Selection (Tự chọn thủ công) */}
-            <div className="text-[11px] font-bold text-slate-300 pt-1 border-t border-cyber-border/30">
-              Hoặc chọn khoảng chương thủ công:
+            {/* Export Range Selection (Tự chọn thủ công - Cắt chay) */}
+            <div className="text-[11px] font-bold text-slate-300 pt-1 border-t border-cyber-border/30 flex items-center justify-between">
+              <span>Hoặc chọn khoảng chương thủ công:</span>
+              {selectedRangeDuration && (
+                <span className="text-[10px] px-2 py-0.5 rounded-lg bg-cyber-accent/15 text-cyber-accent font-mono font-bold border border-cyber-accent/30">
+                  ⏱️ Dự kiến: ~{selectedRangeDuration} ({exportSpeed}x)
+                </span>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-2 text-xs">
               <div>
@@ -1451,7 +1666,7 @@ export default function AudioStudio() {
                   max={playlist.length || 1}
                   value={exportRangeStart}
                   onChange={(e) => setExportRangeStart(Math.max(1, parseInt(e.target.value) || 1))}
-                  className="w-full glass-input rounded-xl px-2.5 py-1.5 text-xs"
+                  className="w-full glass-input rounded-xl px-2.5 py-1.5 text-xs font-bold text-white"
                 />
               </div>
               <div>
@@ -1462,13 +1677,13 @@ export default function AudioStudio() {
                   max={playlist.length || 1}
                   value={exportRangeEnd}
                   onChange={(e) => setExportRangeEnd(Math.max(1, parseInt(e.target.value) || 1))}
-                  className="w-full glass-input rounded-xl px-2.5 py-1.5 text-xs"
+                  className="w-full glass-input rounded-xl px-2.5 py-1.5 text-xs font-bold text-white"
                 />
               </div>
             </div>
 
             {/* Range Status Info */}
-            <div className="text-[11px] flex items-center justify-between px-1">
+            <div className="text-[11px] flex items-center justify-between px-1 flex-wrap gap-1">
               <span className={selectedRangeReadyCount > 0 ? 'text-emerald-400 font-medium' : 'text-amber-400 font-medium'}>
                 {selectedRangeReadyCount > 0 
                   ? `✅ Có sẵn ${selectedRangeReadyCount}/${Math.max(1, exportRangeEnd - exportRangeStart + 1)} chương MP3`

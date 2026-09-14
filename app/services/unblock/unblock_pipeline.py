@@ -5,14 +5,14 @@ from app.services.unblock.common.validator import Validator
 
 logger = logging.getLogger(__name__)
 
-async def mask_text_with_dictionary(text: str, mask_level: str = "word", flow: str = "rawt", **kwargs) -> Tuple[str, Dict[str, Dict[str, str]], bool]:
+async def mask_text_with_dictionary(text: str, mask_level: str = "word", flow: str = "rawt", enable_erotic: bool = False, **kwargs) -> Tuple[str, Dict[str, Dict[str, str]], bool]:
     """
     Bọc từ nhạy cảm tiếng Trung (RAW Masking) trước khi gửi sang LLM.
     """
     if not text:
         return text, {}, False
         
-    return await mask_rawt_text(text, mask_level=mask_level)
+    return await mask_rawt_text(text, mask_level=mask_level, enable_erotic=enable_erotic)
 
 def unmask_text_with_dictionary(
     translated_text: str, 

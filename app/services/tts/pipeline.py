@@ -36,9 +36,9 @@ ACTIVE_TTS_JOBS: Dict[str, Dict[str, Any]] = {}
 # 1. Branding kênh YouTube
 # 2. Buffer tránh mất/lag từ đầu file MP3 do player cần thời gian khởi tạo decoder
 CHANNEL_INTRO_TEXT = (
-    "Xin chào các bạn! Chào mừng đến với kênh Nê Nghĩa Audio. "
-    "Nhớ bấm like, đăng ký kênh và bật chuông thông báo nhé. "
-    "Chúc các bạn nghe vui vẻ..."
+    "Chào mừng các bạn đã đến với kênh Nê Nghĩa Audio! "
+    "Nếu các bạn nghe truyện thấy hay, hãy cho mình xin một like, một lượt theo dõi và đăng ký kênh nhé. "
+    "Chúc các bạn nghe truyện vui vẻ!"
 )
 
 # Semaphore giới hạn nghiêm ngặt 1 kết nối đồng thời tới Microsoft Edge-TTS để đảm bảo 1 luồng duy nhất, ổn định tuyệt đối
@@ -363,7 +363,7 @@ def detect_and_separate_chapter_title(
             start_idx += 1
             continue
         clean_tag = re.sub(r'^[=\-_\*#\s\(\[\{【（"“\.,:;]+|[=\-_\*#\s\)\]\}】）"”\.,:;]+$', '', line).strip()
-        if re.match(r'^(?:bắt đầu)\s*(?:chương|chapter)', clean_tag, re.IGNORECASE):
+        if re.match(r'^(?:bắt đầu)\s*(?:chương|chapter)', clean_tag, re.IGNORECASE) or re.match(r'^/?chapter(?:_\d+)?$', clean_tag, re.IGNORECASE):
             start_idx += 1
             continue
         break
@@ -374,12 +374,14 @@ def detect_and_separate_chapter_title(
     first_line = lines[start_idx].strip()
     rest_lines = lines[start_idx + 1:]
     clean_first = re.sub(r'^[“"‘\'\[\(]+|[”"’\'\]\)]+$', '', first_line).strip()
+    clean_first = re.sub(r'<[^>]+>', '', clean_first).strip()
     title_str = None
     body_prefix = ""
 
     clean_fb = ""
     if fallback_title and len(fallback_title.strip()) <= 80:
         clean_fb = re.sub(r'^(?:第?\s*\d+\s*章\s*[:.:-]?|Chương\s*\d+\s*[:.:-]?)', '', fallback_title, flags=re.IGNORECASE).strip()
+        clean_fb = re.sub(r'<[^>]+>', '', clean_fb).strip()
         clean_fb = re.sub(r'^[.:,\s-]+|[.:,\s-]+$', '', clean_fb)
 
     # TH1: Tiền tố chuẩn: Chương X / Chapter X / Hồi X / Tiết X
@@ -388,12 +390,13 @@ def detect_and_separate_chapter_title(
         c_num_str = ch_match.group(1).strip()
         c_num = int(c_num_str) if c_num_str else (chapter_no or 0)
         raw_name = ch_match.group(2).strip()
+        raw_name = re.sub(r'<[^>]+>', '', raw_name).strip()
         raw_name = re.sub(r'[\(（](?:cầu|hết|chương).*?[\)）]', '', raw_name, flags=re.IGNORECASE).strip()
         # Nếu dòng chỉ có 'Chương X:' và tên chương nằm ở dòng kế tiếp
         if not raw_name and rest_lines:
             next_line = rest_lines[0].strip()
             if len(next_line) <= 60 and not re.search(r'^[“"‘\'\-–—]', next_line):
-                raw_name = next_line
+                raw_name = re.sub(r'<[^>]+>', '', next_line).strip()
                 rest_lines = rest_lines[1:]
         if len(raw_name) > 60:
             split_m = re.search(r'(?:\!\.\.|\?\.\.|\.\.|\!|\?|\.)\s+', raw_name)
@@ -401,8 +404,7 @@ def detect_and_separate_chapter_title(
                 actual_name = raw_name[:split_m.start() + 1].strip()
                 body_prefix = raw_name[split_m.end():].strip()
             else:
-                actual_name = raw_name[:60].strip()
-                body_prefix = raw_name[60:].strip()
+                actual_name = raw_name
         else:
             actual_name = raw_name
         actual_name = re.sub(r'^[.:,\s-]+|[.:,\s-]+$', '', actual_name)
@@ -473,6 +475,34 @@ def sanitize_tts_text(
     # 0. Loại bỏ ký tự rỗng/vô hình zero-width, BOM và control characters
     text = re.sub(r'[\u200b\u200c\u200d\u200e\u200f\ufeff\xa0]', ' ', text)
     text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    # Loại bỏ thẻ phân chương kỹ thuật LLM: <chapter_X>, </chapter_X>, [chapter_X], [/chapter_X]
+    text = re.sub(r'(?i)</?chapter(?:_\d+)?\b[^>]*>', ' ', text)
+    text = re.sub(r'(?i)\[/?chapter(?:_\d+)?\b[^\]]*\]', ' ', text)
+    text = re.sub(r'(?i)\[/?fix\]', '', text)
+    text = re.sub(r'(?i)\[lỗi:\s*([^\]]*)\]', r'\1', text)
+
+    # 0a. Hàn gắn và bóc tách triệt để các thẻ HTML hoàn chỉnh hoặc bị rách/chặt đôi
+    text = re.sub(
+        r'<[a-zA-Z0-9_-]+\b[^\n>]*\n+\s*(?:[a-zA-Z\-]+:\s*[^;>\n]*;\s*)*[^\n<>]*?(?:class=[\'"][^\'"]*[\'"]|data-raw=[\'"][^\'"]*[\'"])[^>\n]*>(.*?)</span\s*>',
+        r' \1\n\n',
+        text,
+        flags=re.IGNORECASE
+    )
+    text = re.sub(
+        r'^[ \t]*(?:[a-zA-Z\-]+:\s*[^;>\n]*;\s*)*[^\n<>]*?(?:class=[\'"][^\'"]*[\'"]|data-raw=[\'"][^\'"]*[\'"])[^>\n]*>(.*?)</span\s*>',
+        r'\1',
+        text,
+        flags=re.IGNORECASE | re.MULTILINE
+    )
+    for _ in range(5):
+        _prev_t = text
+        text = re.sub(r'<span\b[^>]*>(.*?)</span>', r'\1', text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r'<[a-zA-Z0-9_-]+\b[^>]*>(.*?)</[a-zA-Z0-9_-]+>', r'\1', text, flags=re.IGNORECASE | re.DOTALL)
+        if text == _prev_t:
+            break
+    text = re.sub(r'</?[a-zA-Z0-9_-]+[^>]*>', ' ', text)
+    text = re.sub(r'<[a-zA-Z0-9_-]+\b[^\n<>]*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'(?:class=[\'"][^\'"]*[\'"]|data-raw=[\'"][^\'"]*[\'"]|style=[\'"][^\'"]*[\'"])', '', text, flags=re.IGNORECASE)
 
     # 0b. Tách biệt tên chương và thân truyện
     detected_title, body_text = detect_and_separate_chapter_title(text, chapter_no=chapter_no, fallback_title=chapter_title)
@@ -734,41 +764,48 @@ def sanitize_tts_text(
     full_text = re.sub(r'(\d{1,3}),(\d{3})\b', r'\1\2', full_text)
 
     # CHUẨN HÓA DẤU CÂU CHO TTS (NGẮT NGHỈ RÕ RÀNG, BẢO TOÀN DẤU PHẨY TỰ NHIÊN):
-    # 0. Khử triệt để các chuỗi dấu lộn xộn, dấu phẩy dính sau dấu chấm/than/hỏi (ví dụ !..,, hay ?.,,)
+    # 0. Dọn sạch khoảng trắng trước dấu câu (không cho phép dấu cách trước bất kỳ dấu nào)
+    full_text = re.sub(r'\s+([.!?,;:…])', r'\1', full_text)
+
+    # 0b. Khử triệt để các chuỗi dấu lộn xộn, dấu phẩy/chấm phẩy dính liền dấu ba chấm / hai chấm / chấm / than / hỏi
+    full_text = re.sub(r'[,;:]+\s*(\.{2,}|…+)', r'\1', full_text)
+    full_text = re.sub(r'(\.{2,}|…+)\s*[,;:]+', r'\1', full_text)
     full_text = re.sub(r'([.!?…]+)[,;:\s]+(?=[.!?…])', r'\1', full_text)
     full_text = re.sub(r'([.!?…]+)[,;:]+', r'\1', full_text)
     full_text = re.sub(r'[,;:]+([.!?…]+)', r'\1', full_text)
 
-    # 1. Dấu kết hợp hỏi + than (!? hoặc ?!)
-    full_text = re.sub(r'(?:![ \t]*\?|\?[ \t]*!)[!? \t\.]*', ' ___QMARK_EXCL___ ', full_text)
+    # 1. BẢO VỆ DẤU BA CHẤM (...) VÀ DẤU HAI CHẤM (..):
+    # Giữ nguyên 100%, tuyệt đối không thêm phẩy, không thêm dấu cách trước dấu
+    full_text = re.sub(r'(?:\.\s*){3,}|[…]+|\.{3,}', '___ELLIPSE_3___', full_text)
+    full_text = re.sub(r'\.{2}', '___DOTS_2___', full_text)
 
-    # 2. Dấu cảm thán: Đổi thành ', ! ' để nghỉ lâu hơn
-    full_text = re.sub(r'!+[! \t\.]*', ' ___EXCLAMATION___ ', full_text)
+    # 2. Dấu kết hợp hỏi + than (!? hoặc ?!)
+    full_text = re.sub(r'(?:![ \t]*\?|\?[ \t]*!)[!? \t\.]*', '___QMARK_EXCL___', full_text)
 
-    # 3. Dấu hỏi: Đổi thành ', ? ' để nghỉ lâu hơn
-    full_text = re.sub(r'\?+[! \t\.]*', ' ___QUESTION___ ', full_text)
+    # 3. Dấu cảm thán:
+    full_text = re.sub(r'!+[! \t\.]*', '___EXCLAMATION___', full_text)
 
-    # 4. Dấu ba chấm (. . ., ..., …)
-    full_text = re.sub(r'(?:\.\s*){3,}|[…]+|\.{3,}', ' ___ELLIPSE___ ', full_text)
+    # 4. Dấu hỏi:
+    full_text = re.sub(r'\?+[! \t\.]*', '___QUESTION___', full_text)
 
-    # 5. Dấu chấm: Chuẩn hóa ngắt câu ', . ' để Edge-TTS lấy hơi nghỉ tự nhiên
-    full_text = re.sub(r'\.+', ' ___PERIOD___ ', full_text)
+    # 5. Dấu chấm đơn:
+    full_text = re.sub(r'\.+', '___PERIOD___', full_text)
 
     # 6a. Dấu hai chấm: Chuẩn hóa ngắt thoại nhẹ nhàng (~180ms như chấm phẩy/phẩy)
-    full_text = re.sub(r':+', ' ___COLON___ ', full_text)
+    full_text = re.sub(r':+', '___COLON___', full_text)
 
     # 6b. Dấu chấm phẩy: Giữ nguyên để phục vụ ngắt trầm ngâm (~200-230ms)
-    full_text = re.sub(r';+', ' ___SEMICOLON___ ', full_text)
+    full_text = re.sub(r';+', '___SEMICOLON___', full_text)
 
     # 6c. Dấu phẩy: Đổi thành dấu chấm phẩy '; ' để kéo dài thời gian nghỉ (~180-230ms),
     # tránh ngắt nghỉ quá nhanh/hụt hơi như dấu phẩy mặc định (~80ms).
-    full_text = re.sub(r',+', ' ___COMMA___ ', full_text)
+    full_text = re.sub(r',+', '___COMMA___', full_text)
 
-    # 7. Khôi phục CHUẨN XÁC nhịp đọc: thêm phẩy đệm liền sát trước dấu cuối câu (,. ,! ,? ,!?) để Edge TTS nghỉ vừa vặn:
+    # 7. Khôi phục CHUẨN XÁC nhịp đọc:
+    # Thêm phẩy đệm liền sát trước dấu cuối câu (,. ,! ,? ,!?) - TUYỆT ĐỐI KHÔNG CÓ DẤU CÁCH
     full_text = full_text.replace('___QMARK_EXCL___', ',!? ')
     full_text = full_text.replace('___EXCLAMATION___', ',! ')
     full_text = full_text.replace('___QUESTION___', ',? ')
-    full_text = full_text.replace('___ELLIPSE___', '... ')
     full_text = full_text.replace('___PERIOD___', ',. ')
     # Dấu hai chấm chuyển thành '; ' (ngắt nhẹ tự nhiên ~180ms, tránh khựng : ... kéo dài)
     full_text = full_text.replace('___COLON___', '; ')
@@ -776,13 +813,24 @@ def sanitize_tts_text(
     # Dấu phẩy chuyển thành '; ' để tạo khoảng nghỉ sâu vừa vặn
     full_text = full_text.replace('___COMMA___', '; ')
 
+    # Dấu ... và .. giữ nguyên 100%, không thêm gì cả, dính liền từ trước và cách từ sau
+    full_text = full_text.replace('___ELLIPSE_3___', '... ')
+    full_text = full_text.replace('___DOTS_2___', '.. ')
+
     # Dọn dẹp khoảng trắng quanh dấu câu:
     full_text = re.sub(r'\s+([,;])', r'\1', full_text)
-    # Dấu ba chấm giữ nguyên nguyên bản 100%, không dính phẩy hay chấm phẩy ở trước hoặc sau
-    full_text = re.sub(r'[,;]\s*(\.{3,}|…+)', r' \1', full_text)
-    full_text = re.sub(r'(\.{3,}|…+)\s*[,;]+', r'\1 ', full_text)
-    # Các dấu kết câu . ! ? chuẩn hóa đúng dạng có phẩy liền sát: ',.' / ',!' / ',?'
-    full_text = re.sub(r'[,;]\s*([.!?]+)', r',\1', full_text)
+    full_text = re.sub(r'\s+([.!?…])', r'\1', full_text)
+    # Dấu ba chấm & hai chấm giữ nguyên nguyên bản 100%, không dính phẩy hay chấm phẩy ở trước hoặc sau
+    full_text = re.sub(r'[,;]\s*(\.{2,}|…+)', r'\1', full_text)
+    full_text = re.sub(r'(\.{2,}|…+)\s*[,;]+', r'\1 ', full_text)
+    # Khử trường hợp dấu phẩy bị dính vào ... hoặc ..
+    full_text = re.sub(r',(\.{2,})', r'\1', full_text)
+    full_text = re.sub(r'(\.{2,}),', r'\1', full_text)
+    # Các dấu kết câu . ! ? chuẩn hóa đúng dạng có phẩy liền sát ở TRƯỚC: ',.' / ',!' / ',?' / ',!?'
+    full_text = re.sub(r'[,;]*\s*,\s*([.!?]+)', r',\1', full_text)
+    # Khử trường hợp dấu phẩy bị lộn ra sau dấu kết câu (., -> ,.)
+    full_text = re.sub(r'([.!?]+)\s*,+', r',\1', full_text)
+
     full_text = re.sub(r'([.!?…]+)(?=[^\s,.:;!?…])', r'\1 ', full_text)
     full_text = re.sub(r'([,;])(?=[^\s,.:;!?…])', r'\1 ', full_text)
 
@@ -791,8 +839,9 @@ def sanitize_tts_text(
     full_text = re.sub(r':{2,}', '; ', full_text)
     full_text = re.sub(r',{2,}', ', ', full_text)
     full_text = re.sub(r'[,;]\s*[,;]+', '; ', full_text)
-    # Khử trường hợp dấu phẩy bị lặp trước dấu kết câu: ví dụ ';,.' hoặc ',,.'
+    # Khử trường hợp dấu phẩy bị lặp trước dấu kết câu: ví dụ ';,.' hoặc ',,.' -> đưa về chuẩn duy nhất ',.'
     full_text = re.sub(r'[,;]+\s*,\s*([.!?]+)', r',\1', full_text)
+    full_text = re.sub(r'[,;]{2,}\s*([.!?]+)', r',\1', full_text)
     # Dọn khoảng trắng dư
     full_text = re.sub(r'\s+', ' ', full_text).strip()
     full_text = re.sub(r'^[,\.:;!?…\s]+', '', full_text)
@@ -820,6 +869,11 @@ def sanitize_tts_text(
     full_text = re.sub(r'[,;:\s]+$', '', full_text)
     if full_text and full_text[-1] not in '.!?…':
         full_text += ',.'
+
+    # Đảm bảo tuyệt đối: dấu phẩy LUÔN đứng TRƯỚC dấu kết câu (,. ,! ,? ,!?) và KHÔNG có khoảng cách
+    full_text = re.sub(r'([.!?]+)\s*,+', r',\1', full_text)
+    full_text = re.sub(r'\s+([,;])', r'\1', full_text)
+    full_text = re.sub(r'\s+([.!?…])', r'\1', full_text)
 
     # Chuẩn hóa nhịp ngắt thoại cho câu nói nhân vật / lời dẫn và kết thúc thoại
     full_text = format_dialogue_flow(full_text)
@@ -855,7 +909,7 @@ def split_text_into_chunks(text: str, max_chars: int = 420) -> List[str]:
     clean_raw = re.sub(r'[\r\n\t]+', ' ', text).strip()
     clean_raw = re.sub(r' {2,}', ' ', clean_raw)
 
-    raw_sents = re.split(r'([.!?…]+(?:\s+|$))', clean_raw)
+    raw_sents = re.split(r'([,;]*[.!?…]+(?:\s+|$))', clean_raw)
     line_sents = []
     if len(raw_sents) > 1:
         for i in range(0, len(raw_sents) - 1, 2):
@@ -938,9 +992,9 @@ def split_text_into_chunks(text: str, max_chars: int = 420) -> List[str]:
         clean_chunk = re.sub(r'[\r\n\t]+', ' ', clean_chunk)
         clean_chunk = re.sub(r' {2,}', ' ', clean_chunk)
         clean_chunk = re.sub(r':+$', ';', clean_chunk)
-        # Chunk cuối cùng của chương: nếu không có dấu câu thì kết thúc bằng dấu ngắt câu , .
+        # Chunk cuối cùng của chương: nếu không có dấu câu thì kết thúc bằng dấu ngắt câu ,.
         if clean_chunk[-1] not in '.!?…;,':
-            clean_chunk += ', .'
+            clean_chunk += ',.'
         chunks.append(clean_chunk)
 
     return [c for c in chunks if c.strip() and re.search(r'[\w\dÀ-ỹ]', c)]
@@ -1058,8 +1112,7 @@ async def _read_chapter_text_from_db_or_disk(session, novel_id: int, novel_folde
     ver_final = res_ver.scalar_one_or_none()
 
     if ver_final:
-        if ver_final.content and ver_final.content.strip():
-            return ver_final.content
+        # 1. Ưu tiên đọc file đĩa 04_KetQua (nguồn gốc chuẩn và sạch nhất)
         if ver_final.file_path and os.path.exists(ver_final.file_path) and os.path.getsize(ver_final.file_path) > 0:
             try:
                 txt = read_version_file_content(ver_final.file_path)
@@ -1067,6 +1120,8 @@ async def _read_chapter_text_from_db_or_disk(session, novel_id: int, novel_folde
                     return txt
             except Exception:
                 pass
+        if ver_final.content and ver_final.content.strip():
+            return ver_final.content
 
     # 2. Fallback đọc file đĩa 04_KetQua
     txt_disk = _read_chapter_text(novel_folder, chapter.chapter_no)
@@ -1167,7 +1222,7 @@ async def _finalize_chapter(ch_info: dict, voice: str, chapters_cache_dir: str, 
     # Tối ưu siêu tốc O(1): Lấy trực tiếp mốc thời gian kết thúc (end cue) hoặc metadata duration
     # đã được engine tính toán chuẩn xác sẵn trong subchunk JSON, chỉ fallback FFmpeg khi không có cue.
     # Nhờ đó không phải spawn 20-50 tiến trình FFmpeg ngoài cho mỗi chương, loại bỏ hoàn toàn hiện tượng đơ lag!
-    silence_sec_val = ch_info.get("silence_sec", 0.35)
+    silence_sec_val = ch_info.get("silence_sec", 0.0)
     chunk_durations_real = []
     for sc_idx_d, sc_mp3_path in enumerate(sub_mp3s):
         sc_dur = 0.0
@@ -1236,7 +1291,7 @@ async def _finalize_chapter(ch_info: dict, voice: str, chapters_cache_dir: str, 
         )
 
     # ── 2. Ghép các phân đoạn Audio thành Chapter MP3 (Chỉ khoá Semaphore cho FFmpeg) ──
-    silence_sec = ch_info.get("silence_sec", 0.35)
+    silence_sec = ch_info.get("silence_sec", 0.0)
     async with FFMPEG_MERGE_SEMAPHORE:
         success = await asyncio.to_thread(merge_audio_files, sub_mp3s, chapter_mp3, silence_sec, True)
 
@@ -1596,12 +1651,12 @@ async def run_tts_volume_pipeline(
     tts_pitch: str = str(await get_active_setting("TTS_PITCH") or "+0Hz")
     
     silence_ms_str = await get_active_setting("TTS_SILENCE_MS")
-    silence_sec: float = 0.15
+    silence_sec: float = 0.0
     if silence_ms_str:
         try:
             silence_sec = max(0.0, float(silence_ms_str) / 1000.0)
         except Exception:
-            silence_sec = 0.15
+            silence_sec = 0.0
 
     max_chars_str = await get_active_setting("TTS_CHUNK_MAX_CHARS")
     max_chars: int = 420

@@ -41,6 +41,9 @@ def cleanup(dry_run: bool = False):
 
             # Các file nằm trực tiếp dưới thư mục truyện (bên ngoài thư mục chapters/)
             for item in os.listdir(novel_path):
+                # Bảo vệ file metadata bắt đầu bằng _ (như _export_meta.json)
+                if item.startswith("_"):
+                    continue
                 item_path = os.path.join(novel_path, item)
                 if os.path.isfile(item_path):
                     # Đây là file mp3 hoặc json gộp nhiều chương (vd: Ch1_to_Ch70.mp3)

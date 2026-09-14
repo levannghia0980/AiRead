@@ -97,6 +97,7 @@ async def get_novel_detail(novel_id: int = Path(...)) -> Dict[str, Any]:
 
         version_types_map: Dict[int, set] = {}
         fallback_map: Dict[int, bool] = {}
+        fixed_map: Dict[int, bool] = {}
         swept_error_map: Dict[int, bool] = {}
 
         # Ưu tiên phiên bản dịch hiển thị thực tế: FINAL -> EDITED -> CONTEXTT -> LLM -> GG
@@ -125,8 +126,10 @@ async def get_novel_detail(novel_id: int = Path(...)) -> Dict[str, Any]:
                     pass
 
             if text_to_check:
-                if 'fallback-word' in text_to_check or 'fixed-word' in text_to_check or 'fixed-sentence' in text_to_check:
+                if 'fallback-word' in text_to_check:
                     fallback_map[ch_id] = True
+                if 'fixed-word' in text_to_check or 'fixed-sentence' in text_to_check:
+                    fixed_map[ch_id] = True
                 if 'swept-error' in text_to_check or 'swept-chinese' in text_to_check:
                     swept_error_map[ch_id] = True
 
@@ -154,6 +157,7 @@ async def get_novel_detail(novel_id: int = Path(...)) -> Dict[str, Any]:
                 "status": final_status,
                 "error_msg": c.error_message,
                 "has_fallback_words": fallback_map.get(c.id, False),
+                "has_fixed_words": fixed_map.get(c.id, False),
                 "has_swept_errors": swept_error_map.get(c.id, False),
                 "token_count": 0,
                 "updated_at": c.updated_at.isoformat() if c.updated_at else ""
@@ -287,11 +291,15 @@ async def get_chapter_content(
         file_path = ""
         if ver:
             file_path = ver.file_path or ""
-            if ver.content:
+            # Ưu tiên đọc từ file đĩa (04_KetQua) để luôn phản ánh bản dịch chuẩn và sạch nhất
+            if file_path and os.path.exists(file_path):
+                try:
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read()
+                except Exception:
+                    content = ver.content or ""
+            elif ver.content:
                 content = ver.content
-            elif ver.file_path and os.path.exists(ver.file_path):
-                with open(ver.file_path, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
                     
         return {
             "status": "success",
@@ -914,9 +922,11 @@ async def _process_and_import_txt_content(
                 rough_title = novel.title_rough or raw_title
             novel_id = novel.id
 
-    # Regex nhận diện các chương: 第X章 ... hoặc Chương X: ...
+    # Regex nhận diện các chương: hỗ trợ chương đơn (第X章 / Chương X), và chương có tiền tố quyển (第一卷：... 第1章)
+    ch_header_pattern = r'(?:(?:第\s*[0-9一二三四五六七八九十百千]+\s*[卷部集分篇][：:\s\-]+[^\n]*?)?第\s*([0-9一二三四五六七八九十百千]+)\s*章[^\n]*|Chương\s*(\d+)[^\n]*)'
+    ch_lookahead_pattern = r'(?:(?:第\s*[0-9一二三四五六七八九十百千]+\s*[卷部集分篇][：:\s\-]+[^\n]*?)?第\s*(?:[0-9一二三四五六七八九十百千]+)\s*章[^\n]*|Chương\s*(?:\d+)[^\n]*)'
     ch_pattern = re.compile(
-        r'(?:^|\n)(第\s*(\d+)\s*章[^\n]*|Chương\s*(\d+)[^\n]*)(.*?)(?=\n(?:第\s*\d+\s*章|Chương\s*\d+)|\Z)',
+        r'(?:^|\n)(' + ch_header_pattern + r')(.*?)(?=\n' + ch_lookahead_pattern + r'|\Z)',
         re.DOTALL
     )
     matches = list(ch_pattern.finditer(full_text))
@@ -938,7 +948,7 @@ async def _process_and_import_txt_content(
 
         header = m.group(1).strip()
         num_str = m.group(2) or m.group(3)
-        num = int(num_str) if num_str else 0
+        num = int(num_str) if (num_str and num_str.isdigit()) else 0
         full_content = (header + "\n\n" + body).strip()
         cleaned_chapters.append((num, header, full_content))
 
