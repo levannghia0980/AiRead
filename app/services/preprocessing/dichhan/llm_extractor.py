@@ -442,29 +442,45 @@ async def extract_batch_entities_direct_llm(
 {json.dumps(existing_entities, ensure_ascii=False, indent=2)}
 """
 
-    prompt = f"""Bạn là chuyên gia ngôn ngữ học và dịch thuật tiểu thuyết Trung - Việt cao cấp, sở hữu vốn từ vựng Hán - Việt bác học và khả năng phân tích ngữ pháp, bối cảnh tiếng Trung chuyên sâu.
+    prompt = f"""Bạn là chuyên gia ngôn ngữ học và dịch thuật tiểu thuyết cao cấp, sở hữu vốn từ vựng Hán - Việt bác học và khả năng phân tích bối cảnh, ngữ pháp sâu sắc.
 
-🔴 NHIỆM VỤ: ĐỌC HIỂU TOÀN VĂN LÔ CHƯƠNG TIỂU THUYẾT VÀ BÓC TÁCH TOÀN BỘ CÁC THỰC THỂ TÊN RIÊNG:
-Đọc kỹ toàn bộ nội dung trong các thẻ <chapter_X>...</chapter_X> và trích xuất tất cả các danh từ riêng, thuật ngữ thế giới quan quan trọng mà khi dịch sang tiếng Việt BẮT BUỘC PHẢI VIẾT HOA:
+🔴 ĐỊNH NGHĨA & MỤC TIÊU TỐI CAO:
+BÓC TÁCH TẤT CẢ TÊN RIÊNG CỦA MỌI THỰC THỂ HOẶC TÊN CHUNG CỦA CÁC THỰC THỂ MANG BẢN SẮC TRONG TOÀN BỘ LÔ CHƯƠNG.
+🎯 TIÊU CHUẨN VÀNG: Bất kỳ danh từ riêng, tên gọi nào mà khi dịch sang tiếng Việt BẮT BUỘC PHẢI VIẾT HOA (tên người, tên con vật, tên đồ vật, địa danh, võ học kỹ năng, hệ thống, tổ chức) thì ĐỀU LÀ THỰC THỂ CẦN BÓC TÁCH!
 
-🎯 CÁC PHÂN LOẠI THỰC THỂ BẮT BUỘC:
-1. 'NAME': Tên người, họ tên, danh xưng, đạo hiệu, ngoại hiệu, tôn xưng, tước hiệu.
-   * LƯU Ý QUAN TRỌNG VỀ HỌ '杨': Trong mọi tên nhân vật (ví dụ: 杨大彪, 杨温, 杨霆, 杨化仙...), họ '杨' BẮT BUỘC dịch là 'Dương' (Dương Đại Bưu, Dương Ôn, Dương Đình, Dương Hóa Tiên...), TUYỆT ĐỐI CẤM dịch thành 'Tạ'.
-   * Nhận diện chuẩn xác tên nhân vật chính, nhân vật phụ, đối thủ (ví dụ: 谢尽欢 -> Tạ Tận Hoan, 令狐青墨 -> Lệnh Hồ Thanh Mặc, 长宁郡主 -> Trường Ninh quận chúa, 刘庆之 -> Lưu Khánh Chi...).
-2. 'CREATURE': Linh thú, thần thú, yêu thú, dị thú, cự thú hoặc THÚ CƯNG CÓ TÊN RIÊNG.
-   * ĐẶC BIỆT CHÚ Ý: Nhân vật đặt tên cho con vật cưng, linh sủng bằng từ ngữ đời thường (ví dụ: con hắc ưng / chim ưng được đặt tên là 【煤球】 ➔ 'Môi Cầu', CREATURE, con hắc ưng; hoặc 【黑翅大鹏】 ➔ 'Hắc Sí Đại Bàng'...). BẮT BUỘC BÓC TÁCH, tuyệt đối không được bỏ qua!
-3. 'PLACE': Địa danh, núi non, sông hồ, quận huyện, phủ nha, thành trấn, quốc gia (ví dụ: 紫徽山 -> Tử Huy Sơn, 万安县 -> Vạn An Huyện...).
-4. 'SECT': Tông môn, bang phái, thế lực, vương triều, cơ quan, quân vệ triều đình (ví dụ: 大乾王朝 -> Đại Càn Vương Triều, 赤麟卫 -> Xích Lân Vệ...).
-5. 'ITEM': Thần binh, pháp bảo, vũ khí, bảo vật quý, bí tịch, tác phẩm (ví dụ: 正伦剑 -> Chính Luân Kiếm, 天罡锏 -> Thiên Cương Giản...).
-6. 'SKILL': Chiêu thức võ học, công pháp, tâm pháp, bí thuật, dị năng (ví dụ: 欢喜心经 -> Hoan Hỷ Tâm Kinh...).
+🎯 HỆ THỐNG PHÂN LOẠI THỰC THỂ (5 LOẠI PHỔ BIẾN + LOẠI ĐẶC BIỆT KHÁC):
+1. 'NAME': Tên người, nhân vật:
+   - Họ tên đầy đủ, tên chữ, tên gọi thân mật, đạo hiệu, danh xưng, tước hiệu, tôn xưng.
+   - Ngoại hiệu giang hồ / hảo hán / danh hiệu võ lâm (ví dụ: Bạch Y Tú Sĩ, Thác Tháp Thiên Vương, Mạc Trước Thiên, Báo Tử Đầu...).
+   - Tên cúng cơm, tên dân dã nông thôn của nhân vật (ví dụ: Nhị Cẩu, Đại Tráng, Mộc Đầu, Thiết Đản...).
+   - Lưu ý họ '杨' trong tên người luôn luôn dịch là 'Dương' (Dương Đại Bưu, Dương Tiễn, Dương Quá...).
 
-🎯 NGUYÊN TẮC CHUYỂN NGỮ HÁN - VIỆT BÁC HỌC:
-- Dịch đúng âm Hán-Việt văn học cổ điển chuẩn 100% tiếng Việt có dấu.
-- Tuyệt đối không để sót chữ Hán hay Pinyin trong 'vietnamese_name'.
-- Tách sạch động từ/hư từ đứng liền trước hoặc liền sau (ví dụ: '给南宫仙子' -> chỉ lấy '南宫仙子'; '杨大彪神色' -> chỉ lấy '杨大彪').
+2. 'CREATURE': Tên con vật, linh thú, yêu thú:
+   - Tên riêng của thú cưng, con vật nuôi, linh sủng được đặt tên (kể cả tên bình dân nông thôn như: Hắc Cẩu, Bạch Miêu, Than Cục / Môi Cầu, Bánh Bao, Đại Hắc, Tiểu Hoàng...).
+   - Tên chung của các chủng loài yêu thú, thần thú, dị thú mang bản sắc (ví dụ: Kim Sí Đại Bàng, Cửu Vĩ Thiên Hồ, Hắc Sí Ma Viên, Thôn Thiên Mãng...).
+
+3. 'PLACE': Địa danh, không gian:
+   - Núi non, sông biển, hồ đầm, thôn xóm, trấn, quận huyện, thành trì, quốc gia, bí cảnh, động phủ, giới diện, cấm địa.
+
+4. 'SECT': Thế lực, tổ chức:
+   - Tông môn, môn phái, thế gia gia tộc, bang hội, triều đình, hoàng triều, cơ quan, quân đoàn, phủ nha.
+
+5. 'ITEM': Vật phẩm, trang bị, bảo vật:
+   - Pháp bảo, thần binh, vũ khí, đan dược, linh thảo, linh dược, điển tịch, tác phẩm văn học, điển cố nghệ thuật.
+
+6. 'SKILL': Võ học, công pháp:
+   - Tuyệt kỹ võ công, tâm pháp tu luyện, thần thông, chiêu thức, trận pháp, bí thuật, cấm thuật.
+
+7. 'OTHER': Mọi thực thể đặc biệt khác:
+   - Hệ thống (System), bảng trạng thái, cảnh giới tu vi đặc biệt, thần vị, danh xưng quy ước thế giới quan riêng biệt.
+
+🎯 NGUYÊN TẮC DỊCH TÊN:
+- Dịch thật chuẩn, thật hay, đúng âm Hán-Việt văn học bác học chuẩn 100% tiếng Việt có dấu.
+- Với tên riêng dân dã/nông thôn (của người hoặc con vật như Hắc Cẩu, Bạch Miêu, Nhị Cẩu...): giữ đúng tính chất tên riêng được gọi.
+- Tách sạch động từ/tiền tố ngữ pháp đứng liền trước (như 给, 杀, 救, 看, 当, 见...) và trạng từ/hành động đứng liền sau (như 神色, 冷笑, 说道, 喝道...).
 - Đánh giá 'evaluation':
   * "TÊN CỐ ĐỊNH": Cho 'NAME', 'PLACE', 'SECT', 'ITEM' (tên riêng cố định 1-1).
-  * "NÊN DÙNG BẢN SẮC": Cho 'SKILL', 'CREATURE', binh khí.
+  * "NÊN DÙNG BẢN SẮC": Cho 'SKILL', 'CREATURE', 'OTHER'.
 {existing_ref}
 === VĂN BẢN TOÀN BỘ LÔ CHƯƠNG (RAW TEXT) ===
 {masked_text}
@@ -472,12 +488,16 @@ async def extract_batch_entities_direct_llm(
 Yêu cầu trả về DUY NHẤT một JSON object theo đúng định dạng sau, không kèm bất kỳ lời dẫn nào:
 {{
   "entities": [
-    {{"chinese_name": "谢尽欢", "vietnamese_name": "Tạ Tận Hoan", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "nhân vật chính"}},
-    {{"chinese_name": "煤球", "vietnamese_name": "Môi Cầu", "entity_type": "CREATURE", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "con hắc ưng của Tạ Tận Hoan"}},
-    {{"chinese_name": "大乾王朝", "vietnamese_name": "Đại Càn Vương Triều", "entity_type": "SECT", "evaluation": "TÊN CỐ ĐỊNH", "gender": null, "role": "vương triều bối cảnh"}},
-    {{"chinese_name": "紫徽山", "vietnamese_name": "Tử Huy Sơn", "entity_type": "PLACE", "evaluation": "TÊN CỐ ĐỊNH", "gender": null, "role": "địa danh núi"}},
-    {{"chinese_name": "正伦剑", "vietnamese_name": "Chính Luân Kiếm", "entity_type": "ITEM", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "thần binh kiếm"}},
-    {{"chinese_name": "天罡锏", "vietnamese_name": "Thiên Cương Giản", "entity_type": "ITEM", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "thần binh binh khí"}}
+    {{"chinese_name": "林冲", "vietnamese_name": "Lâm Xung", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "nhân vật"}},
+    {{"chinese_name": "豹子头", "vietnamese_name": "Báo Tử Đầu", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "ngoại hiệu của Lâm Xung"}},
+    {{"chinese_name": "二狗", "vietnamese_name": "Nhị Cẩu", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "tên cúng cơm nông thôn"}},
+    {{"chinese_name": "黑狗", "vietnamese_name": "Hắc Cẩu", "entity_type": "CREATURE", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "tên riêng con chó nuôi"}},
+    {{"chinese_name": "金翅大鹏", "vietnamese_name": "Kim Sí Đại Bàng", "entity_type": "CREATURE", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "chủng loài thần thú"}},
+    {{"chinese_name": "青云宗", "vietnamese_name": "Thanh Vân Tông", "entity_type": "SECT", "evaluation": "TÊN CỐ ĐỊNH", "gender": null, "role": "tông môn"}},
+    {{"chinese_name": "落霞峰", "vietnamese_name": "Lạc Hà Phong", "entity_type": "PLACE", "evaluation": "TÊN CỐ ĐỊNH", "gender": null, "role": "địa danh núi"}},
+    {{"chinese_name": "青龙偃月刀", "vietnamese_name": "Thanh Long Yển Nguyệt Đao", "entity_type": "ITEM", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "thần binh binh khí"}},
+    {{"chinese_name": "太极拳", "vietnamese_name": "Thái Cực Quyền", "entity_type": "SKILL", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "công pháp võ học"}},
+    {{"chinese_name": "大反派系统", "vietnamese_name": "Đại Phản Phái Hệ Thống", "entity_type": "OTHER", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "hệ thống hỗ trợ"}}
   ]
 }}
 """
@@ -534,7 +554,6 @@ Yêu cầu trả về DUY NHẤT một JSON object theo đúng định dạng sa
                 e["vietnamese_name"] = unmask_text_with_dictionary(e["vietnamese_name"], mapping_table)
 
     from app.services.preprocessing.dichhan.hanviet_data import sanitize_entity_vietnamese
-    CLEANED_JUNK_PREFIXES = ("给", "过", "杀", "看", "见", "当", "算", "做", "被", "在", "站", "摆", "出", "了", "知", "父", "向", "跟", "和", "对", "把", "是", "有", "个", "这", "那", "的")
 
     final_entities = []
     seen = set()
@@ -545,14 +564,6 @@ Yêu cầu trả về DUY NHẤT một JSON object theo đúng định dạng sa
         vn_name = e.get("vietnamese_name", "").strip()
         if not ch_name or not vn_name or len(ch_name) < 2 or ch_name in seen:
             continue
-
-        for p in CLEANED_JUNK_PREFIXES:
-            if ch_name.startswith(p) and len(ch_name) >= 3:
-                ch_name = ch_name[len(p):].strip()
-                break
-
-        if ch_name.endswith("神") and len(ch_name) >= 4 and not ch_name.endswith("眼神") and not ch_name.endswith("精神"):
-            ch_name = ch_name[:-1].strip()
 
         e["chinese_name"] = ch_name
         if existing_entities and ch_name in existing_entities:
