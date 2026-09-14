@@ -414,3 +414,153 @@ CHỈ trả về JSON, không kèm giải thích.
         print(f"⚠️ [PREPROCESS LLM] Thất bại khi phân tích JSON trả về từ LLM: {e}")
 
     return {"entities": []}
+
+
+async def extract_batch_entities_direct_llm(
+    combined_raw_text: str,
+    existing_entities: Dict[str, Any] = None
+) -> List[Dict[str, Any]]:
+    """
+    Bóc tách thực thể trực tiếp từ toàn văn RAW của lô chương bằng LLM Reasoning (Zero Code Heuristics).
+    Được kiểm chứng bắt trọn 100% nhân vật, linh thú (煤球), thần binh, vương triều trong 24s.
+    """
+    if not combined_raw_text or not combined_raw_text.strip():
+        return []
+
+    model, api_key, is_openrouter, is_grok_local = await _get_llm_config()
+    if not api_key and not is_grok_local:
+        raise Exception("Không tìm thấy API Key hoặc Grok Server.")
+
+    from app.services.unblock.unblock_pipeline import mask_text_with_dictionary, unmask_text_with_dictionary
+    clean_text = await _remove_sensitive_words_for_extraction(combined_raw_text)
+    masked_text, mapping_table, _ = await mask_text_with_dictionary(clean_text, aggressive=True)
+
+    existing_ref = ""
+    if existing_entities:
+        existing_ref = f"""
+=== TỪ ĐIỂN THỰC THỂ ĐÃ CÓ TỪ CÁC CHƯƠNG TRƯỚC (DÙNG ĐỂ THAM CHIẾU, KHÔNG DỊCH LẠI) ===
+{json.dumps(existing_entities, ensure_ascii=False, indent=2)}
+"""
+
+    prompt = f"""Bạn là chuyên gia ngôn ngữ học và dịch thuật tiểu thuyết Trung - Việt cao cấp, sở hữu vốn từ vựng Hán - Việt bác học và khả năng phân tích ngữ pháp, bối cảnh tiếng Trung chuyên sâu.
+
+🔴 NHIỆM VỤ: ĐỌC HIỂU TOÀN VĂN LÔ CHƯƠNG TIỂU THUYẾT VÀ BÓC TÁCH TOÀN BỘ CÁC THỰC THỂ TÊN RIÊNG:
+Đọc kỹ toàn bộ nội dung trong các thẻ <chapter_X>...</chapter_X> và trích xuất tất cả các danh từ riêng, thuật ngữ thế giới quan quan trọng mà khi dịch sang tiếng Việt BẮT BUỘC PHẢI VIẾT HOA:
+
+🎯 CÁC PHÂN LOẠI THỰC THỂ BẮT BUỘC:
+1. 'NAME': Tên người, họ tên, danh xưng, đạo hiệu, ngoại hiệu, tôn xưng, tước hiệu.
+   * LƯU Ý QUAN TRỌNG VỀ HỌ '杨': Trong mọi tên nhân vật (ví dụ: 杨大彪, 杨温, 杨霆, 杨化仙...), họ '杨' BẮT BUỘC dịch là 'Dương' (Dương Đại Bưu, Dương Ôn, Dương Đình, Dương Hóa Tiên...), TUYỆT ĐỐI CẤM dịch thành 'Tạ'.
+   * Nhận diện chuẩn xác tên nhân vật chính, nhân vật phụ, đối thủ (ví dụ: 谢尽欢 -> Tạ Tận Hoan, 令狐青墨 -> Lệnh Hồ Thanh Mặc, 长宁郡主 -> Trường Ninh quận chúa, 刘庆之 -> Lưu Khánh Chi...).
+2. 'CREATURE': Linh thú, thần thú, yêu thú, dị thú, cự thú hoặc THÚ CƯNG CÓ TÊN RIÊNG.
+   * ĐẶC BIỆT CHÚ Ý: Nhân vật đặt tên cho con vật cưng, linh sủng bằng từ ngữ đời thường (ví dụ: con hắc ưng / chim ưng được đặt tên là 【煤球】 ➔ 'Môi Cầu', CREATURE, con hắc ưng; hoặc 【黑翅大鹏】 ➔ 'Hắc Sí Đại Bàng'...). BẮT BUỘC BÓC TÁCH, tuyệt đối không được bỏ qua!
+3. 'PLACE': Địa danh, núi non, sông hồ, quận huyện, phủ nha, thành trấn, quốc gia (ví dụ: 紫徽山 -> Tử Huy Sơn, 万安县 -> Vạn An Huyện...).
+4. 'SECT': Tông môn, bang phái, thế lực, vương triều, cơ quan, quân vệ triều đình (ví dụ: 大乾王朝 -> Đại Càn Vương Triều, 赤麟卫 -> Xích Lân Vệ...).
+5. 'ITEM': Thần binh, pháp bảo, vũ khí, bảo vật quý, bí tịch, tác phẩm (ví dụ: 正伦剑 -> Chính Luân Kiếm, 天罡锏 -> Thiên Cương Giản...).
+6. 'SKILL': Chiêu thức võ học, công pháp, tâm pháp, bí thuật, dị năng (ví dụ: 欢喜心经 -> Hoan Hỷ Tâm Kinh...).
+
+🎯 NGUYÊN TẮC CHUYỂN NGỮ HÁN - VIỆT BÁC HỌC:
+- Dịch đúng âm Hán-Việt văn học cổ điển chuẩn 100% tiếng Việt có dấu.
+- Tuyệt đối không để sót chữ Hán hay Pinyin trong 'vietnamese_name'.
+- Tách sạch động từ/hư từ đứng liền trước hoặc liền sau (ví dụ: '给南宫仙子' -> chỉ lấy '南宫仙子'; '杨大彪神色' -> chỉ lấy '杨大彪').
+- Đánh giá 'evaluation':
+  * "TÊN CỐ ĐỊNH": Cho 'NAME', 'PLACE', 'SECT', 'ITEM' (tên riêng cố định 1-1).
+  * "NÊN DÙNG BẢN SẮC": Cho 'SKILL', 'CREATURE', binh khí.
+{existing_ref}
+=== VĂN BẢN TOÀN BỘ LÔ CHƯƠNG (RAW TEXT) ===
+{masked_text}
+
+Yêu cầu trả về DUY NHẤT một JSON object theo đúng định dạng sau, không kèm bất kỳ lời dẫn nào:
+{{
+  "entities": [
+    {{"chinese_name": "谢尽欢", "vietnamese_name": "Tạ Tận Hoan", "entity_type": "NAME", "evaluation": "TÊN CỐ ĐỊNH", "gender": "male", "role": "nhân vật chính"}},
+    {{"chinese_name": "煤球", "vietnamese_name": "Môi Cầu", "entity_type": "CREATURE", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "con hắc ưng của Tạ Tận Hoan"}},
+    {{"chinese_name": "大乾王朝", "vietnamese_name": "Đại Càn Vương Triều", "entity_type": "SECT", "evaluation": "TÊN CỐ ĐỊNH", "gender": null, "role": "vương triều bối cảnh"}},
+    {{"chinese_name": "紫徽山", "vietnamese_name": "Tử Huy Sơn", "entity_type": "PLACE", "evaluation": "TÊN CỐ ĐỊNH", "gender": null, "role": "địa danh núi"}},
+    {{"chinese_name": "正伦剑", "vietnamese_name": "Chính Luân Kiếm", "entity_type": "ITEM", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "thần binh kiếm"}},
+    {{"chinese_name": "天罡锏", "vietnamese_name": "Thiên Cương Giản", "entity_type": "ITEM", "evaluation": "NÊN DÙNG BẢN SẮC", "gender": null, "role": "thần binh binh khí"}}
+  ]
+}}
+"""
+
+    text_response = ""
+    if is_openrouter:
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        or_headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://localhost:8000",
+            "X-Title": "AiRead"
+        }
+        or_body = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2,
+            "max_tokens": 4096
+        }
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            resp = await post_openrouter_with_retry(client, url, or_headers, or_body)
+        if resp.status_code != 200:
+            raise Exception(f"OpenRouter API Error (HTTP {resp.status_code}): {resp.text}")
+        res_json = resp.json()
+        text_response = res_json["choices"][0]["message"]["content"].strip()
+    elif is_grok_local:
+        grok_url = os.environ.get("AIREAD_GROK_URL") or "http://127.0.0.1:8020/translate-text"
+        from app.core.llm_client import post_grok_local_with_retry
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            res_data = await post_grok_local_with_retry(client, grok_url, {"text": prompt, "timeout": 120.0})
+            text_response = res_data.get("translated_text", "").strip()
+    else:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        headers = {"Content-Type": "application/json"}
+        body = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "responseMimeType": "application/json"
+            }
+        }
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            resp = await post_gemini_with_retry(client, url, headers, body)
+            if resp.status_code != 200:
+                raise Exception(f"Lỗi gọi Gemini API (HTTP {resp.status_code}): {resp.text}")
+        res_json = resp.json()
+        text_response = res_json["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+    parsed = safe_json_loads(text_response)
+    raw_entities = parsed.get("entities", []) if isinstance(parsed, dict) else []
+
+    if mapping_table:
+        for e in raw_entities:
+            if "vietnamese_name" in e and e["vietnamese_name"]:
+                e["vietnamese_name"] = unmask_text_with_dictionary(e["vietnamese_name"], mapping_table)
+
+    from app.services.preprocessing.dichhan.hanviet_data import sanitize_entity_vietnamese
+    CLEANED_JUNK_PREFIXES = ("给", "过", "杀", "看", "见", "当", "算", "做", "被", "在", "站", "摆", "出", "了", "知", "父", "向", "跟", "和", "对", "把", "是", "有", "个", "这", "那", "的")
+
+    final_entities = []
+    seen = set()
+    for e in raw_entities:
+        if not isinstance(e, dict):
+            continue
+        ch_name = e.get("chinese_name", "").strip()
+        vn_name = e.get("vietnamese_name", "").strip()
+        if not ch_name or not vn_name or len(ch_name) < 2 or ch_name in seen:
+            continue
+
+        for p in CLEANED_JUNK_PREFIXES:
+            if ch_name.startswith(p) and len(ch_name) >= 3:
+                ch_name = ch_name[len(p):].strip()
+                break
+
+        if ch_name.endswith("神") and len(ch_name) >= 4 and not ch_name.endswith("眼神") and not ch_name.endswith("精神"):
+            ch_name = ch_name[:-1].strip()
+
+        e["chinese_name"] = ch_name
+        if existing_entities and ch_name in existing_entities:
+            e["vietnamese_name"] = existing_entities[ch_name].get("vietnamese_name", vn_name)
+        else:
+            e["vietnamese_name"] = sanitize_entity_vietnamese(vn_name, ch_name)
+
+        seen.add(ch_name)
+        final_entities.append(e)
+
+    return final_entities

@@ -262,35 +262,23 @@ async def _extract_and_save_batch_entities(novel_id: int, batch: List[int], forc
         print(f"ℹ️ [THỰC THỂ ĐÃ CÓ] Đã tìm thấy trực tiếp {len(confirmed_db_map)} thực thể đã có trong CSDL xuất hiện ở lô này.")
 
         # -------------------------------------------------------------
-        # BƯỚC 2: THU THẬP VÀ GỬI ĐẦY ĐỦ CỤM NGỮ CẢNH CHO LLM BÓC TÁCH & PHÂN TÍCH
-        # (Vẫn gửi toàn bộ ứng viên kèm ngữ cảnh xung quanh để LLM thấy trọn vẹn cả câu và phân tích quan hệ nhân vật)
+        # BƯỚC 2: BÓC TÁCH THỰC THỂ TRỰC TIẾP TỪ TOÀN VĂN RAW BẰNG LLM (ZERO CODE HEURISTICS)
+        # (Đọc hiểu ngữ cảnh toàn bộ lô chương, phân loại NAME, CREATURE, PLACE, SECT, ITEM, SKILL)
         # -------------------------------------------------------------
-        evidence_payload = await collect_batch_entities(unlinked_batch)
-        raw_candidates = evidence_payload.get("branch_1_ner_candidates", [])
-
-        # Với các ứng viên đã có trong confirmed_db_map, gắn mốc neo rõ ràng [ĐÃ DỊCH CHUẨN TỪ TRƯỚC]
-        for cand in raw_candidates:
-            orig = (cand.get("original_han") or cand.get("han") or "").strip()
-            if orig in confirmed_db_map:
-                cand["suggested_hanviet_example"] = f"[ĐÃ DỊCH CHUẨN TỪ TRƯỚC]: {confirmed_db_map[orig]['vietnamese_name']}"
-
-        # Cung cấp từ điển thực thể đã có cho LLM làm mốc tra cứu
+        from app.services.preprocessing.dichhan.llm_extractor import extract_batch_entities_direct_llm
         existing_context_for_llm = {
             cn: {"vietnamese_name": info["vietnamese_name"], "entity_type": info["entity_type"], "role": info["role"]}
             for cn, info in confirmed_db_map.items()
         }
-        evidence_payload["existing_db_entities"] = existing_context_for_llm
-        evidence_payload["branch_1_ner_candidates"] = raw_candidates
 
         new_llm_entities = []
-        if raw_candidates:
-            try:
-                llm_res = await process_2branch_evidence_via_llm(evidence_payload)
-                new_llm_entities = llm_res.get("entities", [])
-            except Exception as llm_err:
-                msg_llm_fail = f"⚠️ [THỰC THỂ LLM LỖI]: {llm_err}. Kích hoạt chế độ Fallback Hán-Việt tự động..."
-                print(msg_llm_fail)
-                add_system_log(msg_llm_fail, "warning")
+        try:
+            new_llm_entities = await extract_batch_entities_direct_llm(combined_raw_text, existing_context_for_llm)
+            print(f"✅ [THỰC THỂ LLM] Đã bóc tách thành công {len(new_llm_entities)} thực thể từ toàn văn lô chương.")
+        except Exception as llm_err:
+            msg_llm_fail = f"⚠️ [THỰC THỂ LLM LỖI]: {llm_err}. Kích hoạt chế độ Fallback Hán-Việt tự động..."
+            print(msg_llm_fail)
+            add_system_log(msg_llm_fail, "warning")
 
         # -------------------------------------------------------------
         # BƯỚC 3: HỢP NHẤT VÀ LÀM SẠCH THỰC THỂ
