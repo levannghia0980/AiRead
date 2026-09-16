@@ -123,10 +123,19 @@ def strip_chapter_title(text: str, chap_no: int = None, fallback_title: str = ""
 
 def fix_broken_words(text: str, protected_names: list = None) -> str:
     """
-    Giữ nguyên 100% nguyên văn bản dịch của LLM,
-    TUYỆT ĐỐI KHÔNG can thiệp bất kỳ nội dung nào.
+    Giữ nguyên 100% nguyên văn bản dịch của LLM, đồng thời tự động quét sạch các lỗi
+    rác do dính chữ cái La Tinh lỡ dở hoặc lặp từ do thay thế lỗi (VD: 'Đại B Đại Bằng' -> 'Đại Bàng', 'Võ B Võ Bị' -> 'Võ Bị').
     """
-    return text.strip() if text else ""
+    if not text:
+        return ""
+    
+    # 1. Khử lỗi dính mảnh chữ cái La Tinh lỡ dở kèm từ lặp: "Đại B Đại Bàng" -> "Đại Bàng", "Võ B Võ Bị" -> "Võ Bị"
+    text = re.sub(r'\b([A-ZÀ-Ỹa-zà-ỹĐđ]+)\s+[A-Za-z]\s+\1([A-ZÀ-Ỹa-zà-ỹĐđ]+)\b', r'\1\2', text)
+    # 2. Khử mảnh từ bị cắt dở dính lặp: "Võ B Võ Bị" -> "Võ Bị"
+    text = re.sub(r'\b([A-ZÀ-Ỹa-zà-ỹĐđ]+\s+[A-Za-z]+)\s+\1([A-ZÀ-Ỹa-zà-ỹĐđ]+)\b', r'\1\2', text)
+    # 3. Dọn dẹp khoảng trắng kép
+    text = re.sub(r'[ \t]{2,}', ' ', text)
+    return text.strip()
 
 
 async def realign_entity_names(text: str, novel_id: int, session = None) -> str:
@@ -198,8 +207,65 @@ def format_dialogue_flow(text: str) -> str:
 def sanitize_false_positive_slang(text: str) -> str:
     return text
 
+def unwrap_parenthesized_han(text: str) -> tuple:
+    """
+    Bóc tách và làm sạch triệt để các lỗi song ngữ / lặp từ trong ngoặc do LLM sinh ra:
+    1. Lỗi 'Chữ Hán (Bản dịch tiếng Việt)': Lấy THẲNG bản dịch trong ngoặc, xóa sạch chữ Hán và bọc THẺ VÀNG báo ĐÃ SỬA.
+    2. Lỗi lặp từ trong ngoặc như '"Hừ!" (Hừ!)' hoặc 'Hừ (Hừ)': Xóa bỏ phần ngoặc lặp '(Hừ!)' phía sau.
+    """
+    if not text:
+        return text, 0
+
+    count = 0
+
+    # 1. Xử lý Chữ Hán (Bản dịch tiếng Việt): Ví dụ: 哼 (Hừ!) -> Hừ!, 大摔碑手 (Đại Toại Bi Thủ) -> Đại Toại Bi Thủ
+    # Bắt cụm có chữ Hán phía trước + (bản dịch tiếng Việt không chứa Hán tự)
+    pattern_han = re.compile(r'([A-Za-z0-9_a-zA-Zà-ỹÀ-Ỹ\u4e00-\u9fff]*[\u4e00-\u9fff]+[A-Za-z0-9_a-zA-Zà-ỹÀ-Ỹ\u4e00-\u9fff]*)\s*[\(（]([^\(\)（）\r\n]+)[\)）]')
+    def repl_han(m):
+        nonlocal count
+        raw_han = m.group(1).strip()
+        inner_vn = m.group(2).strip()
+        # Nếu trong ngoặc có chứa chữ Hán thì bỏ qua
+        if not inner_vn or re.search(r'[\u4e00-\u9fff]', inner_vn):
+            return m.group(0)
+
+        count += 1
+        tooltip_str = f"Gốc Hán ngoặc: {raw_han}"
+        highlighted_gold = f'<span class="fixed-sentence" style="text-decoration: underline; text-decoration-color: #f59e0b; text-underline-offset: 4px;"><span class="fixed-word" style="color: #f59e0b; font-weight: bold; background: rgba(245, 158, 11, 0.18); padding: 1px 5px; border-radius: 3px; text-decoration: none;" title="{tooltip_str}">{inner_vn}</span></span>'
+        return highlighted_gold
+
+    text, n1 = pattern_han.subn(repl_han, text)
+
+    # 2. Xử lý Lỗi Lặp Từ trong ngoặc / Double translation: Ví dụ: '"Hừ!" (Hừ!)', 'Hừ (Hừ)', 'Vương Bà (Vương Bà)'
+    pattern_dup = re.compile(r'((?:["\'“]?[A-Za-zà-ỹÀ-Ỹ0-9_\s!?,.:;-]+["\'”]?))\s*[\(（]([A-Za-zà-ỹÀ-Ỹ0-9_\s!?,.:;-]+)[\)）]')
+    def repl_dup(m):
+        nonlocal count
+        lead_part = m.group(1).strip()
+        inner_part = m.group(2).strip()
+
+        def _normalize(s):
+            return re.sub(r'[^a-za-y0-9]', '', s.lower())
+
+        norm_lead = _normalize(lead_part)
+        norm_inner = _normalize(inner_part)
+
+        if norm_lead and norm_inner and (norm_lead == norm_inner or norm_lead.endswith(norm_inner) or norm_inner.endswith(norm_lead)):
+            count += 1
+            return lead_part
+
+        return m.group(0)
+
+    text, n2 = pattern_dup.subn(repl_dup, text)
+
+    if count > 0:
+        text = re.sub(r'[ \t]{2,}', ' ', text)
+
+    return text, count
+
+
 def clean_pinyin_parentheses_and_bilingual(text: str) -> str:
-    return text
+    cleaned, _ = unwrap_parenthesized_han(text)
+    return cleaned
 
 def reformat_fragmented_paragraphs(text: str) -> str:
     return text
@@ -209,14 +275,14 @@ async def sweep_chinese_characters(text: str) -> str:
     Quét và tự động cứu/dịch vét các Hán tự còn sót lại trong văn bản sang tiếng Việt.
     1. Ưu tiên tra từ điển Unblock / Sắc hiệp.
     2. Tra âm Hán-Việt chuẩn (HanLP/Hán Việt).
-    3. Phao cứu sinh cuối cùng: Google Translate (nếu Hán-Việt không ra nghĩa).
+    3. Phao cứu sinh Google Translate (nếu Hán-Việt không ra nghĩa).
     Bọc thẻ gạch chân xanh dương (<span class="swept-chinese" data-raw="...">)
-    để Frontend hiển thị và nút "Sửa Đỏ" (batch_fix_swept_errors) gom gửi AI dịch lại theo ngữ cảnh!
+    để Frontend hiển thị chữ xanh và báo chương đỏ (Sửa Đỏ)!
     """
     if not text or not re.search(r'[\u4e00-\u9fff]', text):
         return text
 
-    # Bảo vệ các thẻ span đã tồn tại từ trước
+    # Bảo vệ các thẻ span đã tồn tại từ trước (bao gồm cả thẻ swept-chinese tạo từ unwrap_parenthesized_han)
     span_placeholders = {}
     def _save_span(m):
         key = f"__SAVED_SPAN_{len(span_placeholders)}__"
@@ -225,15 +291,13 @@ async def sweep_chinese_characters(text: str) -> str:
 
     text = re.sub(r'<span\b[^>]*>.*?</span>', _save_span, text, flags=re.DOTALL | re.IGNORECASE)
 
+    # Khử sạch các ký tự La Tinh rác dính dở chừng trước chữ Hán (VD: "Đại B鹏" -> "Đại 鹏", "Võ B为" -> "Võ 为")
+    text = re.sub(r'(?<=\s)[a-zA-Z]{1,2}\s*(?=[\u4e00-\u9fff])', '', text)
+    text = re.sub(r'(?<=[^\w\s])[a-zA-Z]{1,2}\s*(?=[\u4e00-\u9fff])', '', text)
+
     pattern = re.compile(r'([\u4e00-\u9fff]+)')
     matches = list(set(pattern.findall(text)))
     if not matches:
-        for ph, orig in span_placeholders.items():
-            text = text.replace(ph, orig)
-        return text
-
-    if len(matches) > 100:
-        logger.warning(f"[POST-PROCESS] Cảnh báo: Tìm thấy {len(matches)} cụm Hán tự (>100), bỏ qua tự động dịch để tránh treo hệ thống.")
         for ph, orig in span_placeholders.items():
             text = text.replace(ph, orig)
         return text
@@ -242,18 +306,18 @@ async def sweep_chinese_characters(text: str) -> str:
     from app.services.preprocessing.dichhan.hanviet_data import build_hanviet_name
     from app.services.preprocessing.crawler.google_translator import translate_text_via_google
 
-    # Dịch tất cả các chunks trước
+    # Dịch tất cả các chunks (TUYỆT ĐỐI KHÔNG BỎ QUA dù >100 cụm)
     chunk_map = {}
     for chunk in sorted(matches, key=len, reverse=True):
         try:
-            # 1. Ưu tiên từ điển sắc văn / unblock
+            # 1. Tra từ điển sắc văn / unblock
             translated = ZH_TO_EROTIC_VN_MAP.get(chunk)
 
-            # 2. Hán-Việt / HanLP chuẩn
+            # 2. Hán-Việt chuẩn
             if not translated:
                 translated = build_hanviet_name(chunk)
 
-            # 3. Phao cứu sinh Google Translate nếu cần
+            # 3. Phao Google Translate (nếu Hán-Việt trùng với chunk gốc)
             if not translated or translated == chunk:
                 try:
                     raw_trans = await translate_text_via_google(chunk)
@@ -266,10 +330,15 @@ async def sweep_chinese_characters(text: str) -> str:
                 except Exception:
                     pass
 
-            if translated and translated != chunk:
+            # 4. Fallback cuối cùng: Hán-Việt phiên âm
+            if not translated or translated == chunk:
+                translated = build_hanviet_name(chunk)
+
+            if translated:
                 chunk_map[chunk] = translated
         except Exception as e:
             logger.warning(f"[POST-PROCESS] Lỗi cứu từ Hán tự '{chunk}': {e}")
+            chunk_map[chunk] = build_hanviet_name(chunk)
 
     if not chunk_map:
         for ph, orig in span_placeholders.items():
@@ -277,16 +346,16 @@ async def sweep_chinese_characters(text: str) -> str:
         return text
 
     replacement_placeholders = {}
-    vn_char = r'[a-zA-Zà-ỹÀ-Ỹ0-9]'
     for chunk in sorted(chunk_map.keys(), key=len, reverse=True):
         translated = chunk_map[chunk]
         escaped_chunk = re.escape(chunk)
 
-        def _smart_replace(m, c=chunk, t=translated):
-            pre = m.group(1) or ""
-            post = m.group(2) or ""
+        # Xóa các mảnh từ tiếng Việt / ký tự La Tinh bị cắt dở đứng dính trước chữ Hán
+        # VD: 'cá辭' -> ' cáo từ', ' B鹏' -> ' 鹏', ' B为' -> ' 为'
+        text = re.sub(r'\bcá\s*(?=' + escaped_chunk + r')', 'cáo ', text, flags=re.IGNORECASE)
+        text = re.sub(r'(?<=\s)[a-zA-Z]{1,2}\s*(?=' + escaped_chunk + r')', '', text)
 
-            # Kiểm tra từ đứng trước để quyết định viết hoa hay viết thường
+        def _smart_replace(m, c=chunk, t=translated):
             effective_trans = t
             prefix_text = text[:m.start()]
             m_prev_word = re.search(r'([a-zA-Zà-ỹÀ-Ỹ0-9]+)\s*$', prefix_text)
@@ -296,35 +365,30 @@ async def sweep_chinese_characters(text: str) -> str:
                     effective_trans = t.capitalize()
                 elif prev_word.islower():
                     effective_trans = t.lower()
-            elif pre:
-                if pre.islower():
-                    effective_trans = t.lower()
-                elif pre.isupper():
-                    effective_trans = t.capitalize()
 
-            prefix_space = f"{pre} " if pre else ""
-            suffix_space = f" {post}" if post else ""
-
-            # Nếu vị trí thay thế nằm trên dòng tiêu đề chương (Chương X / Chapter X):
-            # Chỉ thay thế bằng chữ thuần túy, tuyệt đối KHÔNG bọc thẻ span HTML làm hỏng tiêu đề
+            # Kiểm tra dòng tiêu đề chương
             line_start = text.rfind('\n', 0, m.start())
             line_start = 0 if line_start == -1 else line_start + 1
             line_end = text.find('\n', m.end())
             line_end = len(text) if line_end == -1 else line_end
             current_line = text[line_start:line_end]
             if re.match(r'^\s*(?:Quyển\s*\d+\s*)?(?:Chương|Chapter|Hồi|Tiết|Chap|Vol|Volume)\s*\d*', current_line, re.IGNORECASE):
-                return f"{prefix_space}{effective_trans}{suffix_space}"
+                return f" {effective_trans} "
 
             ph_key = f"__SWEPT_SPAN_{len(replacement_placeholders)}__"
-            replacement_placeholders[ph_key] = f'{prefix_space}<span style="text-decoration: underline; text-decoration-color: #0284c7;" class="swept-chinese" data-raw="{c}">{effective_trans}</span>{suffix_space}'
+            replacement_placeholders[ph_key] = f' <span style="text-decoration: underline; text-decoration-color: #0284c7;" class="swept-chinese" data-raw="{c}">{effective_trans}</span> '
             return ph_key
 
-        pattern = rf'({vn_char})?{escaped_chunk}(?:\s*[\(（][^()（）]{{1,50}}[\)）])?({vn_char})?'
+        pattern = rf'{escaped_chunk}(?:\s*[\(（][^()（）]{{1,50}}[\)）])?'
         text = re.sub(pattern, _smart_replace, text)
 
     # Khôi phục các thẻ swept span vừa tạo
     for ph, span_html in replacement_placeholders.items():
         text = text.replace(ph, span_html)
+
+    # Dọn dẹp khoảng trắng kép và dấu câu liền kề
+    text = re.sub(r'[ \t]{2,}', ' ', text)
+    text = re.sub(r'\s+([,.:;!?])', r'\1', text)
 
     # Khôi phục các thẻ span ban đầu
     for ph, orig in span_placeholders.items():
@@ -587,8 +651,22 @@ async def process_and_split_batch(
 
                 # 2. Chuẩn hóa khoảng trắng cơ bản, giữ nguyên 100% từ ngữ của AI
                 chap_text = fix_broken_words(chap_text)
-                # 3. Cứu Hán tự sót bằng Hán-Việt/HanLP hoặc Google Dịch (bọc thẻ xanh để Frontend và nút Sửa Đỏ bắt được)
+
+                # 2b. Bóc tách lỗi ngoặc chữ Hán kèm bản dịch: ChữHán (bản dịch) -> bản dịch
+                # Chỉ bóc chữ Hán đã có dịch trong ngoặc; chữ Hán trần chưa có dịch giữ nguyên để người dùng bắt lỗi
+                chap_text, unwrap_cnt = unwrap_parenthesized_han(chap_text)
+                if unwrap_cnt > 0:
+                    msg_unwrap = f"🩹 [BÓC LỖI NGOẶC] Đã gỡ {unwrap_cnt} lỗi 'Chữ Hán (dịch)' trong Chương {chap_no} thành tiếng Việt chuẩn!"
+                    print(f"[POST-PROCESS] {msg_unwrap}")
+                    try:
+                        from app.api.translation_router import add_system_log
+                        add_system_log(msg_unwrap, "info")
+                    except Exception:
+                        pass
+
+                # 3. Quét Hán tự sót và bọc thẻ gạch chân xanh dương (<span class="swept-chinese">) để Frontend hiển thị và báo chương đỏ
                 chap_text = await sweep_chinese_characters(chap_text)
+
                 # 3b. Tự động nắn chuẩn tên nhân vật/thực thể cố định (Entity Consistency & Auto-Reanchoring)
                 chap_text = await realign_entity_names(chap_text, novel_id, session=session)
                 chap_text = chap_text.strip()

@@ -9,6 +9,10 @@ from app.core.config import get_active_setting
 from app.models.schema import Novel, Chapter, ChapterVersion, NovelEntity, ChapterEntityLink
 from app.services.storage.file_storage import sanitize_filename
 from app.services.translation.rawt.profiles import (
+    get_profile_description,
+    get_common_rules,
+    get_supreme_command,
+    get_xml_structure_instruction,
     get_context_profile_prompt,
     build_standard_system_prompt,
 )
@@ -100,9 +104,9 @@ async def get_previous_chapter_context(session, novel_id: int, current_first_cha
                 try:
                     from app.services.unblock.unblock_pipeline import mask_text_with_dictionary
                     masked_snippet, _, _ = await mask_text_with_dictionary(snippet)
-                    return f"=== BỐI CẢNH ĐOẠN KẾT CHƯƠNG {prev_chap_no} (ĐỂ NỐI MẠCH TỰ NHIÊN VÀO ĐẦU CHƯƠNG {current_first_chapter_no}) ===\n\"{masked_snippet}\"\n-> Yêu cầu: Hãy dịch phần mở đầu Chương {current_first_chapter_no} nối mạch tự nhiên, liền mạch diễn biến câu chuyện với đoạn kết trên.\n"
+                    return f"BỐI CẢNH ĐOẠN KẾT CHƯƠNG {prev_chap_no} (NỐI MẠCH VÀO CHƯƠNG {current_first_chapter_no}):\n\"{masked_snippet}\"\n-> Yêu cầu: Dịch phần mở đầu Chương {current_first_chapter_no} nối mạch tự nhiên với đoạn kết trên.\n"
                 except Exception:
-                    return f"=== BỐI CẢNH ĐOẠN KẾT CHƯƠNG {prev_chap_no} (ĐỂ NỐI MẠCH TỰ NHIÊN VÀO ĐẦU CHƯƠNG {current_first_chapter_no}) ===\n\"{snippet}\"\n-> Yêu cầu: Hãy dịch phần mở đầu Chương {current_first_chapter_no} nối mạch tự nhiên, liền mạch diễn biến câu chuyện với đoạn kết trên.\n"
+                    return f"BỐI CẢNH ĐOẠN KẾT CHƯƠNG {prev_chap_no} (NỐI MẠCH VÀO CHƯƠNG {current_first_chapter_no}):\n\"{snippet}\"\n-> Yêu cầu: Dịch phần mở đầu Chương {current_first_chapter_no} nối mạch tự nhiên với đoạn kết trên.\n"
     return ""
 
 
@@ -224,11 +228,11 @@ async def _execute_single_llm_call(
         if prompt_block or finish_reason in ["SAFETY", "PROHIBITED_CONTENT", "BLOCK", "OTHER", "RECITATION"] or not candidate.get("content"):
             err_cause = prompt_block or finish_reason or "NO_CONTENT"
             print(f"[LLM-TRANSLATOR] Cảnh báo: Gemini chặn bộ lọc ({err_cause}). Thử lại với prompt độc lập...")
-            clean_system_instruction = f"""🔴 MỆNH LỆNH TỐI CAO: BẠN LÀ MÁY DỊCH TIỂU THUYẾT TRUNG - VIỆT (CHINESE TO VIETNAMESE TRANSLATOR).
+            clean_system_instruction = f"""MỆNH LỆNH TỐI CAO: BẠN LÀ MÁY DỊCH TIỂU THUYẾT TRUNG - VIỆT (CHINESE TO VIETNAMESE TRANSLATOR).
 - NGÔN NGỮ NGUỒN: TIẾNG TRUNG.
 - NGÔN NGỮ ĐÍCH BẮT BUỘC: 100% TIẾNG VIỆT HOÀN CHỈNH (VIETNAMESE ONLY). CHỮ VIẾT ĐỀU LÀ TIẾNG VIỆT, TUYỆT ĐỐI KHÔNG ĐƯỢC LẪN BẤT KỲ NGÔN NGỮ NÀO KHÁC.
-- 🛑 CẤM TUYỆT ĐỐI TIẾNG ANH: Tuyệt đối không dùng bất kỳ từ tiếng Anh nào (cấm các từ như 'But', 'And', 'So'...). Toàn bộ câu từ bắt buộc phải là 100% tiếng Việt.
-- 🛑 CẤM SÓT CHỮ HÁN HOẶC PINYIN: Dịch sạch 100% sang tiếng Việt, không bỏ sót chữ Hán.
+- CẤM TUYỆT ĐỐI TIẾNG ANH: Tuyệt đối không dùng bất kỳ từ tiếng Anh nào (cấm các từ như 'But', 'And', 'So'...). Toàn bộ câu từ bắt buộc phải là 100% tiếng Việt.
+- CẤM SÓT CHỮ HÁN HOẶC PINYIN: Dịch sạch 100% sang tiếng Việt, không bỏ sót chữ Hán.
 Nhiệm vụ: Chuyển ngữ từ ngữ liệu sang tác phẩm TIẾNG VIỆT hoàn chỉnh, dễ hiểu, đúng nghĩa và bảo toàn 100% cốt truyện nguyên tác. Mỗi chương bọc trong đúng cặp thẻ XML <chapter_X>. Dòng đầu tiên là 'Chương X: [Tên chương]'.
 """
             retry_payload = {
@@ -279,6 +283,7 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
         combined_text = ""
         chapter_map = {}
         chapter_raw_len_map = {}
+        chapter_is_note_map = {}
         
         for cid in chapter_ids:
             stmt = select(Chapter).where(Chapter.id == cid)
@@ -307,7 +312,12 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
                 
             raw_text = sanitize_chinese_raw_text(raw_text)
             chapter_raw_len_map[chap.chapter_no] = len(raw_text)
-            combined_text += f"\n<chapter_{chap.chapter_no}>\n{raw_text}\n</chapter_{chap.chapter_no}>\n"
+            
+            note_keywords = ["致谢", "感言", "单章", "通知", "说明", "月票", "打赏", "盟主", "架空", "上架", "推书", "完本", "总结"]
+            is_note = any(k in raw_text[:300] or k in (chap.title_raw or "") for k in note_keywords)
+            chapter_is_note_map[chap.chapter_no] = is_note
+            
+            combined_text += f"<chapter_{chap.chapter_no}>\n{raw_text}\n</chapter_{chap.chapter_no}>\n"
 
         batch_entities_dict = {}
         if enable_names_dict:
@@ -390,7 +400,7 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
         entity_prompt_block = ""
         if batch_entities_dict:
             from app.services.preprocessing.dichhan.common_lists import CHINESE_SURNAMES, EPITHET_SUFFIXES, LEADING_STRIP_PARTICLES
-            from app.services.preprocessing.dichhan.hanviet_data import SPECIAL_ENTITIES_MAP
+            from app.services.preprocessing.dichhan.hanviet_data import SPECIAL_ENTITIES_MAP, sanitize_entity_vietnamese, build_hanviet_name
 
             # 1. LÀM SẠCH THỰC THỂ AN TOÀN: Bảo vệ thực thể thật (như 煤球), loại bỏ chuỗi câu rác
             all_raw_keys = sorted(list(batch_entities_dict.keys()), key=len, reverse=True)
@@ -446,6 +456,11 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
                     v_clean = str(info).strip()
                     e_type = "NAME"
 
+                # Khử sạch mọi chữ Hán hoặc ký tự lỗi trong tên tiếng Việt
+                v_clean = sanitize_entity_vietnamese(v_clean, c_clean)
+                if re.search(r'[\u4e00-\u9fff]', v_clean):
+                    v_clean = build_hanviet_name(c_clean)
+
                 if not c_clean or not v_clean or c_clean == v_clean:
                     continue
                 # BẮT BUỘC: Chỉ lấy thực thể THỰC SỰ XUẤT HIỆN trong văn bản của lô này!
@@ -459,7 +474,7 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
                 # Bỏ qua nếu là từ rác hoặc chứa từ ngữ ngữ pháp vô nghĩa
                 if c_clean in FORBIDDEN_JUNK_WORDS or any(bw in c_clean for bw in ("日子", "租子", "乱子", "大声", "大不了", "倒是", "按人头")):
                     continue
-                entry_line = f"  * Cụm Hán: 【{c_clean}】 ➔ Gợi ý: 【{v_clean}】"
+                entry_line = f"  - {c_clean} dịch thành {v_clean}"
 
                 # Phân nhóm chuẩn xác
                 if e_type == "COMMON":
@@ -495,38 +510,31 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
 
             all_blocks = []
             if names_list:
-                all_blocks.append("【1. DANH SÁCH NHÂN VẬT & NGOẠI HIỆU (KHÓA CỐ ĐỊNH 100%)】:\n" + "\n".join(names_list[:80]))
+                all_blocks.append("1. NHÂN VẬT VÀ NGOẠI HIỆU:\n" + "\n".join(names_list[:80]))
             if places_list:
-                all_blocks.append("【2. ĐỊA DANH, SƠN TRẠI & CĂN CỨ】:\n" + "\n".join(places_list[:40]))
+                all_blocks.append("2. ĐỊA DANH VÀ CĂN CỨ:\n" + "\n".join(places_list[:40]))
             if sects_list:
-                all_blocks.append("【3. TÔNG MÔN, BANG PHÁI & THẾ LỰC】:\n" + "\n".join(sects_list[:30]))
+                all_blocks.append("3. TÔNG MÔN VÀ THẾ LỰC:\n" + "\n".join(sects_list[:30]))
             if skills_list:
-                all_blocks.append("【4. VÕ HỌC, TUYỆT KỸ & THẦN THÔNG】:\n" + "\n".join(skills_list[:40]))
+                all_blocks.append("4. VÕ HỌC VÀ THẦN THÔNG:\n" + "\n".join(skills_list[:40]))
             if creatures_list:
-                all_blocks.append("【5. YÊU THÚ, LINH THÚ & DỊ THÚ BẢN SẮC (BẮT BUỘC DÙNG TÊN BẢN SẮC, CẤM DỊCH NÔM NA)】:\n" + "\n".join(creatures_list[:30]))
+                all_blocks.append("5. YÊU THÚ VÀ DỊ THÚ:\n" + "\n".join(creatures_list[:30]))
             if items_list:
-                all_blocks.append("【6. BẢO VẬT, BINH KHÍ & ĐAN DƯỢC】:\n" + "\n".join(items_list[:30]))
+                all_blocks.append("6. BẢO VẬT VÀ ĐAN DƯỢC:\n" + "\n".join(items_list[:30]))
             if lore_list:
-                all_blocks.append("【7. THUẬT NGỮ THẾ GIỚI QUAN, TỪ LÓNG & BỐI CẢNH】:\n" + "\n".join(lore_list[:30]))
+                all_blocks.append("7. THUẬT NGỮ VÀ TỪ LÓNG:\n" + "\n".join(lore_list[:30]))
 
             if all_blocks:
                 entity_prompt_block = (
-                    "=== BẢNG THỰC THỂ ĐÃ ĐỐI CHIẾU CHUẨN XÁC TỪ CÁC CHƯƠNG TRƯỚC (BẮT BUỘC KHÓA 1-1) ===\n"
-                    "🔴 MỆNH LỆNH TỐI CAO ĐỐI VỚI BẢNG THỰC THỂ:\n"
-                    "- Toàn bộ các cụm chữ Hán trong dấu 【...】 từ mục 1 đến mục 7 dưới đây là CÁC TÊN NHÂN VẬT, ĐỊA DANH, MÔN PHÁI, CHIÊU THỨC ĐÃ ĐƯỢC ĐỐI CHIẾU CHUẨN TỪ CÁC CHƯƠNG TRƯỚC.\n"
-                    "- Trong quá trình dịch, hễ gặp cụm chữ Hán nào có trong bảng này thì BẮT BUỘC PHẢI THAY THẾ CHÍNH XÁC 100% BẰNG CỤM TÊN TIẾNG VIỆT TƯƠNG ỨNG ĐÃ ĐƯỢC CUNG CẤP!\n"
-                    "- TUYỆT ĐỐI CẤM TỰ DỊCH LẠI, CẤM ĐỔI ÂM, CẤM ĐỂ LỆCH DÙ CHỈ 1 KÝ TỰ, CẤM SÓT CHỮ HÁN LAI TẠP (ví dụ: gặp 【谢尽欢】 BẮT BUỘC dịch là 'Tạ Tận Hoan', cấm dịch thành 'Tạ Cận Hoan'; gặp 【杨化仙】 BẮT BUỘC dịch là 'Dương Hóa Tiên', cấm dịch thành 'Dương Hoa Tiên'; gặp 【叶圣】 BẮT BUỘC dịch là 'Diệp Thánh', cấm dịch thành 'Diệp Khốt').\n"
-                    "- TUYỆT ĐỐI KHÔNG mở ngoặc đơn chú thích song ngữ hay giải thích trong thân bài dịch.\n\n"
+                    "BẢNG THỰC THỂ KHÓA CỐ ĐỊNH TỪ BƯỚC DỊCH HÁN (BẮT BUỘC DÙNG ĐÚNG 100%):\n"
+                    "Khi gặp các từ Hán dưới đây trong truyện, BẮT BUỘC PHẢI DÙNG ĐÚNG 100% BẢN DỊCH TIẾNG VIỆT TƯƠNG ỨNG ĐÃ ĐƯỢC QUY ĐỊNH Ở ĐÂY, tuyệt đối không tự ý đổi tên, không dịch nghĩa đen khác, không để sót chữ Hán và không mở ngoặc giải nghĩa.\n\n"
                     + "\n\n".join(all_blocks)
                 )
 
-            # Khối bảng từ thường tham khảo (KHÔNG ÉP BUỘC DỊCH CHUẨN, cho phép dịch linh hoạt theo ngữ cảnh cho hay hơn)
+            # Khối bảng từ thường tham khảo
             if common_list:
                 common_prompt_block = (
-                    "\n\n=== BẢNG TỪ ĐỜI THƯỜNG / THAM KHẢO (KHÔNG BẮT BUỘC KHÓA CHẾT, TÙY BIẾN THEO NGỮ CẢNH) ===\n"
-                    "- Các từ dưới đây là danh từ chung, món ăn, nông sản hoặc đồ dùng sinh hoạt đời thường.\n"
-                    "- CÁC BẢN DỊCH GỢI Ý DƯỚI ĐÂY CHỈ DÙNG LÀM THAM KHẢO, KHÔNG ÉP BUỘC BẠN PHẢI DỊCH CHUẨN THEO 100%.\n"
-                    "- Nếu cần, bạn HOÀN TOÀN CÓ THỂ BỎ QUA GỢI Ý ĐỂ DỊCH THOÁT NGHĨA THEO NGỮ CẢNH CHO HAY HƠN, mượt mà và tự nhiên nhất với văn phong tiếng Việt:\n"
+                    "\n\n=== BẢNG TỪ THƯỜNG THAM KHẢO (Linh hoạt dịch thoát ý theo ngữ cảnh) ===\n"
                     + "\n".join(common_list[:40])
                 )
                 if entity_prompt_block:
@@ -538,7 +546,9 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
         first_chap_no = min(chapter_map.values()) if chapter_map else (first_ch.chapter_no if first_ch else 1)
         prev_context_block = await get_previous_chapter_context(session, novel.id, first_chap_no)
 
-    context_profile_prompt = get_context_profile_prompt(novel.context_profile)
+    genre_description = get_profile_description(novel.context_profile)
+    common_rules = get_common_rules()
+    supreme_command = get_supreme_command()
     
     custom_prompt_val = kwargs.get("custom_prompt") or os.environ.get("AIREAD_CUSTOM_PROMPT") or await get_active_setting("AIREAD_CUSTOM_PROMPT") or ""
     custom_prompt_block = f"\n=== CHỈ DẪN BỔ SUNG CỦA NGƯỜI DÙNG ===\n{custom_prompt_val.strip()}\n" if custom_prompt_val and custom_prompt_val.strip() else ""
@@ -546,6 +556,20 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
     chap_nos_list = list(chapter_map.values())
     chap_count = len(chap_nos_list)
     chap_list_str = ", ".join([f"Chương {c}" for c in chap_nos_list])
+    xml_instruction = get_xml_structure_instruction(chap_count, chap_list_str)
+
+    author_notes = kwargs.get("author_notes") or []
+    author_notes_block = ""
+    if author_notes and isinstance(author_notes, list) and len(author_notes) > 0:
+        notes_formatted = "\n".join([f"  • {note}" for note in author_notes if str(note).strip()])
+        if notes_formatted:
+            author_notes_block = (
+                "\n=== DANH SÁCH LỜI TÁC GIẢ Ở CUỐI CHƯƠNG ĐÃ ĐƯỢC NHẬN DIỆN TRƯỚC (ĐỐI CHIẾU KHI DỊCH) ===\n"
+                "- Các câu/dòng dưới đây là lời nhắn ngoài lề, xin phiếu, cảm ơn donate của tác giả được nhận diện ở cuối các chương:\n"
+                f"{notes_formatted}\n"
+                "- HƯỚNG DẪN XỬ LÝ: Khi dịch đến đoạn kết của chương có các câu trên, hãy LOẠI BỎ KHÔNG DỊCH chúng vào bản dịch tiếng Việt.\n"
+                "- 🔴 MỆNH LỆNH BẢO TOÀN NỘI DUNG: Chỉ loại bỏ đúng các câu lời nhắn ngoài lề của tác giả, TUYỆT ĐỐI CẤM XÓA BỎ BẤT KỲ CÂU THOẠI, DIỄN BIẾN HAY NỘI DUNG NÀO CỦA CÂU CHUYỆN!\n"
+            )
 
     enable_erotic = kwargs.get("enable_erotic", False)
     erotic_prompt_block = ""
@@ -556,16 +580,6 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
 - Khi gặp các phân cảnh phòng the, ân ái, tiếp xúc da thịt, quan hệ nam nữ hoặc khẩu dâm, hãy dịch chân thực, gợi cảm, táo bạo, đúng chất sắc văn tiếng Việt.
 - Giữ trọn vẹn các danh từ, động từ nhạy cảm và các mã placeholder tương ứng.
 """
-
-    system_prompt = build_standard_system_prompt(
-        profile_key=novel.context_profile,
-        prev_context_block=prev_context_block,
-        entity_prompt_block=entity_prompt_block,
-        custom_prompt_block=custom_prompt_block,
-        erotic_prompt_block=erotic_prompt_block,
-        chap_count=chap_count,
-        chap_list_str=chap_list_str
-    )
 
     enable_unblock = kwargs.get("enable_unblock", True)
     if enable_unblock:
@@ -593,12 +607,19 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
     
     unblock_final_reminder = " BẮT BUỘC GIỮ NGUYÊN TẤT CẢ CÁC MÃ PLACEHOLDER CÓ SẴN (như §BDY_..., §ACT_...) XUẤT HIỆN TRONG VĂN BẢN! TUYỆT ĐỐI CẤM TỰ BỊA THÊM MÃ MỚI NHƯ §PREFIX_...§ HOẶC BỌC TÊN RIÊNG VÀO THẺ!" if (enable_unblock and mapping_table) else ""
 
-    full_system_instruction = system_prompt + enforcer_prompt
+    full_system_instruction = f"""🔴 MỆNH LỆNH TỐI CAO: BẠN LÀ MÁY DỊCH TIỂU THUYẾT TRUNG - VIỆT CHUYÊN NGHIỆP (CHINESE TO VIETNAMESE TRANSLATOR).
+- NGÔN NGỮ NGUỒN: TIẾNG TRUNG (RAW).
+- NGÔN NGỮ ĐẦU RA BẮT BUỘC: 100% TIẾNG VIỆT HOÀN CHỈNH (VIETNAMESE ONLY). CHỮ VIẾT ĐỀU LÀ TIẾNG VIỆT, TUYỆT ĐỐI KHÔNG ĐƯỢC LẪN BẤT KỲ NGÔN NGỮ NÀO KHÁC.
+- 🛑 CẤM TUYỆT ĐỐI TIẾNG ANH: Tuyệt đối không dùng bất kỳ từ tiếng Anh nào (cấm các từ như 'But', 'And', 'So'...). Toàn bộ câu từ bắt buộc phải là 100% tiếng Việt.
+- 🛑 CẤM SÓT CHỮ HÁN HOẶC PINYIN: Dịch sạch 100% sang tiếng Việt, không để sót chữ Hán.
+- Thực hiện dịch thuật chính xác theo cấu trúc 4 phần đã cung cấp: 1. Chương RAW ➔ 2. Bảng thực thể ➔ 3. Yêu cầu thể loại ➔ 4. Yêu cầu chung & XML."""
+
     is_grok_local = (provider in ["grok_local", "grok", "grok_web"]) or ("grok-web" in model.lower()) or (model == "grok-web-auto")
     is_openrouter = not is_grok_local and ((provider == "openrouter") or ("/" in model) or ("qwen" in model.lower()) or ("openrouter" in model.lower()))
     print(f"[LLM-TRANSLATOR DEBUG] is_grok_local={is_grok_local} | is_openrouter={is_openrouter}")
 
     # === LƯU ĐẦU VÀO CHUẨN BỊ VÀO Output/02_ChuanBi_DauVao ===
+    # Thứ tự chuẩn: 1. Chương RAW -> 2. Thực thể -> 3. Yêu cầu chung -> 4. Yêu cầu thể loại (ĐẶT Ở CUỐI CÙNG)
     try:
         from app.core.config import OUTPUT_DIR
         novel_folder = sanitize_filename(novel.title_rough or novel.title_raw or "Novel")
@@ -610,14 +631,26 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
         with open(input_log_path, "w", encoding="utf-8") as f_in:
             f_in.write(f"=== [ĐẦU VÀO DỊCH LÔ: CHƯƠNG {res_chap_nos}] ===\n")
             f_in.write(f"Tiểu thuyết: {novel.title_rough or novel.title_raw} (ID: {novel.id})\n\n")
-            f_in.write("======================================================================\n")
-            f_in.write("1. SYSTEM INSTRUCTION (HỒ SƠ DỊCH, BỐI CẢNH & BẢNG THỰC THỂ CỦA LÔ)\n")
-            f_in.write("======================================================================\n")
-            f_in.write(full_system_instruction)
-            f_in.write("\n\n======================================================================\n")
-            f_in.write("2. VĂN BẢN GỐC RAW THEO TỪNG CHƯƠNG GỬI CHO LLM\n")
-            f_in.write("======================================================================\n")
-            f_in.write(masked_text)
+            f_in.write(f"1. VĂN BẢN GỐC RAW CỦA CÁC CHƯƠNG CẦN DỊCH ({chap_count} CHƯƠNG: {chap_list_str})\n")
+            f_in.write(masked_text.strip())
+            f_in.write("\n\n2. BẢNG THỰC THỂ ĐÃ ĐỐI CHIẾU CHUẨN XÁC TỪ CÁC CHƯƠNG TRƯỚC (THỰC THỂ)\n")
+            f_in.write(entity_prompt_block.strip() if entity_prompt_block else "(Không có thực thể riêng cho lô này - dịch theo chuẩn Hán-Việt phổ thông)")
+            f_in.write("\n\n3. YÊU CẦU CHUNG (BỘ QUY TẮC DỊCH THUẬT CỐT LÕI & CẤU TRÚC PHÂN CHƯƠNG XML)\n")
+            f_in.write(supreme_command.strip() + "\n\n")
+            f_in.write(common_rules.strip() + "\n\n")
+            if author_notes_block:
+                f_in.write(author_notes_block.strip() + "\n\n")
+            if prev_context_block:
+                f_in.write(prev_context_block.strip() + "\n\n")
+            if custom_prompt_block:
+                f_in.write(custom_prompt_block.strip() + "\n\n")
+            if erotic_prompt_block:
+                f_in.write(erotic_prompt_block.strip() + "\n\n")
+            f_in.write(xml_instruction.strip() + "\n")
+            if enforcer_prompt:
+                f_in.write("\n" + enforcer_prompt.strip() + "\n")
+            f_in.write("\n\n4. YÊU CẦU THỂ LOẠI (BẢN SẮC & QUY CHUẨN XƯNG HÔ NÊN DÙNG / CẤM - CUỐI CÙNG)\n")
+            f_in.write(genre_description.strip())
         print(f"📝 [1/2 DỊCH AI] Đã lưu ĐẦU VÀO chuẩn bị của lô vào: Output/02_ChuanBi_DauVao/{novel_folder}/batch_ch{batch_tag}_input.txt")
     except Exception as e_in:
         print(f"⚠️ Không thể lưu file đầu vào 02_ChuanBi_DauVao: {e_in}")
@@ -646,14 +679,46 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
             except Exception:
                 pass
 
-        user_task_prompt = (
-            f"Dưới đây là văn bản chương truyện tiếng Trung cần dịch hoàn toàn sang 100% TIẾNG VIỆT theo đúng Hồ sơ thể loại, Bộ quy tắc chuyển ngữ và Bảng thực thể đã cung cấp:\n\n"
-            f"<ngu_lieu_nguon>\n{chunk_text}\n</ngu_lieu_nguon>\n\n"
-            f"Yêu cầu thực thi:\n"
-            f"1. Dịch thoát ý tự nhiên, mạch lạc, dễ hiểu, chuẩn văn phong dịch thuật tiểu thuyết tiếng Việt.\n"
-            f"2. Áp dụng chuẩn xác tên riêng theo Bảng thực thể, bản dịch hoàn toàn bằng tiếng Việt sạch chữ Hán.\n"
-            f"3. Dịch đủ từng chương trong {chap_list_str}, mỗi chương bọc trong đúng cặp thẻ XML <chapter_X> tương ứng.{unblock_final_reminder}\n"
-        )
+        user_task_prompt = f"""Dưới đây là toàn bộ dữ liệu dịch thuật của lô truyện, được sắp xếp theo đúng thứ tự:
+1. VĂN BẢN GỐC RAW THEO TỪNG CHƯƠNG CẦN DỊCH
+2. BẢNG THỰC THỂ ĐÃ ĐỐI CHIẾU CHUẨN XÁC TỪ CÁC CHƯƠNG TRƯỚC (KHÓA 1:1)
+3. YÊU CẦU CHUNG (BỘ QUY TẮC DỊCH THUẬT CỐT LÕI & CẤU TRÚC PHÂN CHƯƠNG XML)
+4. YÊU CẦU THỂ LOẠI (BẢN SẮC & QUY CHUẨN XƯNG HÔ - ĐẶT Ở CUỐI CÙNG)
+
+======================================================================
+1. VĂN BẢN GỐC RAW THEO TỪNG CHƯƠNG CẦN DỊCH:
+======================================================================
+{chunk_text}
+
+======================================================================
+2. BẢNG THỰC THỂ ĐÃ ĐỐI CHIẾU CHUẨN XÁC:
+======================================================================
+{entity_prompt_block.strip() if entity_prompt_block else "(Không có thực thể riêng cho lô này - dịch theo chuẩn Hán-Việt phổ thông)"}
+
+======================================================================
+3. YÊU CẦU CHUNG & CẤU TRÚC PHÂN CHƯƠNG XML:
+======================================================================
+{supreme_command.strip()}
+
+{common_rules.strip()}
+{author_notes_block.strip() if author_notes_block else ""}
+{prev_context_block.strip() if prev_context_block else ""}
+{custom_prompt_block.strip() if custom_prompt_block else ""}
+{erotic_prompt_block.strip() if erotic_prompt_block else ""}
+{xml_instruction.strip()}
+{enforcer_prompt.strip() if enforcer_prompt else ""}
+
+======================================================================
+4. YÊU CẦU THỂ LOẠI (BẢN SẮC & QUY CHUẨN XƯNG HÔ NÊN DÙNG / CẤM - ĐẶT Ở CUỐI CÙNG):
+======================================================================
+{genre_description.strip()}
+
+🔴 MỆNH LỆNH TỐI CAO THỰC THI:
+- Bắt đầu dịch ngay lập tức toàn bộ {chap_list_str} sang 100% TIẾNG VIỆT HOÀN CHỈNH.
+- Mỗi chương bọc trong đúng cặp thẻ XML: <chapter_X> ... </chapter_X>. Dòng đầu tiên là 'Chương X: [Tên chương]'.
+- TUYỆT ĐỐI KHÔNG để sót chữ Hán, TUYỆT ĐỐI CẤM tiếng Anh (như 'But', 'And'...).{unblock_final_reminder}
+"""
+        user_task_prompt = re.sub(r'\n{2,}', '\n', user_task_prompt.strip())
 
         chunk_out = await _execute_single_llm_call(
             user_prompt=user_task_prompt,
@@ -700,9 +765,21 @@ async def translate_batch_llm(chapter_ids: List[int], enable_names_dict: bool = 
                 if c_match:
                     chap_body = c_match.group(1).strip()
                     raw_len = chapter_raw_len_map.get(cno, 0)
-                    # Tiếng Việt chuẩn luôn dài gấp 2.2 - 3.2 lần chữ Hán raw. Nếu ratio < 1.05 thì chắc chắn bị cắt cụt / ngắt lửng!
-                    if raw_len > 600 and len(chap_body) < raw_len * 1.05:
-                        truncated_chaps.append(cno)
+                    has_closing_tag = bool(re.search(rf"<\s*/\s*chapter_{cno}\s*>", translated_text, re.IGNORECASE))
+                    is_note = chapter_is_note_map.get(cno, False)
+                    
+                    if raw_len > 600:
+                        if is_note:
+                            # Chương lời tác giả/cảm ơn/danh sách ủng hộ: chỉ báo ngắt lửng nếu thiếu thẻ đóng và quá ngắn (< 0.3 * raw_len)
+                            if not has_closing_tag and len(chap_body) < raw_len * 0.3:
+                                truncated_chaps.append(cno)
+                        else:
+                            # Chương truyện thông thường:
+                            # Nếu có thẻ đóng chuẩn </chapter_{cno}>, chỉ phát hiện ngắt lửng nếu quá ngắn (< 0.7 * raw_len)
+                            # Nếu KHÔNG có thẻ đóng, kiểm tra ngưỡng < 1.05 * raw_len
+                            min_ratio = 0.7 if has_closing_tag else 1.05
+                            if len(chap_body) < raw_len * min_ratio:
+                                truncated_chaps.append(cno)
         
         has_batch_issues = bool(missing_chaps or truncated_chaps)
         if has_batch_issues:

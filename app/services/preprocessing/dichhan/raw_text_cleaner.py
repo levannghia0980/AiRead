@@ -65,5 +65,19 @@ def sanitize_chinese_raw_text(text: str) -> str:
     t = t.replace('我舔了那个女人十年', 'ta si tình vì nàng mười năm')
     t = t.replace('我舔了', 'ta si tình vì')
     
-    return t
+    # LẤY CÁC DÒNG SẠCH
+    raw_lines = [line.strip() for line in t.split('\n') if line.strip()]
+    if not raw_lines:
+        return ""
+        
+    # Dòng 1: Tiêu đề chương
+    title_line = raw_lines[0]
+    
+    # Tất cả các dòng thân bài tiếp theo: Nối liền 100% không có ký tự xuống dòng (\n) nào!
+    body_lines = raw_lines[1:]
+    if body_lines:
+        body_str = "".join(body_lines)
+        return f"{title_line}\n{body_str}"
+    else:
+        return title_line
 

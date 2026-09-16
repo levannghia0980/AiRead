@@ -31,6 +31,8 @@ async def call_gemini_api(prompt: str, model: str = None, is_json: bool = True) 
     selected_model = selected_model.strip()
     if "grok" in selected_model.lower():
         selected_model = "gemini-3.5-flash-lite"
+    if "3.8" in selected_model or "flash-medium" in selected_model.lower():
+        selected_model = "gemini-3.5-flash-lite"
     
     provider_val = os.environ.get("AIREAD_PROVIDER") or await get_active_setting("AIREAD_PROVIDER") or "gemini"
     provider = str(provider_val).lower().strip()
@@ -95,7 +97,7 @@ async def call_gemini_api(prompt: str, model: str = None, is_json: bool = True) 
         for key_idx, api_key in enumerate(keys):
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent?key={api_key}"
             try:
-                resp = await post_gemini_with_retry(client, url, headers, payload, max_retries=3)
+                resp = await post_gemini_with_retry(client, url, headers, payload, max_retries=2)
                 if resp.status_code == 200:
                     data = resp.json()
                     try:
@@ -104,6 +106,18 @@ async def call_gemini_api(prompt: str, model: str = None, is_json: bool = True) 
                             return text_out, None
                     except (KeyError, IndexError):
                         last_err = "API trả về 200 nhưng cấu trúc candidates rỗng."
+                elif resp.status_code in (503, 404, 400) and selected_model != "gemini-3.5-flash-lite":
+                    # Tự động cứu cánh fallback ngay sang gemini-3.5-flash-lite nếu model bị quá tải hoặc không tồn tại
+                    print(f"⚠️ Model '{selected_model}' trả về {resp.status_code} ({resp.text[:80]}), tự động fallback sang 'gemini-3.5-flash-lite'...")
+                    selected_model = "gemini-3.5-flash-lite"
+                    fallback_url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent?key={api_key}"
+                    resp_fallback = await post_gemini_with_retry(client, fallback_url, headers, payload, max_retries=2)
+                    if resp_fallback.status_code == 200:
+                        data = resp_fallback.json()
+                        text_out = data["candidates"][0]["content"]["parts"][0]["text"]
+                        if text_out and text_out.strip():
+                            return text_out, None
+                    last_err = f"HTTP {resp_fallback.status_code} ({selected_model}): {resp_fallback.text[:200]}"
                 else:
                     err_msg = resp.text
                     try:
@@ -113,8 +127,8 @@ async def call_gemini_api(prompt: str, model: str = None, is_json: bool = True) 
                         pass
                     last_err = f"HTTP {resp.status_code} ({selected_model}): {err_msg}"
                     
-                    if resp.status_code == 429 and key_idx < len(keys) - 1:
-                        print(f"⚠️ Key #{key_idx+1} bị dính 429, tự động chuyển sang Key #{key_idx+2}...")
+                    if resp.status_code in (429, 500, 502, 503, 504) and key_idx < len(keys) - 1:
+                        print(f"⚠️ Key #{key_idx+1} gặp lỗi {resp.status_code}, tự động chuyển sang Key #{key_idx+2}...")
                         continue
             except Exception as e:
                 last_err = f"Lỗi kết nối ({selected_model}): {str(e)}"
@@ -128,9 +142,47 @@ async def call_gemini_api(prompt: str, model: str = None, is_json: bool = True) 
 # VD cũ: <span class="swept-chinese">tưới tiêu</span>
 SWEPT_SPAN_REGEX = re.compile(r'<span[^>]*class="swept-chinese"(?:[^>]*data-raw="([^"]*)")?[^>]*>(.*?)</span>')
 
+def find_sentence_bounds(line: str, match_start: int, match_end: int) -> tuple[int, int]:
+    """
+    Tìm vị trí bắt đầu và kết thúc của CÂU VĂN TRỌN VẸN chứa lỗi trong dòng.
+    Ranh giới câu dựa trên các dấu kết câu: '.', '!', '?', '…', '...', hoặc kết thúc bằng ':' ở cuối mệnh đề.
+    TUYỆT ĐỐI KHÔNG cắt theo dấu phẩy (,) hay chấm phẩy (;) để AI có đầy đủ ngữ cảnh biên tập lại cả câu.
+    """
+    # 1. Tìm điểm bắt đầu câu (sent_start)
+    sent_start = 0
+    for idx in range(match_start - 1, -1, -1):
+        ch = line[idx]
+        if ch in ['.', '!', '?', '…']:
+            # Bỏ qua nếu là số thập phân (vd: 3.5 hay 1.2)
+            if ch == '.' and idx > 0 and idx < len(line) - 1 and line[idx-1].isdigit() and line[idx+1].isdigit():
+                continue
+            # Bắt đầu câu mới ngay sau dấu kết thúc câu (và sau các dấu đóng ngoặc/khoảng trắng)
+            next_idx = idx + 1
+            while next_idx < match_start and line[next_idx] in ['"', '”', "'", "’", ")", "]", " ", "\t"]:
+                next_idx += 1
+            sent_start = next_idx
+            break
+            
+    # 2. Tìm điểm kết thúc câu (sent_end)
+    sent_end = len(line)
+    for idx in range(match_end, len(line)):
+        ch = line[idx]
+        if ch in ['.', '!', '?', '…'] or (ch == ':' and (idx == len(line) - 1 or line[idx+1].isspace())):
+            if ch == '.' and idx > 0 and idx < len(line) - 1 and line[idx-1].isdigit() and line[idx+1].isdigit():
+                continue
+            # Lấy trọn dấu kết thúc và các dấu đóng ngoặc kép/đơn đi liền sau
+            end_idx = idx + 1
+            while end_idx < len(line) and line[end_idx] in ['"', '”', "'", "’", ")", "]"]:
+                end_idx += 1
+            sent_end = end_idx
+            break
+            
+    return sent_start, sent_end
+
 def extract_swept_errors(content: str, chapter_no: int) -> List[Dict[str, Any]]:
     """
-    Quét nội dung chương để tìm các thẻ swept-chinese và trích xuất câu văn ngữ cảnh.
+    Quét nội dung chương để tìm các thẻ swept-chinese và trích xuất TRỌN VẸN CẢ CÂU THEO DẤU CHẤM/RANH GIỚI CÂU.
+    TUYỆT ĐỐI KHÔNG cắt vụn theo dấu phẩy để AI có đầy đủ ngữ cảnh biên tập lại cả câu văn.
     """
     errors = []
     if not content:
@@ -145,11 +197,15 @@ def extract_swept_errors(content: str, chapter_no: int) -> List[Dict[str, Any]]:
             faulty_term = match.group(2)
             span_text = match.group(0)
             
-            # Mask the faulty term with [LỖI: ...]
-            masked_line = line[:match.start()] + f"[LỖI: {faulty_term}]" + line[match.end():]
+            # Tìm ranh giới trọn vẹn của câu văn chứa lỗi (theo dấu chấm . ! ? … :)
+            sent_start, sent_end = find_sentence_bounds(line, match.start(), match.end())
+            raw_sentence = line[sent_start:sent_end].strip()
+            
+            # Mask the faulty term with [LỖI: ...] trong câu văn đó
+            raw_sent_masked = line[sent_start:match.start()] + f"[LỖI: {faulty_term}]" + line[match.end():sent_end]
             
             # Clean HTML to provide clear context for LLM
-            sentence_context = re.sub(r'<[^>]+>', '', masked_line).strip()
+            sentence_context = re.sub(r'<[^>]+>', '', raw_sent_masked).strip()
             
             errors.append({
                 "error_id": f"ERR_CH{chapter_no}_{error_idx}",
@@ -157,6 +213,7 @@ def extract_swept_errors(content: str, chapter_no: int) -> List[Dict[str, Any]]:
                 "raw_chinese": raw_chinese,
                 "faulty_term": faulty_term,
                 "sentence_context": sentence_context,
+                "raw_sentence": raw_sentence,
                 "span_html": span_text,
                 "line_idx": i
             })
@@ -166,8 +223,8 @@ def extract_swept_errors(content: str, chapter_no: int) -> List[Dict[str, Any]]:
 
 def apply_swept_corrections(content: str, corrections_map: Dict[str, Any], chapter_errors: List[Dict[str, Any]]) -> str:
     """
-    Thay thế siêu chính xác: Ưu tiên áp dụng cả câu văn hoàn chỉnh đã được Gemini chuốt mượt mà (fixed_sentence),
-    hoặc thay thế cụm từ (corrected_term), tự động khử sạch mọi từ lặp/từ thừa/mở ngoặc đơn rác.
+    Thay thế chuẩn xác 100%: Thay thế trực tiếp thẻ span cũ (swept-chinese) bằng cụm từ / vế câu ngắn đã được chuốt mượt (corrected_term)
+    bọc trong thẻ gạch chân màu cam. Đảm bảo diệt sạch 100% thẻ swept-chinese cũ khỏi file, không bao giờ bị trôi lỗi hay sót thẻ cũ.
     """
     if not content:
         return content
@@ -181,13 +238,19 @@ def apply_swept_corrections(content: str, corrections_map: Dict[str, Any], chapt
         if corr_info is None:
             continue
             
-        fixed_sentence = None
         corrected_term = ""
         if isinstance(corr_info, dict):
-            fixed_sentence = corr_info.get("fixed_sentence")
-            corrected_term = corr_info.get("corrected_term", "")
+            corrected_term = corr_info.get("corrected_term") or corr_info.get("fixed_sentence") or ""
         elif isinstance(corr_info, str):
             corrected_term = corr_info
+            
+        # Nếu AI trả về có bọc [FIX]cụm_từ[/FIX], chỉ trích xuất phần bên trong [FIX]
+        if '[FIX]' in corrected_term and '[/FIX]' in corrected_term:
+            match_fix = re.search(r'\[FIX\](.*?)\[/FIX\]', corrected_term)
+            if match_fix:
+                corrected_term = match_fix.group(1).strip()
+            else:
+                corrected_term = re.sub(r'\[/?FIX\]', '', corrected_term).strip()
             
         corrected_term = re.sub(r'\s*\([^)]+\)', '', corrected_term).strip()
         corrected_term = re.sub(r'\s*\[[^\]]+\]', '', corrected_term).strip()
@@ -201,65 +264,57 @@ def apply_swept_corrections(content: str, corrections_map: Dict[str, Any], chapt
         if 0 <= line_idx < len(lines):
             line = lines[line_idx]
             
-            # ƯU TIÊN 1: Nếu Gemini trả về cả câu văn hoàn chỉnh (fixed_sentence)
-            if fixed_sentence and fixed_sentence.strip():
-                clean_fixed = fixed_sentence.strip()
-                # Chuyển [FIX]...[/FIX] thành thẻ gạch chân và màu cam
-                if '[FIX]' in clean_fixed and '[/FIX]' in clean_fixed:
-                    formatted_fixed = re.sub(
-                        r'\[FIX\](.*?)\[/FIX\]',
-                        rf'<span class="fixed-sentence" style="text-decoration: underline; text-decoration-color: #f59e0b; text-underline-offset: 4px;"><span class="fixed-word" style="color: #f59e0b; font-weight: bold; background: rgba(245, 158, 11, 0.18); padding: 1px 5px; border-radius: 3px; text-decoration: none;" title="{tooltip_str}">\1</span></span>',
-                        clean_fixed
-                    )
-                elif corrected_term and corrected_term in clean_fixed:
-                    formatted_fixed = clean_fixed.replace(
-                        corrected_term,
-                        f'<span class="fixed-sentence" style="text-decoration: underline; text-decoration-color: #f59e0b; text-underline-offset: 4px;"><span class="fixed-word" style="color: #f59e0b; font-weight: bold; background: rgba(245, 158, 11, 0.18); padding: 1px 5px; border-radius: 3px; text-decoration: none;" title="{tooltip_str}">{corrected_term}</span></span>',
-                        1
-                    )
-                else:
-                    formatted_fixed = clean_fixed
-                
-                lines[line_idx] = formatted_fixed
-            elif corrected_term == "":
-                # XÓA BỎ HOÀN TOÀN: Xóa thẻ span và dọn dẹp khoảng trắng/từ lặp/ngoặc đơn thừa
+            if corrected_term == "":
+                # XÓA BỎ HOÀN TOÀN: Xóa thẻ span cũ và dọn dẹp khoảng trắng
                 pattern = r'\s*' + re.escape(span_html) + r'(?:\s*\([^)]+\))?\s*'
                 lines[line_idx] = re.sub(pattern, ' ', line, count=1)
                 lines[line_idx] = re.sub(r'[ \t]{2,}', ' ', lines[line_idx]).strip()
-            else:
-                pre_span = line[:line.find(span_html)] if span_html in line else ""
-                post_span = line[line.find(span_html) + len(span_html):] if span_html in line else ""
+            elif span_html in line:
+                # LẮP ĐÚNG CHỖ 100%: Tách line tại vị trí span_html để thay thế thẻ cũ bằng thẻ màu cam mới
+                span_pos = line.find(span_html)
+                pre_span = line[:span_pos]
+                post_span = line[span_pos + len(span_html):]
                 
                 corr_clean = corrected_term.strip()
                 first_corr_word = corr_clean.split()[0] if corr_clean else ""
                 
-                # 1. Khử từ trùng ở đuôi pre_span (VD: "đầu " + "đầu óc", "thân hình " + "thân hình to lớn")
+                # Tự động làm sạch mảnh chữ cái La Tinh đơn lẻ hoặc mảnh từ bị cắt dở dính ở đuôi pre_span (VD: "Hắc Sí Đại B" + "Đại Bàng" -> "Hắc Sí " + "Đại Bàng")
+                pre_span = re.sub(r'(?:\b[a-zA-ZÀ-Ỹa-zà-ỹĐđ]{1,3}\s*)+$', '', pre_span) if (first_corr_word and pre_span.strip().split() and pre_span.strip().split()[-1].lower() in first_corr_word.lower()) else pre_span
+                # Khử ký tự La Tinh rác đứng dính độc lập ở cuối pre_span (VD: "Đại B " -> "Đại ")
+                pre_span = re.sub(r'\s+\b[a-zA-Z]\b\s*$', ' ', pre_span)
+                
+                # Khử từ trùng ở đuôi pre_span (VD: "đầu " + "đầu óc")
                 if first_corr_word and len(first_corr_word) >= 2:
                     pre_span_clean = re.sub(rf'\b{re.escape(first_corr_word)}\s*$', '', pre_span, flags=re.IGNORECASE)
                     if pre_span_clean != pre_span:
                         pre_span = pre_span_clean
                 
-                # 2. Khử "quy " khi thay "đầu cặc" / "quy đầu" (VD: "rãnh quy " -> "rãnh ")
+                # Khử các từ Hán dư thừa ở đuôi pre_span
                 if re.search(r'(?i)\bquy\s*$', pre_span) and re.match(r'(?i)^(?:đầu\s+cặc|quy\s+đầu|đầu)', corr_clean):
                     pre_span = re.sub(r'(?i)\bquy\s*$', '', pre_span)
-                
-                # 3. Khử "tiếng kêu " khi thay "kêu la" / "tiếng rên rỉ" (VD: "phát ra tiếng kêu " + "rên rỉ" -> "phát ra tiếng rên rỉ")
                 if re.search(r'(?i)\btiếng\s+kêu\s*$', pre_span) and re.match(r'(?i)^(?:rên\s+rỉ|kêu\s+la|la\s+hét)', corr_clean):
                     pre_span = re.sub(r'(?i)\bkêu\s*$', '', pre_span)
-                
-                # 4. Khử "Tiểu " khi thay "bé gái" / "con gái" / "cô bé" (VD: "hệt như Tiểu " + "bé gái" -> "hệt như " + "cô bé")
                 if re.search(r'(?i)\btiểu\s*$', pre_span) and re.match(r'(?i)^(?:bé\s+gái|con\s+gái|cô\s+bé|cô\s+gái|thiếu\s+nữ)', corr_clean):
                     pre_span = re.sub(r'(?i)\btiểu\s*$', '', pre_span)
                     if corr_clean in ["bé gái", "con gái"]:
                         corr_clean = "cô bé"
                 
-                # 5. Khử phần mở ngoặc đơn rác đằng sau post_span (VD: " (chà đạp quấy rối)")
+                # Khử ngoặc đơn thừa ở đầu post_span
                 post_span = re.sub(r'^\s*\([^)]+\)', '', post_span)
                 
                 highlighted_term = f'<span class="fixed-sentence" style="text-decoration: underline; text-decoration-color: #f59e0b; text-underline-offset: 4px;"><span class="fixed-word" style="color: #f59e0b; font-weight: bold; background: rgba(245, 158, 11, 0.18); padding: 1px 5px; border-radius: 3px; text-decoration: none;" title="{tooltip_str}">{corr_clean}</span></span>'
                 
                 lines[line_idx] = (pre_span + " " + highlighted_term + " " + post_span).strip()
                 lines[line_idx] = re.sub(r'[ \t]{2,}', ' ', lines[line_idx])
+            else:
+                # Trường hợp dự phòng nếu span_html chính xác không còn trong dòng (do xử lý lỗi trước đó trên cùng 1 dòng):
+                # Dùng regex diệt sạch thẻ swept-chinese còn dính lại
+                faulty_esc = re.escape(faulty) if faulty else ""
+                fallback_pattern = rf'<span[^>]*class="swept-chinese"[^>]*>{faulty_esc}</span>' if faulty_esc else r'<span[^>]*class="swept-chinese"[^>]*>.*?</span>'
+                
+                highlighted_term = f'<span class="fixed-sentence" style="text-decoration: underline; text-decoration-color: #f59e0b; text-underline-offset: 4px;"><span class="fixed-word" style="color: #f59e0b; font-weight: bold; background: rgba(245, 158, 11, 0.18); padding: 1px 5px; border-radius: 3px; text-decoration: none;" title="{tooltip_str}">{corrected_term}</span></span>'
+                if re.search(fallback_pattern, line):
+                    lines[line_idx] = re.sub(fallback_pattern, highlighted_term, line, count=1)
             
     from app.services.postprocessing.post_processor import fix_broken_words
     new_content = '\n'.join(lines)
@@ -270,8 +325,8 @@ async def batch_fix_swept_errors_llm(novel_id: int, model: Optional[str] = None)
     """
     1. Quét toàn bộ chương dịch (FINAL) của truyện
     2. Gom tất cả lỗi câu cụ thể
-    3. Chia batch tối ưu theo giới hạn đầu ra của Gemini API (tiết kiệm request tối đa, gửi liên tiếp cho tới khi hết sạch lỗi)
-    4. Áp dụng sửa lỗi câu siêu chính xác và lưu lại DB + file
+    3. Trích xuất ngữ cảnh cả câu trọn vẹn theo dấu chấm, nhưng yêu cầu LLM chỉ trả về cụm từ / vế ngắn mượt mà
+    4. Áp dụng thay thế trực tiếp thẻ swept-chinese thành thẻ màu cam chính xác 100% và lưu DB + file
     """
     async with AsyncSessionLocal() as session:
         # Lấy thông tin truyện để biết thể loại
@@ -282,65 +337,67 @@ async def batch_fix_swept_errors_llm(novel_id: int, model: Optional[str] = None)
             
         genre = novel.context_profile or "urban"
             
-        # 1. Fetch all chapters
-        stmt_ch = select(Chapter).where(Chapter.novel_id == novel_id).order_by(Chapter.chapter_no.asc())
-        chapters = (await session.execute(stmt_ch)).scalars().all()
+        # 1. Fetch chapters and versions in 1 single fast query (ưu tiên file đĩa 04_KetQua)
+        from sqlalchemy import case
+        stmt_vers = (
+            select(Chapter.id, Chapter.chapter_no, ChapterVersion)
+            .join(ChapterVersion, Chapter.id == ChapterVersion.chapter_id)
+            .where(
+                Chapter.novel_id == novel_id,
+                ChapterVersion.version_type.in_(["FINAL", "GG"])
+            )
+            .order_by(Chapter.chapter_no.asc(), case((ChapterVersion.version_type == "FINAL", 1), else_=2))
+        )
+        res_vers = await session.execute(stmt_vers)
+        rows_vers = res_vers.all()
         
         all_errors = []
         chapter_content_map = {}
         chapter_error_map = {}
+        seen_chaps = set()
         
-        for ch in chapters:
-            content = None
-            best_ver = None
-            for v_type in ["FINAL", "GG"]:
-                stmt_v = select(ChapterVersion).where(
-                    ChapterVersion.chapter_id == ch.id,
-                    ChapterVersion.version_type == v_type
-                )
-                res_v = await session.execute(stmt_v)
-                ver = res_v.scalar_one_or_none()
-                if ver:
-                    if ver.content:
-                        content = ver.content
-                    elif ver.file_path and os.path.exists(ver.file_path):
-                        try:
-                            content = read_version_file_content(ver.file_path)
-                        except Exception:
-                            pass
-                    if content:
-                        best_ver = ver
-                        break
-                    
-            if content:
-                errs = extract_swept_errors(content, ch.chapter_no)
-                if errs:
-                    all_errors.extend(errs)
-                    chapter_content_map[ch.id] = {"content": content, "version": best_ver}
-                    chapter_error_map[ch.id] = errs
+        for ch_id, ch_no, ver in rows_vers:
+            if ch_id in seen_chaps:
+                continue
+            seen_chaps.add(ch_id)
+            
+            content = ""
+            if ver.file_path and os.path.exists(ver.file_path):
+                try:
+                    content = read_version_file_content(ver.file_path)
+                except Exception:
+                    content = ver.content or ""
+            elif ver.content:
+                content = ver.content
+                
+            # Bỏ qua ngay nếu chương không chứa thẻ gạch chân xanh (swept-chinese) hoặc lỗi (swept-error)
+            if 'swept-chinese' not in content and 'swept-error' not in content:
+                continue
+                
+            errs = extract_swept_errors(content, ch_no)
+            if errs:
+                all_errors.extend(errs)
+                chapter_content_map[ch_id] = {"content": content, "version": ver, "chapter_no": ch_no}
+                chapter_error_map[ch_id] = errs
 
         if not all_errors:
             return {"status": "success", "message": "Không tìm thấy lỗi Hán tự gạch chân xanh nào cần sửa.", "fixed_count": 0}
 
-        # 2. Phân chia đều linh động theo lượng token tối đa (tận dụng trần 65k, chia đều 2, 3, 4 đợt tùy số lỗi, không bị hẫng ở cuối)
+        # 2. Gom toàn bộ câu lỗi vào 1 request duy nhất (vì trả về cực kỳ ngắn gọn ~20 tokens/lỗi)
         from app.api.translation_router import add_system_log
         import math
 
         total_errors = len(all_errors)
+        # Chỉ tốn ~20 output tokens/lỗi do LLM chỉ cần trả về cụm từ ngắn gọn
+        total_est_output_tokens = total_errors * 20
         
-        # Ước lượng token đầu ra thực tế cho toàn bộ lỗi (tiếng Việt có dấu + cú pháp JSON ~ 2.7 ký tự / token)
-        total_est_output_tokens = sum((len(e.get("sentence_context", "")) + 50) / 2.7 for e in all_errors)
-        
-        # Trần token an toàn cho mỗi request: nhắm mức ~48.000 tokens (đệm an toàn 17.500 token so với trần cứng 65.536 của Gemini Flash)
-        # Đồng thời giới hạn tối đa không quá 700 câu lỗi mỗi request để đảm bảo chất lượng phản hồi
-        MAX_SAFE_TOKENS_PER_REQ = 48000
-        MAX_SAFE_ITEMS_PER_REQ = 700
+        MAX_SAFE_TOKENS_PER_REQ = 50000
+        MAX_SAFE_ITEMS_PER_REQ = 500
         
         batches_by_tokens = math.ceil(total_est_output_tokens / MAX_SAFE_TOKENS_PER_REQ)
         batches_by_items = math.ceil(total_errors / MAX_SAFE_ITEMS_PER_REQ)
         total_batches = max(1, batches_by_tokens, batches_by_items)
         
-        # Chia đều tất cả các lỗi vào total_batches để các đợt cân bằng tải hoàn hảo, không bị hẫng ở đợt cuối
         k, m = divmod(total_errors, total_batches)
         batches = [
             all_errors[i * k + min(i, m) : (i + 1) * k + min(i + 1, m)]
@@ -348,15 +405,15 @@ async def batch_fix_swept_errors_llm(novel_id: int, model: Optional[str] = None)
         ]
 
         if total_batches == 1:
-            add_system_log(f"🔍 Gom toàn bộ {total_errors} câu lỗi (~{int(total_est_output_tokens):,} token) gửi AI xử lý 1 lượt duy nhất (tận dụng trần 65k token)...", "info")
+            add_system_log(f"🔍 Gom toàn bộ {total_errors} vị trí lỗi gửi AI sửa trong 1 request duy nhất...", "info")
         else:
-            add_system_log(f"🔍 Tìm thấy {total_errors} câu lỗi (~{int(total_est_output_tokens):,} token). Tự động chia đều làm {total_batches} đợt (~{len(batches[0])} câu/đợt) để tối ưu trần 65k và tiết kiệm request...", "info")
+            add_system_log(f"🔍 Tìm thấy {total_errors} vị trí lỗi. Chia làm {total_batches} đợt (~{len(batches[0])} câu/đợt)...", "info")
 
         corrections_map = {}
 
         for b_idx, batch_errs in enumerate(batches):
             if total_batches > 1:
-                add_system_log(f"⚡ Đang gửi AI xử lý đợt {b_idx + 1}/{total_batches} ({len(batch_errs)} câu lỗi)...", "info")
+                add_system_log(f"⚡ Đang gửi AI xử lý đợt {b_idx + 1}/{total_batches} ({len(batch_errs)} vị trí lỗi)...", "info")
 
             llm_input_items = [
                 {
@@ -368,59 +425,34 @@ async def batch_fix_swept_errors_llm(novel_id: int, model: Optional[str] = None)
                 for err in batch_errs
             ]
 
-            prompt = f"""Bạn là ĐẠI SƯ BIÊN TẬP VIÊN VĂN HỌC & TIỂU THUYẾT CAO CẤP (thể loại: {genre.upper()}).
-Dưới đây là danh sách TẤT CẢ CÁC CÂU VĂN ĐANG BỊ BẤT THƯỜNG / LỖI / THỪA TỪ / DỊCH NGÔ NGHÊ cần bạn biên tập lại.
+            prompt = f"""Bạn là TỔNG BIÊN TẬP VIÊN VĂN HỌC & TIỂU THUYẾT CAO CẤP (thể loại: {genre.upper()}).
+Dưới đây là danh sách các lỗi dịch thô / sót Hán tự / convert sượng sùng (được đánh dấu là [LỖI: ...]) kèm chữ Hán gốc [raw_chinese]. Ngữ cảnh xung quanh (trích xuất cả câu trọn vẹn theo dấu chấm) được cung cấp để bạn nắm rõ bối cảnh câu chuyện.
 
-Mỗi mục lỗi chứa:
-- [error_id]: Mã định danh lỗi
-- [raw_chinese]: Từ/cụm từ gốc tiếng Trung
-- [faulty_term]: Từ bị dịch máy sai/ngô nghê
-- [sentence_context]: NGUYÊN CẢ CÂU VĂN TIẾNG VIỆT HIỆN TẠI (đã đánh dấu vị trí lỗi là [LỖI: ...])
-
-=== DANH SÁCH CÁC CÂU CẦN BIÊN TẬP LẠI ===
+=== DANH SÁCH CÁC VỊ TRÍ CẦN SỬA ===
 {json.dumps(llm_input_items, ensure_ascii=False, indent=2)}
 
-=== QUY TẮC BẮT BUỘC: QUAN SÁT CẢ TỪ ĐỨNG TRƯỚC, ĐỨNG SAU & BIÊN TẬP NGUYÊN CÂU CHO TRƠN TRU 100% ===
-⚠️ TUYỆT ĐỐI KHÔNG ĐƯỢC CHỈ CHĂM CHĂM SỬA 1 TỪ DUY NHẤT! 
-Trong câu có từ lỗi tức là CÂU VĂN ĐÓ ĐANG BẤT THƯỜNG. Bạn là Biên tập viên cao cấp, nhiệm vụ của bạn là PHẢI ĐỂ Ý KỸ CẢ TỪ ĐỨNG TRƯỚC, TỪ ĐỨNG SAU VÀ TOÀN BỘ CÂU VĂN ĐỂ SỬA LẠI CẢ CÂU CHO THẬT PHÙ HỢP, KHÔNG CÒN LỖI NỮA:
+=== NGUYÊN TẮC SỬA LỖI & CHUỐT CÂU VĂN (TRÁCH NHIỆM LÀM SẠCH TRIỆT ĐỂ) ===
+1. TRÁCH NHIỆM SỬA VÀ LÀM SẠCH TRỌN VẸN CẢ CÂU VĂN (fixed_sentence):
+   - Bạn được cung cấp CẢ CÂU TRỌN VẸN (sentence_context) chứa vị trí [LỖI: ...].
+   - TUYỆT ĐỐI KHÔNG ĐƯỢC CHỈ VẤT VỀ TỪ ĐƠN LẺ! Bạn có TRÁCH NHIỆM SỬA VÀ LÀM SẠCH CẢ CÂU VĂN, trả về nguyên văn CÂU MỚI HOÀN CHỈNH (fixed_sentence) trôi chảy, tự nhiên.
+   - Xóa bỏ triệt để các chữ cái La Tinh dính rác dở chừng (ví dụ: chữ 'B' dính dở chừng trước 'Đại Bàng' thành 'Đại B Đại Bằng' -> BẮT BUỘC SỬA THÀNH 'Đại Bàng'; chữ 'Võ B' dính trước 'Võ Bị' -> BẮT BUỘC SỬA THÀNH 'Võ Bị').
+   - Xóa bỏ toàn bộ từ lặp rác, mảnh từ bị cắt dở do dịch ngu hoặc sót Hán.
 
-1. QUAN SÁT KỸ TỪ ĐỨNG TRƯỚC VÀ ĐỨNG SAU CHỖ LỖI ĐỂ KHỬ SẠCH TỪ THỪA / TỪ LẶP:
-   - Nhìn xem từ đứng trước là gì, từ đứng sau là gì, có bị thừa chữ, lặp nghĩa hay dính mảnh ghép Hán Việt dở dang không:
-     * Ví dụ 1: Trước lỗi có chữ "Tiểu", trong lỗi có [LỖI: con gái] -> Ghép lại bị thành "Tiểu bé gái" (rất ngô nghê và thừa chữ). Bạn PHẢI quan sát chữ "Tiểu" đằng trước để viết lại câu thành: "...hệt như [FIX]cô bé[/FIX] ngay trước mặt..." (xóa chữ "Tiểu" thừa).
-     * Ví dụ 2: Trước lỗi có "tiếng kêu", trong lỗi có [LỖI: Kêu la] -> Bạn PHẢI nhìn chữ "tiếng kêu" đằng trước để xóa từ lặp và viết lại thành: "...phát ra [FIX]tiếng rên rỉ dâm đãng[/FIX], chẳng hề động đậy gì." (CẤM để lại "tiếng kêu Kêu la" hay "tiếng kêu rên rỉ" lặp từ!).
-     * Ví dụ 3: Trước lỗi có "rãnh quy", trong lỗi có [LỖI: cái đầu] -> Bạn PHẢI quan sát chữ "rãnh quy" đằng trước để viết lại thành: "...ngay dưới [FIX]rãnh đầu cặc[/FIX]...".
-     * Ví dụ 4: Trước lỗi có "đầu", trong lỗi có [LỖI: não] -> Viết lại thành: "...[FIX]đầu óc[/FIX] của hắn...".
-     * Ví dụ 5: Trước lỗi có "thân hình", trong lỗi có [LỖI: to lớn], sau lỗi lại có chữ "to lớn" -> Viết lại thành: "...[FIX]thân hình đồ sộ[/FIX]..." (gọt sạch phần lặp).
-     * Ví dụ 6: Sau lỗi có mở ngoặc giải thích rác kiểu "(chà đạp quấy rối)" -> Xóa bỏ hoàn toàn phần mở ngoặc rác đó.
-
-2. NẾU SAI NGHĨA / DỊCH MÁY NGÔ NGHÊ -> SỬA THÀNH TỪ NGỮ GỢI CẢM, SINH ĐỘNG, GIÀU HÌNH ẢNH:
-   - 浪叫 -> "tiếng rên rỉ dâm đãng" / "rên rỉ"
-   - 玩弄 / 亵弄 -> "mân mê" / "sờ soạng" / "vần vò"
-   - 抽插 -> "thúc đẩy mãnh liệt" / "nhấp đâm liên hồi"
-   - 灌透 -> "rót đầy bên trong" / "ngập tràn"
-   - 瘫软 -> "mềm nhũn ngã quỵ"
-   - 痉挛 / 抽搐 -> "co giật cực khoái" / "co thắt"
-   - 穴口 / 玉门 -> "khe hoa" / "miệng hoa huyệt" / "cửa mình"
-   - 熟女 -> "thục nữ"
-   - 龟头 -> "đầu cặc" / "phần đầu nhạy cảm"
-
-3. NẾU CÂU VĂN KHÓ HIỂU / QUÈ QUẶT -> DỊCH LẠI THOÁT Ý XOAY QUANH CHỖ TỪ LỖI:
-   - Điều chỉnh cả từ trước, từ sau và các từ nối để NGUYÊN CẢ CÂU VĂN ĐÓ trở nên trơn tru, bay bổng, gãy gọn chuẩn văn học audio/tiểu thuyết xuất bản.
-
-4. BẮT BUỘC BỌC [FIX]...[/FIX] vào chỗ cụm từ bạn đã sửa đổi trong câu fixed_sentence để hệ thống làm nổi bật cho người đọc.
+2. XÓA BỎ TRIỆT ĐỂ LỖI 'TỪ GỐC (BẢN DỊCH)' & NGOẶC ĐƠN LẶP TỪ:
+   - Nếu trong câu xuất hiện dạng `Chữ Hán (Bản dịch tiếng Việt)` (ví dụ: `哼 (Hừ!)`) hoặc lặp từ trong ngoặc (ví dụ: `"Hừ!" (Hừ!)` hay `Hừ (Hừ)`): BẮT BUỘC xóa bỏ ngoặc đơn, lấy thẳng từ dịch tiếng Việt thuần tự nhiên (ví dụ: `Hừ!`).
+   - Điền câu văn hoàn chỉnh đã làm sạch 100% vào trường `fixed_sentence` và điền cụm từ thay thế chuẩn vào `corrected_term`.
 
 === CẤU TRÚC JSON BẮT BUỘC TRẢ VỀ ===
 {{
   "corrections": [
     {{
       "error_id": "ERR_CHX_Y",
-      "fixed_sentence": "Nguyên cả câu văn hoàn chỉnh sau khi bạn đã sửa trơn tru 100%, có bọc [FIX]cụm_từ_đã_sửa[/FIX]",
-      "corrected_term": "cụm từ thay thế ngắn gọn (để ghi nhật ký)"
+      "corrected_term": "Đại Bàng",
+      "fixed_sentence": "Câu văn mới đã sửa mượt mà sạch vẽ 100%"
     }}
   ]
 }}
-5. Chỉ trả về JSON thuần hợp lệ, không bọc thẻ markdown ```json.
-"""
+Chỉ trả về JSON thuần hợp lệ, không bọc thẻ markdown."""
             llm_response, err_msg = await call_gemini_api(prompt, model=model, is_json=True)
             if not llm_response:
                 add_system_log(f"⚠️ Đợt {b_idx + 1} gặp lỗi: {err_msg or 'Phản hồi rỗng'}", "warning")
@@ -474,8 +506,7 @@ Trong câu có từ lỗi tức là CÂU VĂN ĐÓ ĐANG BẤT THƯỜNG. Bạn 
                     from app.services.tts.pipeline import sanitize_tts_text
                     from app.core.config import OUTPUT_DIR
                     novel_folder = novel.title_rough or novel.title_raw
-                    ch_obj = next((c for c in chapters if c.id == ch_id), None)
-                    c_no = ch_obj.chapter_no if ch_obj else 0
+                    c_no = chapter_content_map[ch_id].get("chapter_no", 0)
                     tts_base_dir = str(OUTPUT_DIR / "04b_VanBanTTS")
                     tts_out_dir = os.path.join(tts_base_dir, novel_folder, "chapters")
                     os.makedirs(tts_out_dir, exist_ok=True)

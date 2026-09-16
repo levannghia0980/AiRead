@@ -187,77 +187,58 @@ async def _extract_and_save_batch_entities(novel_id: int, batch: List[int], forc
         combined_raw_text = ""
         chapter_raw_map: Dict[int, str] = {}
         async with AsyncSessionLocal() as session:
-            stmt_raws = select(ChapterVersion).where(
+            stmt_raws = select(ChapterVersion, Chapter.chapter_no).join(
+                Chapter, Chapter.id == ChapterVersion.chapter_id
+            ).where(
                 ChapterVersion.chapter_id.in_(unlinked_batch),
                 ChapterVersion.version_type == "RAW"
-            )
+            ).order_by(Chapter.chapter_no.asc())
             res_raws = await session.execute(stmt_raws)
-            for r_ver in res_raws.scalars():
-                if r_ver.file_path and os.path.exists(r_ver.file_path):
+            for r_ver, c_no in res_raws.all():
                     try:
-                        with open(r_ver.file_path, "r", encoding="utf-8", errors="ignore") as rf:
-                            c_content = rf.read()
+                        with open(r_ver.file_path, "r", encoding="utf-8") as rf:
+                            from app.services.preprocessing.dichhan.raw_text_cleaner import sanitize_chinese_raw_text
+                            c_content = sanitize_chinese_raw_text(rf.read())
                             chapter_raw_map[r_ver.chapter_id] = c_content
-                            combined_raw_text += "\n" + c_content
+                            combined_raw_text += f"\n<chapter_{c_no}>\n{c_content}\n</chapter_{c_no}>"
                     except Exception:
                         pass
+
+            # Lấy thông tin thể loại truyện
+            stmt_novel = select(Novel).where(Novel.id == novel_id)
+            res_novel = await session.execute(stmt_novel)
+            novel_obj = res_novel.scalar_one_or_none()
+            novel_genre = (novel_obj.genres or novel_obj.context_profile or "xianxia") if novel_obj else "xianxia"
 
             # Lấy các thực thể TÊN RIÊNG đã có của bộ truyện (bỏ qua từ thường và correction)
             stmt_all_ents = select(NovelEntity).where(
                 NovelEntity.novel_id == novel_id,
-                NovelEntity.entity_type.in_(["NAME", "PLACE", "SECT", "SKILL", "ITEM", "CREATURE", "PERSON"])
+                NovelEntity.entity_type.in_(["NAME", "PLACE", "SECT", "SKILL", "ITEM", "CREATURE", "PERSON", "OTHER"])
             )
             res_all_ents = await session.execute(stmt_all_ents)
-            all_db_entities = []
-            for e in res_all_ents.scalars():
-                role_str = (e.role or "").upper()
-                if "TỪ THƯỜNG" in role_str or "TU THUONG" in role_str or "THAM KHẢO" in role_str or "THAM KHAO" in role_str:
-                    continue
-                all_db_entities.append(e)
-
-        # 🚀 TỐI ƯU HÓA: Phân nhóm từ điển theo ký tự đầu tiên (Bucket Indexing O(N))
-        prefix_db_bucket: Dict[str, List[NovelEntity]] = {}
-        for ent in all_db_entities:
-            cn = ent.chinese_name.strip() if ent.chinese_name else ""
-            if cn and len(cn) >= 2:
-                prefix_db_bucket.setdefault(cn[0], []).append(ent)
-        for first_char in prefix_db_bucket:
-            prefix_db_bucket[first_char].sort(key=lambda x: len(x.chinese_name.strip()), reverse=True)
+            all_db_entities = res_all_ents.scalars().all()
 
         confirmed_db_map: Dict[str, Dict[str, Any]] = {}
-        text_len = len(combined_raw_text)
-        t_idx = 0
-        while t_idx < text_len:
-            ch = combined_raw_text[t_idx]
-            cand_ents = prefix_db_bucket.get(ch)
-            if not cand_ents:
-                t_idx += 1
+        for ent in all_db_entities:
+            role_str = (ent.role or "").upper()
+            if "TỪ THƯỜNG" in role_str or "TU THUONG" in role_str or "THAM KHẢO" in role_str or "THAM KHAO" in role_str:
                 continue
+            cn = ent.chinese_name.strip() if ent.chinese_name else ""
+            if cn and len(cn) >= 2 and cn in combined_raw_text:
+                vn = sanitize_entity_vietnamese(ent.rough_translation, cn)
+                confirmed_db_map[cn] = {
+                    "chinese_name": cn,
+                    "vietnamese_name": vn,
+                    "rough_translation": vn,
+                    "entity_type": ent.entity_type or "NAME",
+                    "gender": ent.gender,
+                    "role": ent.role or "[TÊN CỐ ĐỊNH]",
+                    "evaluation": "TÊN CỐ ĐỊNH",
+                    "from_db": True,
+                    "db_id": ent.id
+                }
 
-            matched_len = 0
-            for ent in cand_ents:
-                cn = ent.chinese_name.strip()
-                c_len = len(cn)
-                if t_idx + c_len <= text_len and combined_raw_text[t_idx:t_idx + c_len] == cn:
-                    if cn not in confirmed_db_map:
-                        vn = sanitize_entity_vietnamese(ent.rough_translation, cn)
-                        confirmed_db_map[cn] = {
-                            "chinese_name": cn,
-                            "vietnamese_name": vn,
-                            "rough_translation": vn,
-                            "entity_type": ent.entity_type or "NAME",
-                            "gender": ent.gender,
-                            "role": ent.role or "[TÊN CỐ ĐỊNH]",
-                            "evaluation": "TÊN CỐ ĐỊNH",
-                            "from_db": True,
-                            "db_id": ent.id
-                        }
-                    matched_len = c_len
-                    break
-
-            t_idx += (matched_len if matched_len > 0 else 1)
-
-        print(f"ℹ️ [THỰC THỂ ĐÃ CÓ] Đã tìm thấy trực tiếp {len(confirmed_db_map)} thực thể đã có trong CSDL xuất hiện ở lô này.")
+        print(f"ℹ️ [THỰC THỂ ĐÃ CÓ] Đã rà soát & tìm thấy trực tiếp {len(confirmed_db_map)} thực thể từ các chương trước xuất hiện lại ở lô này.")
 
         # -------------------------------------------------------------
         # BƯỚC 2: BÓC TÁCH THỰC THỂ TRỰC TIẾP TỪ TOÀN VĂN RAW BẰNG LLM (ZERO CODE HEURISTICS)
@@ -270,9 +251,16 @@ async def _extract_and_save_batch_entities(novel_id: int, batch: List[int], forc
         }
 
         new_llm_entities = []
+        batch_author_notes = []
+        pure_note_chaps = []
         try:
-            new_llm_entities = await extract_batch_entities_direct_llm(combined_raw_text, existing_context_for_llm)
-            print(f"✅ [THỰC THỂ LLM] Đã bóc tách thành công {len(new_llm_entities)} thực thể từ toàn văn lô chương.")
+            new_llm_entities, batch_author_notes, pure_note_chaps = await extract_batch_entities_direct_llm(
+                combined_raw_text, existing_context_for_llm, return_author_notes=True, genre_key=novel_genre
+            )
+            note_msg = f" và {len(batch_author_notes)} câu lời tác giả ở cuối chương" if batch_author_notes else ""
+            print(f"✅ [THỰC THỂ LLM] Đã bóc tách thành công {len(new_llm_entities)} thực thể{note_msg} theo thể loại '{novel_genre}' từ toàn văn lô chương.")
+            if pure_note_chaps:
+                print(f"📌 [LLM NHẬN DIỆN CHƯƠNG LỜI TÁC GIẢ] LLM đã xác nhận các chương sau 100% là Lời Tác Giả/Cảm Ơn: {pure_note_chaps}")
         except Exception as llm_err:
             msg_llm_fail = f"⚠️ [THỰC THỂ LLM LỖI]: {llm_err}. Kích hoạt chế độ Fallback Hán-Việt tự động..."
             print(msg_llm_fail)
@@ -425,11 +413,91 @@ async def _extract_and_save_batch_entities(novel_id: int, batch: List[int], forc
         msg_ent_done = f"✅ [THỰC THỂ HOÀN TẤT] Đã bóc tách và đồng bộ cả 3 file ({len(entities)} thực thể, {saved_count} mới) cho lô Chương {chap_nos}!"
         print(msg_ent_done)
         add_system_log(msg_ent_done, "success")
+        return batch_author_notes, pure_note_chaps
 
     except Exception as e:
         msg_ent_err = f"⚠️ [THỰC THỂ CẢNH BÁO] Không thể bóc tách thực thể lô Chương {chap_nos}: {e}"
         print(msg_ent_err)
         add_system_log(msg_ent_err, "warning")
+        return [], []
+
+async def _handle_and_filter_author_note_chapters(novel_id: int, current_batch: List[int], pure_note_chaps: List[int] = None) -> List[int]:
+    """
+    Rà soát các chương trong lô theo kết quả JSON do LLM nhận diện (pure_author_note_chapters).
+    Nếu có chương Lời Tác Giả (ví dụ Chương 14):
+    1. Chỉ lưu tiêu đề chương (ví dụ: 'Chương 14: Lời Cảm Ơn') trực tiếp vào DB & đĩa Local (04_KetQua).
+    2. Đánh dấu status = 'FINAL_DONE' cho chương tác giả đó.
+    3. Tách ID chương đó ra khỏi lô, CHỈ DỊCH CÁC CHƯƠNG TRUYỆN CÒN LẠI TRONG LÔ (không lấy thêm chương mới).
+    """
+    from app.services.preprocessing.dichhan.hanviet_data import build_hanviet_name
+
+    pure_note_set = set(pure_note_chaps or [])
+    remaining_batch = []
+    
+    async with AsyncSessionLocal() as session:
+        # Lấy tên truyện để lưu file
+        stmt_n = select(Novel).where(Novel.id == novel_id)
+        res_n = await session.execute(stmt_n)
+        n_obj = res_n.scalar_one_or_none()
+        novel_title = n_obj.title_rough if (n_obj and n_obj.title_rough) else (n_obj and n_obj.title_raw or "Novel")
+        from app.services.storage.file_storage import sanitize_filename
+        n_folder = sanitize_filename(novel_title)
+        out_dir = os.path.join(str(OUTPUT_DIR / "04_KetQua"), n_folder)
+        os.makedirs(out_dir, exist_ok=True)
+
+        for cid in current_batch:
+            stmt = select(Chapter).where(Chapter.id == cid)
+            res = await session.execute(stmt)
+            chap = res.scalar_one_or_none()
+            if not chap:
+                continue
+
+            title_raw = chap.title_raw or ""
+            c_no = chap.chapter_no
+            
+            # Ưu tiên 1: Kết quả JSON do LLM bóc tách trực tiếp từ văn bản lô
+            is_llm_detected_note = c_no in pure_note_set
+            
+            # Ưu tiên 2: Tiêu đề chứa từ khóa đặc thù Lời Tác Giả / Cảm Ơn
+            note_keywords = ["致谢", "感言", "单章", "通知", "说明", "月票", "打赏", "盟主", "架空", "上架感言", "完本感言", "总结", "推书", "PS", "P.S"]
+            is_title_note = any(kw in title_raw for kw in note_keywords)
+            
+            if is_llm_detected_note or is_title_note:
+                reason_str = "LLM nhận diện JSON" if is_llm_detected_note else "Tiêu đề Lời Tác Giả"
+                msg_note = f"📌 [BỎ QUA DỊCH] Chương {c_no} ({title_raw or 'Lời Tác Giả'}) được ({reason_str}) xác nhận là chương Lời Tác Giả. Chỉ lưu tiêu đề & đánh dấu hoàn tất..."
+                print(msg_note)
+                add_system_log(msg_note, "info")
+                
+                try:
+                    from app.services.preprocessing.dichhan.hanviet_data import build_hanviet_name
+                    vn_title_part = build_hanviet_name(title_raw) if title_raw else "Lời Tác Giả"
+                    vn_title_part = re.sub(r'^(?:Chương|第)\s*\d+\s*[章:\s]*', '', vn_title_part, flags=re.IGNORECASE).strip()
+                    if not vn_title_part:
+                        vn_title_part = "Lời Tác Giả / Cảm Ơn"
+
+                    full_txt = f"Chương {c_no}: {vn_title_part}\n\n[Chương Lời Tác Giả / Cảm Ơn / Donate]"
+                    
+                    out_path = os.path.join(out_dir, f"{c_no:06d}.txt")
+                    with open(out_path, "w", encoding="utf-8") as f:
+                        f.write(full_txt)
+                        
+                    # Lưu DB Version & status FINAL_DONE
+                    v_final = ChapterVersion(chapter_id=cid, version_type="FINAL", content=full_txt, file_path=out_path)
+                    session.add(v_final)
+                    chap.status = "FINAL_DONE"
+                    await session.commit()
+                    
+                    msg_done = f"✅ [ĐÃ LƯU TIÊU ĐỀ] Chương {c_no} (Lời Tác Giả) đã được lưu tiêu đề vào Local & DB thành công!"
+                    print(msg_done)
+                    add_system_log(msg_done, "success")
+                except Exception as e_note:
+                    err_n = f"⚠️ [LỖI LƯU TIÊU ĐỀ CHƯƠNG TÁC GIẢ] Chương {c_no}: {e_note}"
+                    print(err_n)
+                    add_system_log(err_n, "warning")
+            else:
+                remaining_batch.append(cid)
+                
+    return remaining_batch
 
 async def _translate_batch(batch: List[int], enable_names_dict: bool = True, **kwargs):
     """Dịch AI trực tiếp từ bản gốc RAW (RAWT) sang Tiếng Việt chuẩn"""
@@ -447,7 +515,8 @@ async def _translate_batch(batch: List[int], enable_names_dict: bool = True, **k
             enable_names_dict=enable_names_dict, 
             enable_unblock=enable_unblock, 
             enable_erotic=enable_erotic,
-            custom_prompt=kwargs.get("custom_prompt", "")
+            custom_prompt=kwargs.get("custom_prompt", ""),
+            author_notes=kwargs.get("author_notes", [])
         )
         ver_type = "LLM"
             
@@ -560,11 +629,22 @@ async def run_translation_batch_pipeline(
         }
 
     async with _PIPELINE_LOCK:
+        # Tự động nạp cấu hình AIREAD_DELAY từ setting nếu có
+        try:
+            from app.core.config import get_active_setting
+            db_delay = await get_active_setting("AIREAD_DELAY")
+            if db_delay is not None:
+                db_delay_val = float(db_delay)
+                if db_delay_val > 0 and (delay_sec == 0.5 or delay_sec <= 0):
+                    delay_sec = db_delay_val
+        except Exception:
+            pass
+
         config_msg = (
             f"⚙️ [CẤU HÌNH TIẾN TRÌNH DỊCH] Novel ID: {novel_id} | "
             f"Luồng: {translation_flow.upper()} | "
             f"Số chương/Lô (Batch): {batch_size} | "
-            f"Delay giữa các lô: {delay_sec}s | "
+            f"Delay giữa các lượt request: {delay_sec}s | "
             f"Phạm vi: Chương {start_chapter if start_chapter > 0 else 'Đầu'} -> {end_chapter if end_chapter > 0 else 'Cuối'}"
         )
         print(config_msg)
@@ -660,9 +740,24 @@ async def run_translation_batch_pipeline(
                 # Đảm bảo lô hiện tại có sẵn file bản gốc RAW tiếng Trung
                 await _ensure_chapters_crawled(current_batch)
 
+                # Tự động phát hiện và tách các chương Lời Tác Giả / Cảm Ơn / Donate ra dịch riêng & lưu DB/Local
+                current_batch = await _handle_and_filter_author_note_chapters(novel_id, current_batch)
+                if not current_batch:
+                    print("ℹ️ Toàn bộ các chương trong lô hiện tại là chương Lời Tác Giả và đã được lưu xong. Chuyển sang lô tiếp theo.")
+                    total_saved_count += 1
+                    continue
+
+                chap_nos = await _get_chap_numbers(current_batch)
+
                 # BƯỚC 1: BÓC TÁCH THỰC THỂ LÔ & LƯU VÀO MÁY
+                batch_author_notes = []
                 if enable_names_dict:
-                    await _extract_and_save_batch_entities(novel_id, current_batch)
+                    batch_author_notes = await _extract_and_save_batch_entities(novel_id, current_batch) or []
+                    if delay_sec > 0:
+                        delay_req_msg = f"⏳ Tạm nghỉ {delay_sec:.1f}s giữa các lượt request (sau khi bóc tách thực thể, chuẩn bị gửi dịch)..."
+                        print(delay_req_msg)
+                        add_system_log(delay_req_msg, "info")
+                        await asyncio.sleep(delay_sec)
 
                 # BƯỚC 2: KHỞI ĐỘNG LLM DỊCH LÔ
                 batch_info_str = f"Lô {len(current_batch)} chương (Chương {min(chap_nos)}->{max(chap_nos)})"
@@ -690,7 +785,8 @@ async def run_translation_batch_pipeline(
                     enable_names_dict=enable_names_dict,
                     enable_unblock=kwargs.get("enable_unblock", True),
                     enable_erotic=kwargs.get("enable_erotic", False),
-                    custom_prompt=kwargs.get("custom_prompt", "")
+                    custom_prompt=kwargs.get("custom_prompt", ""),
+                    author_notes=batch_author_notes
                 )
                 results.append(translate_res)
 
@@ -771,9 +867,9 @@ async def run_translation_batch_pipeline(
                         raise ValueError(err_stop)
 
                 if delay_sec > 0:
-                    delay_msg = f"⏳ Tạm nghỉ {delay_sec:.1f}s trước khi chuyển sang Lô tiếp theo..."
+                    delay_msg = f"⏳ Tạm nghỉ {delay_sec:.1f}s giữa các lượt request (hoàn thành lô, chuẩn bị lô tiếp theo)..."
                     print(delay_msg)
-                    add_system_log(delay_msg, "warning")
+                    add_system_log(delay_msg, "info")
                     await asyncio.sleep(delay_sec)
 
             return {

@@ -116,21 +116,22 @@ async def get_novel_detail(novel_id: int = Path(...)) -> Dict[str, Any]:
 
         for ch_id, (prio, content, f_path) in best_version_map.items():
             text_to_check = ""
-            if content:
-                text_to_check = content
-            elif f_path and os.path.exists(f_path):
+            if f_path and os.path.exists(f_path):
                 try:
                     with open(f_path, "r", encoding="utf-8", errors="ignore") as f:
                         text_to_check = f.read(50000)
                 except Exception:
-                    pass
+                    text_to_check = content or ""
+            elif content:
+                text_to_check = content
 
             if text_to_check:
                 if 'fallback-word' in text_to_check:
                     fallback_map[ch_id] = True
                 if 'fixed-word' in text_to_check or 'fixed-sentence' in text_to_check:
                     fixed_map[ch_id] = True
-                if 'swept-error' in text_to_check or 'swept-chinese' in text_to_check:
+                plain_text_only = re.sub(r'<[^>]+>', '', text_to_check)
+                if 'swept-error' in text_to_check or 'swept-chinese' in text_to_check or bool(re.search(r'[\u4e00-\u9fff]', plain_text_only)):
                     swept_error_map[ch_id] = True
 
         chapters_list = []
@@ -1238,12 +1239,13 @@ async def get_chapter_text(novel_id: int = Path(...), chapterNo: int = Path(...)
         for v_type in ["FINAL", "CONTEXTT", "LLM", "GG"]:
             if v_type in version_map:
                 v_trans = version_map[v_type]
-                translated_text = v_trans.content or ""
-                if not translated_text and v_trans.file_path and os.path.exists(v_trans.file_path):
+                if v_trans.file_path and os.path.exists(v_trans.file_path):
                     try:
                         translated_text = read_version_file_content(v_trans.file_path)
                     except Exception:
-                        pass
+                        translated_text = v_trans.content or ""
+                else:
+                    translated_text = v_trans.content or ""
                 if translated_text:
                     break
 
@@ -1282,11 +1284,19 @@ async def update_chapter_text(novel_id: int = Path(...), chapterNo: int = Path(.
         file_path = os.path.join(out_dir, f"{chapterNo:06d}.txt")
 
         clean_text = payload.translated_text
-        if "<p" in clean_text or "<br" in clean_text or "<div" in clean_text:
+        if any(tag in clean_text.lower() for tag in ["<p", "<br", "<div"]):
             clean_text = re.sub(r'<br\s*/?>', '\n', clean_text, flags=re.IGNORECASE)
-            clean_text = re.sub(r'</p>', '\n\n', clean_text, flags=re.IGNORECASE)
-            clean_text = re.sub(r'<[^>]+>', '', clean_text)
+            clean_text = re.sub(r'</(?:p|div|h[1-6]|li|tr)>\s*', '\n', clean_text, flags=re.IGNORECASE)
+            clean_text = re.sub(r'<(?:p|div|h[1-6]|li|tr)[^>]*>', '', clean_text, flags=re.IGNORECASE)
+            # GIỮ NGUYÊN 100% các thẻ span điểm nhấn (fixed-word từ vàng, fixed-sentence, swept-chinese chữ xanh, swept-error, fallback-word)
+            clean_text = re.sub(r'<(?!/?span\b)[^>]+>', '', clean_text, flags=re.IGNORECASE)
+            clean_text = re.sub(r'[ \t]+', ' ', clean_text)
             clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
+
+        # Quét và bọc thẻ chữ xanh cho các Hán tự còn sót lại (nếu có)
+        from app.services.postprocessing.post_processor import unwrap_parenthesized_han, sweep_chinese_characters
+        clean_text, _ = unwrap_parenthesized_han(clean_text)
+        clean_text = await sweep_chinese_characters(clean_text)
 
         # Ghi file ra đĩa
         try:

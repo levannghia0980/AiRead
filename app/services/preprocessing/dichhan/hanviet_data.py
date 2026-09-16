@@ -84,6 +84,7 @@ SPECIAL_ENTITIES_MAP = {
     "武力值": "thực lực võ công",
     "战斗力": "chiến lực",
     "大冤种": "đại oan gia",
+    "老登": "lão già",
     "张弓": "Trương Cung",
     "阎罗王": "Diêm La Vương",
     "华子": "Hoa Tử",
@@ -294,15 +295,16 @@ def sanitize_entity_vietnamese(vn_name: str, ch_name: str = "") -> str:
 
     # Nếu còn chứa chữ Hán trong tên tiếng Việt -> Khử sạch chữ Hán sang âm Hán-Việt chuẩn
     if re.search(r'[\u4e00-\u9fff]', clean_str):
+        if ch_name:
+            return build_hanviet_name(ch_name)
         def _fix_han_chunk(m):
             raw_chunk = m.group(0)
-            # Loại bỏ ký tự tiền tố latin đơn lẻ bị dính liền trước chữ Hán (như 'L' trong 'L岚', 'C' trong 'C阁')
-            pure_han = re.sub(r'^[a-zA-Z]\s*', '', raw_chunk)
+            pure_han = re.sub(r'^[a-zA-Z]+\s*', '', raw_chunk)
             if not pure_han:
                 pure_han = raw_chunk
             return " " + build_hanviet_name(pure_han) + " "
 
-        cleaned_vn = re.sub(r'(?:[a-zA-Z]\s*)?[\u4e00-\u9fff]+', _fix_han_chunk, clean_str)
+        cleaned_vn = re.sub(r'(?:[a-zA-Z]+\s*)?[\u4e00-\u9fff]+', _fix_han_chunk, clean_str)
         words = [w.capitalize() for w in cleaned_vn.split() if w]
         return " ".join(words)
 
