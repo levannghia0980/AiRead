@@ -249,7 +249,7 @@ COMMON_RULES = (
     "3. NGỮ PHÁP TỰ NHIÊN: Câu dịch phải đúng ngữ pháp, trật tự từ tiếng Việt tự nhiên — dịch đúng từng chữ nhưng đọc lên ngô nghê, trúc trắc là dịch hỏng.\n"
     "4. CẤM CONVERT THÔ: không phiên âm Hán-Việt cơ học kiểu Vietphrase, không dịch nguyên văn các quán ngữ convert (cánh nhiên → \"vậy mà\"; nhất đán → \"một khi\"...). Cấm tiếng Anh (but/and/so → nhưng/thế nhưng).\n"
     "5. ĐỊNH DẠNG AUDIOBOOK (TTS): số/tiền/thời gian viết bằng chữ (trừ số chương và mốc năm cụ thể giữ số Ả Rập; vạn = mười nghìn, ức = một trăm triệu). Không in đậm/nghiêng. Lời thoại dùng gạch đầu dòng, không bọc ngoặc kép. Mỗi đoạn xuống dòng một lần, không chèn dòng trống thừa.\n"
-    "6. LOẠI BỎ LỜI TÁC GIẢ CUỐI CHƯƠNG: tự động bỏ các câu xin phiếu, cảm ơn, donate cuối chương; nếu có \"DANH SÁCH LỜI TÁC GIẢ ĐÃ NHẬN DIỆN\" đi kèm thì loại bỏ đúng các câu đó, TUYỆT ĐỐI không xóa nhầm thoại/diễn biến truyện."
+    "6. LOẠI BỎ LỜI TÁC GIẢ CUỐI CHƯƠNG: Tự động phát hiện và loại bỏ các câu xin phiếu, cảm ơn donate, thông báo ngoài lề ở đoạn kết các chương. Khâu Dịch Hán đã bóc tách sẵn các câu này trong danh sách bên dưới — hãy đối chiếu để XÓA SẠCH các câu lời nhắn đó khỏi bản dịch tiếng Việt, TUYỆT ĐỐI KHÔNG xóa nhầm bất kỳ câu thoại hay diễn biến nào của cốt truyện."
 )
 
 
