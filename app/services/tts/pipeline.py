@@ -251,9 +251,9 @@ def merge_audio_files(
         with open(list_file_path, "w", encoding="utf-8") as f:
             for idx, fp in enumerate(file_paths):
                 if idx > 0 and silence_file and os.path.exists(silence_file):
-                    norm_silence = silence_file.replace("\\", "/")
+                    norm_silence = os.path.abspath(silence_file).replace("\\", "/")
                     f.write(f"file '{norm_silence}'\n")
-                normalized_path = fp.replace("\\", "/")
+                normalized_path = os.path.abspath(fp).replace("\\", "/")
                 f.write(f"file '{normalized_path}'\n")
 
         # Xây dựng chuỗi bộ lọc audio: chuẩn hóa timestamp aresample + chuỗi Studio Vocal Mastering
@@ -472,7 +472,21 @@ def sanitize_tts_text(
     if not text:
         return ""
 
-    # 0. Loại bỏ ký tự rỗng/vô hình zero-width, BOM và control characters
+    # 0. Chuẩn hóa Unicode NFC và loại bỏ ký tự rỗng/vô hình zero-width, BOM và control characters
+    import unicodedata
+    text = unicodedata.normalize('NFC', text)
+    # Tự động hàn gắn triệt để nếu từ 'yêu' bị phân tách thành 'y êu' hoặc 'Y êu' (do font/OCR/crawler/LLM lỗi nhịp)
+    def _heal_split_yeu(m):
+        lead = m.group(1)
+        tail = m.group(2)
+        if lead.isupper() and tail.isupper():
+            return f"Y{tail.upper()}"
+        elif lead.isupper():
+            return f"Y{tail.lower()}"
+        else:
+            return f"y{tail.lower()}"
+    text = re.sub(r'(?i)\b(y)\s+([êe]u|[ếe]u|[ềe]u|[ểe]u|[ễe]u|[ệe]u)\b', _heal_split_yeu, text)
+
     text = re.sub(r'[\u200b\u200c\u200d\u200e\u200f\ufeff\xa0]', ' ', text)
     text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
     # Loại bỏ thẻ phân chương kỹ thuật LLM: <chapter_X>, </chapter_X>, [chapter_X], [/chapter_X]
@@ -680,6 +694,9 @@ def sanitize_tts_text(
         word = m.group(2)
         if word.lower().startswith(lead_char) or (lead_char == 'k' and word.lower().startswith('kh')):
             return f"{word}, {word}"
+        if lead_char == 'y' and word.lower() in ('êu', 'ếu', 'ều', 'ểu', 'ễu', 'ệu'):
+            full_w = f"y{word}" if word[0].islower() else f"Y{word}"
+            return f"{full_w}, {full_w}"
         return m.group(0)
     text = re.sub(stutter_pattern, _smart_stutter_replace, text)
 
@@ -1219,15 +1236,18 @@ async def _finalize_chapter(ch_info: dict, voice: str, chapters_cache_dir: str, 
     from app.services.tts.tts_exporter import merge_subchunks_json_to_chapter
 
     # ── Đọc duration thực tế của từng subchunk để tính offset JSON chính xác ──
-    # Tối ưu siêu tốc O(1): Lấy trực tiếp mốc thời gian kết thúc (end cue) hoặc metadata duration
-    # đã được engine tính toán chuẩn xác sẵn trong subchunk JSON, chỉ fallback FFmpeg khi không có cue.
-    # Nhờ đó không phải spawn 20-50 tiến trình FFmpeg ngoài cho mỗi chương, loại bỏ hoàn toàn hiện tượng đơ lag!
+    # Tối ưu siêu tốc O(1): Đo trực tiếp từ dung lượng CBR 48kbps của MP3 (6000 bytes/s)
+    # Giúp timeline subtitle JSON khớp tuyệt đối 100% mili-giây với file audio thực tế mà không cần spawn FFmpeg
     silence_sec_val = ch_info.get("silence_sec", 0.0)
     chunk_durations_real = []
     for sc_idx_d, sc_mp3_path in enumerate(sub_mp3s):
         sc_dur = 0.0
-        # 1. Ưu tiên lấy từ metadata JSON subchunk đã tải (0ms)
-        if sc_idx_d < len(sub_jsons):
+        if os.path.exists(sc_mp3_path):
+            sc_bytes = os.path.getsize(sc_mp3_path)
+            if sc_bytes > 500:
+                sc_dur = round(sc_bytes / 6000.0, 3)
+
+        if sc_dur <= 0.05 and sc_idx_d < len(sub_jsons):
             sc_meta = sub_jsons[sc_idx_d]
             sc_segs = sc_meta.get("segments", [])
             if sc_segs and isinstance(sc_segs, list) and "end" in sc_segs[-1]:
@@ -1237,7 +1257,7 @@ async def _finalize_chapter(ch_info: dict, voice: str, chapters_cache_dir: str, 
             elif sc_meta.get("duration", 0) > 0:
                 sc_dur = float(sc_meta["duration"])
 
-        # 2. Fallback siêu hiếm khi subchunk không có cue nào
+        # Fallback siêu hiếm khi không đo được
         if sc_dur <= 0.05:
             sc_dur = _get_mp3_duration_seconds(sc_mp3_path)
 
@@ -1301,6 +1321,26 @@ async def _finalize_chapter(ch_info: dict, voice: str, chapters_cache_dir: str, 
         job_info["recent_failures"] = job_info.get("recent_failures", 0) + 1
         safe_print(f"❌ [TTS CH{chapter_no} FAIL] Ghép file audio chương thất bại, sẽ tự động thử lại ở lượt sau.", flush=True)
         return False
+
+    # Kiểm tra thời lượng âm thanh hoàn chỉnh: So sánh MP3 đã ghép với tổng thời lượng JSON
+    expected_dur = merged_json_data.get("duration", 0.0) if merged_json_data else 0.0
+    if expected_dur > 10.0:
+        actual_chapter_dur = _get_mp3_duration_seconds(chapter_mp3)
+        dur_diff = abs(actual_chapter_dur - expected_dur)
+        dur_ratio = (actual_chapter_dur / expected_dur) if expected_dur > 0 else 1.0
+        if dur_diff > 2.0 and dur_ratio < 0.98:
+            safe_print(
+                f"❌ [TTS-INTEGRITY CH{chapter_no}] THẤT BẠI: File MP3 bị lệch thời lượng "
+                f"({actual_chapter_dur:.1f}s vs JSON {expected_dur:.1f}s, tỷ lệ {dur_ratio:.1%})! "
+                f"Có chunk âm thanh bị thiếu. Hủy kết quả để tạo lại trọn vẹn 100%!",
+                flush=True
+            )
+            try:
+                os.remove(chapter_mp3)
+            except Exception:
+                pass
+            ch_info["is_finalized"] = False
+            return False
 
     # ── 3. Hoàn tất đóng gói chương & Lưu DB ──
     try:
@@ -1418,7 +1458,7 @@ def generate_range_mp3(
     try:
         with open(list_file_path, "w", encoding="utf-8") as f:
             for fp in files:
-                norm_p = fp.replace("\\", "/")
+                norm_p = os.path.abspath(fp).replace("\\", "/")
                 f.write(f"file '{norm_p}'\n")
 
         # 1. Nếu có scale tốc độ (ví dụ x1.25, x1.5, x2.0, x3.0) -> Re-encode chuẩn atempo giữ nguyên cao độ

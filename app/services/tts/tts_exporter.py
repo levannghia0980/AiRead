@@ -38,33 +38,99 @@ def calculate_word_timings(segment_text: str, start_sec: float, end_sec: float) 
 
 
 def cues_to_segments_and_words(cues: list, chunk_text: str = "") -> tuple:
-    """Chuyển đổi danh sách cues từ edge_tts.SubMaker thành segments và words."""
+    """Chuyển đổi danh sách cues từ edge_tts.SubMaker thành segments và words chuẩn xác 100%."""
     segments = []
     all_words = []
 
     if not cues:
         return segments, all_words
 
-    for cue in cues:
-        s_sec = cue.start.total_seconds()
-        e_sec = cue.end.total_seconds()
-        cue_text = cue.content.strip()
-        # Loại bỏ các thẻ SSML break khỏi hiển thị subtitle
-        cue_text = re.sub(r'<break[^>]*/>', '', cue_text).strip()
-        cue_text = re.sub(r'\s+', ' ', cue_text)
+    # Nhận diện loại cue: WordBoundary (từng từ lẻ) hay SentenceBoundary (cả câu)
+    first_cue_words = cues[0].content.strip().split()
+    is_word_boundary = len(first_cue_words) <= 1
 
-        if e_sec <= s_sec or not cue_text:
-            continue
+    if is_word_boundary:
+        # Tự động gộp nếu WordBoundary bị chia đôi chữ 'y' và 'êu' ('y' + 'êu' -> 'yêu')
+        merged_raw_cues = []
+        c_i = 0
+        while c_i < len(cues):
+            c_now = cues[c_i]
+            if c_i + 1 < len(cues):
+                w1 = c_now.content.strip()
+                w2 = cues[c_i + 1].content.strip()
+                if w1.lower() == 'y' and w2.lower().startswith(('êu', 'ếu', 'ều', 'ểu', 'ễu', 'ệu')):
+                    c_now.content = f"{w1}{w2}"
+                    c_now.end = cues[c_i + 1].end
+                    merged_raw_cues.append(c_now)
+                    c_i += 2
+                    continue
+            merged_raw_cues.append(c_now)
+            c_i += 1
+        cues = merged_raw_cues
 
-        words = calculate_word_timings(cue_text, s_sec, e_sec)
-        seg_obj = {
-            "start": round(s_sec, 3),
-            "end": round(e_sec, 3),
-            "text": cue_text,
-            "words": words
-        }
-        segments.append(seg_obj)
-        all_words.extend(words)
+        curr_words = []
+        curr_tokens = []
+        seg_start = None
+
+        for cue in cues:
+            w_text = cue.content.strip()
+            w_text = re.sub(r'<break[^>]*/>', '', w_text).strip()
+            if not w_text:
+                continue
+            s_sec = round(cue.start.total_seconds(), 3)
+            e_sec = round(cue.end.total_seconds(), 3)
+            if e_sec <= s_sec:
+                continue
+
+            w_obj = {"word": w_text, "start": s_sec, "end": e_sec}
+            all_words.append(w_obj)
+
+            if seg_start is None:
+                seg_start = s_sec
+            curr_words.append(w_obj)
+            curr_tokens.append(w_text)
+
+            # Tách thành cụm câu/mệnh đề tự nhiên khi gặp dấu câu hoặc tối đa 15 từ
+            is_punct = bool(re.search(r'[.!?;:,]$', w_text))
+            if is_punct or len(curr_words) >= 15:
+                segments.append({
+                    "start": seg_start,
+                    "end": e_sec,
+                    "text": " ".join(curr_tokens),
+                    "words": curr_words
+                })
+                curr_words = []
+                curr_tokens = []
+                seg_start = None
+
+        if curr_words:
+            segments.append({
+                "start": seg_start if seg_start is not None else round(cues[0].start.total_seconds(), 3),
+                "end": curr_words[-1]["end"],
+                "text": " ".join(curr_tokens),
+                "words": curr_words
+            })
+    else:
+        for cue in cues:
+            s_sec = cue.start.total_seconds()
+            e_sec = cue.end.total_seconds()
+            cue_text = cue.content.strip()
+            # Loại bỏ các thẻ SSML break khỏi hiển thị subtitle
+            cue_text = re.sub(r'<break[^>]*/>', '', cue_text).strip()
+            cue_text = re.sub(r'\s+', ' ', cue_text)
+
+            if e_sec <= s_sec or not cue_text:
+                continue
+
+            words = calculate_word_timings(cue_text, s_sec, e_sec)
+            seg_obj = {
+                "start": round(s_sec, 3),
+                "end": round(e_sec, 3),
+                "text": cue_text,
+                "words": words
+            }
+            segments.append(seg_obj)
+            all_words.extend(words)
 
     return segments, all_words
 

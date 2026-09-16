@@ -540,10 +540,14 @@ class DedicatedWorker:
                         submaker.cues = _sub_fallback.cues
                         submaker.type = _sub_fallback.type
 
+                    # Kiểm tra ngắt stream sớm: nếu còn dở dang chunk_audio_bytes > 0 chứng tỏ turn.end chưa tới
+                    if c_instance.state.get("chunk_audio_bytes", 0) > 0:
+                        raise RuntimeError(f"Subchunk {chunk_idx} bị ngắt kết nối trước khi hoàn tất stream (turn.end)!")
+
                 if used_direct:
-                    comm = edge_tts.Communicate(text=tts_text, voice=self.voice, rate=self.rate, pitch=self.pitch, proxy=None)
+                    comm = edge_tts.Communicate(text=tts_text, voice=self.voice, rate=self.rate, pitch=self.pitch, boundary="WordBoundary", proxy=None)
                 else:
-                    comm = edge_tts.Communicate(text=tts_text, voice=self.voice, rate=self.rate, pitch=self.pitch, proxy=self.current_proxy)
+                    comm = edge_tts.Communicate(text=tts_text, voice=self.voice, rate=self.rate, pitch=self.pitch, boundary="WordBoundary", proxy=self.current_proxy)
 
                 await asyncio.wait_for(_download_stream(comm), timeout=cur_timeout)
 
@@ -551,7 +555,8 @@ class DedicatedWorker:
 
                 # ── KIỂM TRA ĐỘ TOÀN VẸN 100% CỦA ÂM THANH & TỪ VỰNG ──
                 text_len = len(tts_text.strip())
-                min_expected_bytes = max(1500, int(text_len * 95))
+                # Chuẩn 48kbps CBR = 6000 bytes/s. Với tốc độ nói nhanh (27 ký tự/s), tối thiểu cần 220 bytes/ký tự
+                min_expected_bytes = max(2000, int(text_len * 200))
                 actual_bytes = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
 
                 if actual_bytes < min_expected_bytes:
@@ -562,11 +567,20 @@ class DedicatedWorker:
                 # Chuyển đổi cues sang segments & words để kiểm tra nội dung
                 c_segs, c_words = cues_to_segments_and_words(submaker.cues, tts_text)
 
+                # Kiểm tra thời lượng âm thanh CBR O(1) so với mốc cues (không tốn thời gian gọi subprocess ngoài)
+                cbr_audio_dur = actual_bytes / 6000.0
+                if submaker.cues:
+                    cue_end_sec = submaker.cues[-1].end.total_seconds()
+                    if cue_end_sec > 1.0 and cbr_audio_dur < (cue_end_sec - 0.8):
+                        raise RuntimeError(
+                            f"Subchunk {chunk_idx} âm thanh bị ngắt cụt ({cbr_audio_dur:.2f}s < cue {cue_end_sec:.2f}s). Cần thử lại!"
+                        )
+
                 # Fallback thông minh: Khi file MP3 đã tải trọn vẹn (actual_bytes >= min_expected_bytes)
-                # nhưng Microsoft Edge-TTS nuốt mất thẻ SentenceBoundary (do bug tokenization khi chunk chỉ có 1 câu kết thúc bằng dấu đặc biệt như ,. hoặc ;.)
+                # nhưng Microsoft Edge-TTS nuốt mất thẻ Boundary
                 # -> Tự động tính toán mốc thời gian từ vựng âm vị học dựa theo độ dài thực tế của file MP3!
                 if (not c_words or not submaker.cues) and actual_bytes >= min_expected_bytes:
-                    audio_dur = _get_mp3_duration_seconds(tmp_path)
+                    audio_dur = cbr_audio_dur
                     clean_seg_text = re.sub(r'[\r\n\t]+', ' ', text).strip()
                     fallback_words = calculate_word_timings(clean_seg_text, 0.0, audio_dur)
                     if fallback_words:

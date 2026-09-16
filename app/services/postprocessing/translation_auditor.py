@@ -201,8 +201,9 @@ def extract_swept_errors(content: str, chapter_no: int) -> List[Dict[str, Any]]:
             sent_start, sent_end = find_sentence_bounds(line, match.start(), match.end())
             raw_sentence = line[sent_start:sent_end].strip()
             
-            # Mask the faulty term with [LỖI: ...] trong câu văn đó
-            raw_sent_masked = line[sent_start:match.start()] + f"[LỖI: {faulty_term}]" + line[match.end():sent_end]
+            # Gửi thẳng chữ Hán gốc cần dịch, không gửi bản dịch cứu lỗi từ hanlp / google
+            target_han = raw_chinese if (raw_chinese and raw_chinese != "Không rõ (Bản dịch cũ)") else faulty_term
+            raw_sent_masked = line[sent_start:match.start()] + f"[CHỮ HÁN CẦN DỊCH: {target_han}]" + line[match.end():sent_end]
             
             # Clean HTML to provide clear context for LLM
             sentence_context = re.sub(r'<[^>]+>', '', raw_sent_masked).strip()
@@ -210,8 +211,7 @@ def extract_swept_errors(content: str, chapter_no: int) -> List[Dict[str, Any]]:
             errors.append({
                 "error_id": f"ERR_CH{chapter_no}_{error_idx}",
                 "chapter_no": chapter_no,
-                "raw_chinese": raw_chinese,
-                "faulty_term": faulty_term,
+                "raw_chinese": target_han,
                 "sentence_context": sentence_context,
                 "raw_sentence": raw_sentence,
                 "span_html": span_text,
@@ -258,8 +258,7 @@ def apply_swept_corrections(content: str, corrections_map: Dict[str, Any], chapt
         line_idx = err["line_idx"]
         span_html = err["span_html"]
         raw_cn = err.get("raw_chinese", "")
-        faulty = err.get("faulty_term", "")
-        tooltip_str = f"Gốc Hán: {raw_cn} | Lỗi cũ: {faulty}" if (raw_cn and raw_cn != "Không rõ (Bản dịch cũ)") else f"Lỗi cũ: {faulty}"
+        tooltip_str = f"Gốc Hán: {raw_cn}" if (raw_cn and raw_cn != "Không rõ (Bản dịch cũ)") else "Đã sửa lỗi"
         
         if 0 <= line_idx < len(lines):
             line = lines[line_idx]
@@ -419,36 +418,35 @@ async def batch_fix_swept_errors_llm(novel_id: int, model: Optional[str] = None)
                 {
                     "error_id": err["error_id"],
                     "raw_chinese": err["raw_chinese"],
-                    "faulty_term": err["faulty_term"],
                     "sentence_context": err["sentence_context"]
                 }
                 for err in batch_errs
             ]
 
             prompt = f"""Bạn là TỔNG BIÊN TẬP VIÊN VĂN HỌC & TIỂU THUYẾT CAO CẤP (thể loại: {genre.upper()}).
-Dưới đây là danh sách các lỗi dịch thô / sót Hán tự / convert sượng sùng (được đánh dấu là [LỖI: ...]) kèm chữ Hán gốc [raw_chinese]. Ngữ cảnh xung quanh (trích xuất cả câu trọn vẹn theo dấu chấm) được cung cấp để bạn nắm rõ bối cảnh câu chuyện.
+Dưới đây là danh sách các vị trí sót chữ Hán cần dịch và chuốt câu (được đánh dấu là [CHỮ HÁN CẦN DỊCH: ...] trong ngữ cảnh câu văn trọn vẹn) kèm chữ Hán gốc [raw_chinese].
 
 === DANH SÁCH CÁC VỊ TRÍ CẦN SỬA ===
 {json.dumps(llm_input_items, ensure_ascii=False, indent=2)}
 
-=== NGUYÊN TẮC SỬA LỖI & CHUỐT CÂU VĂN (TRÁCH NHIỆM LÀM SẠCH TRIỆT ĐỂ) ===
-1. TRÁCH NHIỆM SỬA VÀ LÀM SẠCH TRỌN VẸN CẢ CÂU VĂN (fixed_sentence):
-   - Bạn được cung cấp CẢ CÂU TRỌN VẸN (sentence_context) chứa vị trí [LỖI: ...].
-   - TUYỆT ĐỐI KHÔNG ĐƯỢC CHỈ VẤT VỀ TỪ ĐƠN LẺ! Bạn có TRÁCH NHIỆM SỬA VÀ LÀM SẠCH CẢ CÂU VĂN, trả về nguyên văn CÂU MỚI HOÀN CHỈNH (fixed_sentence) trôi chảy, tự nhiên.
-   - Xóa bỏ triệt để các chữ cái La Tinh dính rác dở chừng (ví dụ: chữ 'B' dính dở chừng trước 'Đại Bàng' thành 'Đại B Đại Bằng' -> BẮT BUỘC SỬA THÀNH 'Đại Bàng'; chữ 'Võ B' dính trước 'Võ Bị' -> BẮT BUỘC SỬA THÀNH 'Võ Bị').
-   - Xóa bỏ toàn bộ từ lặp rác, mảnh từ bị cắt dở do dịch ngu hoặc sót Hán.
+=== NGUYÊN TẮC BIÊN TẬP & SỬA LỖI (CHỊU TRÁCH NHIỆM TOÀN BỘ CÂU VĂN) ===
+1. TRÁCH NHIỆM CHUỐT MƯỢT CẢ CÂU VĂN CÓ NGHĨA HOÀN CHỈNH (fixed_sentence):
+   - Bạn được cung cấp cả câu trọn vẹn (sentence_context) chứa vị trí chữ Hán chưa dịch.
+   - Hãy dịch chữ Hán đó theo đúng văn cảnh, hòa nhập hoàn toàn vào câu văn để tạo thành một câu văn tiếng Việt hoàn chỉnh, tự nhiên, trôi chảy, giàu hình ảnh và đúng ngữ cảnh câu chuyện.
+   - Xóa bỏ triệt để các ký tự rác, mảnh từ bị cắt dở hoặc từ lặp lại do lỗi dịch trước đó.
+   - TUYỆT ĐỐI CẤM dịch bẻ âm thô từng chữ (convert máy móc). Phải dùng từ ngữ tiếng Việt chuẩn mực, đúng văn phong thể loại.
 
-2. XÓA BỎ TRIỆT ĐỂ LỖI 'TỪ GỐC (BẢN DỊCH)' & NGOẶC ĐƠN LẶP TỪ:
-   - Nếu trong câu xuất hiện dạng `Chữ Hán (Bản dịch tiếng Việt)` (ví dụ: `哼 (Hừ!)`) hoặc lặp từ trong ngoặc (ví dụ: `"Hừ!" (Hừ!)` hay `Hừ (Hừ)`): BẮT BUỘC xóa bỏ ngoặc đơn, lấy thẳng từ dịch tiếng Việt thuần tự nhiên (ví dụ: `Hừ!`).
-   - Điền câu văn hoàn chỉnh đã làm sạch 100% vào trường `fixed_sentence` và điền cụm từ thay thế chuẩn vào `corrected_term`.
+2. CỤM TỪ THAY THẾ (corrected_term):
+   - Điền cụm từ tiếng Việt chuẩn xác nhất dùng để thay thế cho vị trí chữ Hán vào trường `corrected_term`.
+   - Điền câu văn hoàn chỉnh đã biên tập làm sạch 100% vào trường `fixed_sentence`.
 
 === CẤU TRÚC JSON BẮT BUỘC TRẢ VỀ ===
 {{
   "corrections": [
     {{
-      "error_id": "ERR_CHX_Y",
-      "corrected_term": "Đại Bàng",
-      "fixed_sentence": "Câu văn mới đã sửa mượt mà sạch vẽ 100%"
+      "error_id": "MÃ_LỖI",
+      "corrected_term": "Cụm từ tiếng Việt đã dịch chuẩn",
+      "fixed_sentence": "Câu văn mới hoàn chỉnh trôi chảy đã làm sạch 100%"
     }}
   ]
 }}
